@@ -167,6 +167,10 @@ cvar_t		gl_triplebuffer = {"gl_triplebuffer", "1", CVAR_ARCHIVE};
 cvar_t		cl_gun_fovscale = {"cl_gun_fovscale","1",CVAR_ARCHIVE}; // Qrack
 cvar_t		cl_menucrosshair = { "cl_menucrosshair","0",CVAR_ARCHIVE}; // woods #menucrosshair
 cvar_t		cl_pong = {"cl_pong","2",CVAR_ARCHIVE}; // woods #pong -- 0 = disabled, >0 = enabled with speed multiplier
+cvar_t		cl_gun_x = { "cl_gun_x","0",CVAR_ARCHIVE };
+cvar_t		cl_gun_y = { "cl_gun_y","0",CVAR_ARCHIVE };
+cvar_t		cl_gun_z = { "cl_gun_z","0",CVAR_ARCHIVE };
+
 
 extern	cvar_t	crosshair;
 extern	cvar_t	con_notifyfade; // woods #confade
@@ -1027,6 +1031,9 @@ void SCR_Init (void)
 	Cvar_RegisterVariable (&cl_gun_fovscale);
 	Cvar_RegisterVariable (&cl_menucrosshair); // woods #menucrosshair
 	Cvar_RegisterVariable (&cl_pong); // woods #pong
+	Cvar_RegisterVariable(&cl_gun_x);
+	Cvar_RegisterVariable(&cl_gun_y);
+	Cvar_RegisterVariable(&cl_gun_z);
 
 	Cmd_AddCommand ("screenshot",SCR_ScreenShot_f);
 	Cmd_AddCommand ("sizeup",SCR_SizeUp_f);
@@ -3416,7 +3423,7 @@ void SCR_DrawCrosshair (void)
 	float cross_y = scr_crosshair_y.value;
 
 	if (crosshair.value == 1)
-		Draw_CharacterRGBA (-4 + cross_x, -4 + cross_y, '+', color, alpha); //0,0 is center of viewport
+		Draw_CharacterRGBA (-4 + cross_x, -4 + cross_y, 14, color, alpha); //0,0 is center of viewport
 
 	if (crosshair.value == 2) 
 	{

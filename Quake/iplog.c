@@ -38,11 +38,11 @@ static void IPLog_MigrateFiles(void)
 	qboolean migrated_any = false;
 	
 	// Create paths
-	q_snprintf(old_dat_path, sizeof(old_dat_path), "%s/id1/iplog.dat", com_basedir);
-	q_snprintf(old_txt_path, sizeof(old_txt_path), "%s/id1/iplog.txt", com_basedir);
-	q_snprintf(backup_dir, sizeof(backup_dir), "%s/id1/backups", com_basedir);
-	q_snprintf(new_dat_path, sizeof(new_dat_path), "%s/id1/backups/iplog.dat", com_basedir);
-	q_snprintf(new_txt_path, sizeof(new_txt_path), "%s/id1/backups/iplog.txt", com_basedir);
+	q_snprintf(old_dat_path, sizeof(old_dat_path), "%s/kuzbass/iplog.dat", com_basedir);
+	q_snprintf(old_txt_path, sizeof(old_txt_path), "%s/kuzbass/iplog.txt", com_basedir);
+	q_snprintf(backup_dir, sizeof(backup_dir), "%s/kuzbass/backups", com_basedir);
+	q_snprintf(new_dat_path, sizeof(new_dat_path), "%s/kuzbass/backups/iplog.dat", com_basedir);
+	q_snprintf(new_txt_path, sizeof(new_txt_path), "%s/kuzbass/backups/iplog.txt", com_basedir);
 	
 	// Ensure backups directory exists
 	Sys_mkdir(backup_dir);
@@ -200,7 +200,7 @@ IPLog_GetDataPath
 static const char* IPLog_GetDataPath(void)
 {
 	static char path[MAX_OSPATH];
-	q_snprintf(path, sizeof(path), "%s/id1/backups/iplog.dat", com_basedir);
+	q_snprintf(path, sizeof(path), "%s/kuzbass/backups/iplog.dat", com_basedir);
 	return path;
 }
 
@@ -212,7 +212,7 @@ IPLog_GetTxtPath
 static const char* IPLog_GetTxtPath(void)
 {
 	static char path[MAX_OSPATH];
-	q_snprintf(path, sizeof(path), "%s/id1/backups/iplog.txt", com_basedir);
+	q_snprintf(path, sizeof(path), "%s/kuzbass/backups/iplog.txt", com_basedir);
 	return path;
 }
 
@@ -249,7 +249,7 @@ void IPLog_Init (void)
 	iplog_full = 0;
 
 	// Ensure backups directory exists
-	q_snprintf(backup_dir, sizeof(backup_dir), "%s/id1/backups", com_basedir);
+	q_snprintf(backup_dir, sizeof(backup_dir), "%s/kuzbass/backups", com_basedir);
 	Sys_mkdir(backup_dir);
 	
 	// Migrate old files if they exist
@@ -322,7 +322,7 @@ void IPLog_WriteLog (void)
 		return;
 
 	// Ensure backups directory exists
-	q_snprintf(backup_dir, sizeof(backup_dir), "%s/id1/backups", com_basedir);
+	q_snprintf(backup_dir, sizeof(backup_dir), "%s/kuzbass/backups", com_basedir);
 	Sys_mkdir(backup_dir);
 
 //	Sys_GetLock();
@@ -543,7 +543,7 @@ void IPLog_Dump (void)
 	}
 
 	// Ensure backups directory exists
-	q_snprintf(backup_dir, sizeof(backup_dir), "%s/id1/backups", com_basedir);
+	q_snprintf(backup_dir, sizeof(backup_dir), "%s/kuzbass/backups", com_basedir);
 	Sys_mkdir(backup_dir);
 
 	f = fopen(IPLog_GetTxtPath(), "w");

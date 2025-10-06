@@ -1093,7 +1093,7 @@ void IN_MouseMotion(int dx, int dy, int wx, int wy)
 		if (qcvm->cursorforced)
 		{
 			float s;
-			s = q_min((float)glwidth / 320.0, (float)glheight / 200.0);
+			s = q_min((float)glwidth / 640.0, (float)glheight / 400.0);
 			s = CLAMP (1.0, scr_menuscale.value, s);
 			wx /= s;
 			wy /= s;

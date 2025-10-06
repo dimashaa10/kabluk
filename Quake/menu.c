@@ -1279,18 +1279,48 @@ void M_Main_Draw (void) // woods #modsmenu #demosmenu (iw)
 	int cursor, f;
 	qpic_t* p;
 
-	M_DrawTransPic(16, 4, Draw_CachePic("gfx/qplaque.lmp"));
-	p = Draw_CachePic("gfx/ttl_main.lmp");
-	M_DrawPic((320 - p->width) / 2, 4, p);
+	
+	qpic_t* menup = Draw_CachePic("gfx/david/tanec1.lmp");
+	int boxw = menup ? menup->width : 256;
+	int boxh = menup ? menup->height : 256;
+	vrect_t bounds, vp;
+	Draw_GetMenuTransform(&bounds, &vp);
+	// Convert menu virtual coords (640x200) to absolute pixels via viewport
+	float s = (float)vp.width / (float)bounds.width;
+	float px = vp.x + 300 * s;
+	float py = vp.y + 32 * s;
+	float pw = boxw * s;
+	float ph = boxh * s;
+	DrawSpinningModelToMenuPixels("progs/soldier.mdl",
+		px, py, pw, ph,
+		15.0f,
+		-15.0f,
+		1, 2, 3, 4);
 
-	p = Draw_CachePic("gfx/mainmenu.lmp");
+	// Restore menu 2D canvas to keep coordinates/cursor aligned
+	GL_SetCanvas(CANVAS_MENU);
+	glDisable(GL_BLEND);
+	glEnable(GL_ALPHA_TEST);
+	glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+
+	M_DrawTransPic(16, 4, Draw_CachePic("gfx/qplaque.lmp"));
+
+	//qpic_t* pic = Draw_CachePic(va("gfx/david/tanec%i.lmp", (int)(realtime * 10) % 29 + 1));
+	//M_DrawTransPic(320, 2, pic);
+
+	p = Draw_CachePic(va("gfx/a_main/amain%i.lmp", (int)(realtime * 2) % 3 + 1));
+	M_DrawPic((320 - p->width) / 2, 4, p);
+	p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.lmp", (int)(realtime * 8) % 24 + 1));
+	M_DrawPic((320 - p->width) / 2, -64, p);
+
+	p = Draw_CachePic(va("gfx/a_mmenu/mainmenu%i.lmp", (int)(realtime * 1) % 2 + 1));
 	int split = 60;
 	int offset = 0;
 
 	if (m_main_mods && m_main_demos) // both mods and demos
 	{
 		M_DrawSubpic(72, 32, p, 0, 0, p->width, split);
-		M_DrawTransPic(72, 32 + split, Draw_CachePic("gfx/menumods.lmp"));
+		M_DrawTransPic(74, 92, Draw_CachePic(va("gfx/a_mods/amods%i.lmp", (int)(realtime * 1) % 2 + 1)));
 		M_DrawTransPic(72, 52 + split, Draw_CachePic("gfx/menudemos.lmp"));
 		M_DrawSubpic(72, 72 + split, p, 0, split, p->width, p->height - split);
 	}
@@ -1298,7 +1328,7 @@ void M_Main_Draw (void) // woods #modsmenu #demosmenu (iw)
 	else if (m_main_mods && !m_main_demos) // only mods
 	{
 		M_DrawSubpic(72, 32 + offset, p, 0, 0, p->width, split);
-		M_DrawTransPic(72, 32 + offset + split, Draw_CachePic("gfx/menumods.lmp"));
+		M_DrawTransPic(74, 92, Draw_CachePic(va("gfx/a_mods/amods%i.lmp", (int)(realtime * 1) % 2 + 1)));
 		M_DrawSubpic(72, 32 + offset + split + 20, p, 0, split, p->width, p->height - split);
 		offset += split + 20; // Adjust offset if needed for further items
 	}
@@ -1312,8 +1342,7 @@ void M_Main_Draw (void) // woods #modsmenu #demosmenu (iw)
 	}
 
 	else
-		M_DrawTransPic(72, 32, Draw_CachePic("gfx/mainmenu.lmp")); // neither mods nor demos
-
+		Draw_CachePic(va("gfx/a_mmenu/mainmenu%i.lmp", (int)(realtime * 1) % 2 + 1));
 	f = (int)(realtime * 10) % 6;
 	cursor = m_main_cursor;
 
@@ -1509,21 +1538,21 @@ void M_Menu_SinglePlayer_f (void)
 }
 
 
-void M_SinglePlayer_Draw (void)
+void M_SinglePlayer_Draw(void)
 {
-	int		f;
-	qpic_t	*p;
+	qpic_t* p;
 
-	M_DrawTransPic (16, 4, Draw_CachePic ("gfx/qplaque.lmp") );
-	p = Draw_CachePic ("gfx/ttl_sgl.lmp");
-	M_DrawPic ( (320-p->width)/2, 4, p);
-	M_DrawTransPic (72, 32, Draw_CachePic ("gfx/sp_menu.lmp") );
+	p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.lmp", (int)(realtime * 8) % 24 + 1));
+	M_DrawPic((320 - p->width) / 2, -64, p);
+
+	M_DrawTransPic(16, 4, Draw_CachePic("gfx/qplaque.lmp"));
+	p = Draw_CachePic(va("gfx/a_sgl/asgl%i.lmp", (int)(realtime * 2) % 3 + 1));
+	M_DrawPic((320 - p->width) / 2, 4, p);
+	M_DrawTransPic(72, 32, Draw_CachePic(va("gfx/a_spmenu/aspm%i.lmp", (int)(realtime * 1) % 2 + 1)));
 	if (m_singleplayer_showlevels)
-		M_DrawTransPic(72, 92, Draw_CachePic("gfx/sp_maps.lmp"));
+		M_DrawTransPic(72, 92, Draw_CachePic(va("gfx/a_levels/alev%i.lmp", (int)(realtime * 1) % 2 + 1)));
 
-	f = (int)(realtime * 10)%6;
-
-	M_DrawTransPic (54, 32 + m_singleplayer_cursor * 20,Draw_CachePic( va("gfx/menudot%i.lmp", f+1 ) ) );
+	M_DrawQuakeCursor(54, 32 + m_singleplayer_cursor * 20);
 }
 
 static double sp_lastkey_time;  // For single player menu
@@ -1860,12 +1889,26 @@ static void M_DrawSaveSlots (const char* title_pic)
 
 void M_Load_Draw (void)
 {
-	M_DrawSaveSlots ("gfx/p_load.lmp");
+	M_DrawSaveSlots ("");
+	int		i;
+	qpic_t* p;
+
+	p = Draw_CachePic(va("gfx/a_load/aload%i.lmp", (int)(realtime * 2) % 3 + 1));
+	M_DrawPic((320 - p->width) / 2, 4, p);
+
 }
 
 void M_Save_Draw (void)
 {
-	M_DrawSaveSlots ("gfx/p_save.lmp");
+	M_DrawSaveSlots ("");
+	int		i;
+	qpic_t* p;
+
+	p = Draw_CachePic(va("gfx/a_save/asave%i.lmp", (int)(realtime * 2) % 4 + 1));
+	M_DrawPic((320 - p->width) / 2, 4, p);
+
+	for (i = 0; i < MAX_SAVEGAMES; i++)
+		M_Print(16, 32 + 8 * i, m_filenames[i]);
 }
 
 
@@ -2342,8 +2385,11 @@ void M_Skill_Draw(void)
 	int		x, y, f;
 	qpic_t* p;
 
+	p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.lmp", (int)(realtime * 8) % 24 + 1));
+	M_DrawPic((320 - p->width) / 2, -64, p);
+
 	M_DrawTransPic(16, 4, Draw_CachePic("gfx/qplaque.lmp"));
-	p = Draw_CachePic(m_skill_usecustomtitle ? "gfx/p_skill.lmp" : "gfx/ttl_sgl.lmp");
+	p = Draw_CachePic(m_skill_usecustomtitle ? "gfx/a_skill/askill1.lmp" : "gfx/a_sgl/asgl1.lmp");
 	M_DrawPic((320 - p->width) / 2, 4, p);
 
 	x = 72;
@@ -2503,10 +2549,13 @@ void M_MultiPlayer_Draw (void)
 	int		f, i; // woods
 	qpic_t	*p;
 
+	p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.lmp", (int)(realtime * 8) % 24 + 1));
+	M_DrawPic((320 - p->width) / 2, -64, p);
+
 	M_DrawTransPic (16, 4, Draw_CachePic ("gfx/qplaque.lmp") );
-	p = Draw_CachePic ("gfx/p_multi.lmp");
+	p = Draw_CachePic(va("gfx/a_mp/amp%i.lmp", (int)(realtime * 2) % 3 + 1));
 	M_DrawPic ( (320-p->width)/2, 4, p);
-	M_DrawTransPic (72, 32, Draw_CachePic ("gfx/mp_menu.lmp") );
+	M_DrawTransPic(72, 32, Draw_CachePic(va("gfx/a_mpmenu/ampmenu%i.lmp", (int)(realtime * 1) % 2 + 1)));
 
 	f = (int)(realtime * 10)%6;
 	i = 24;
@@ -2823,15 +2872,18 @@ void M_Setup_Draw (void)
 		Cbuf_AddText("chase_active 1\n");
 	}
 
+	p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.lmp", (int)(realtime * 8) % 24 + 1));
+	M_DrawPic((320 - p->width) / 2, -64, p);
+
 	M_DrawTransPic (16, 4, Draw_CachePic ("gfx/qplaque.lmp") );
-	p = Draw_CachePic ("gfx/p_multi.lmp");
+	p = Draw_CachePic(va("gfx/a_pasaan/pasaan%i.lmp", (int)(realtime * 2) % 3 + 1));
 	M_DrawPic ( (320-p->width)/2, 4, p);
 
 	M_Print (64, 40, "Hostname");
 	M_DrawTextBox (160, 32, 16, 1);
 	M_Print (168, 40, setup_hostname);
 
-	M_Print (64, 56, "Your name");
+	M_Print (64, 56, "Nickname");
 	M_DrawTextBox (160, 48, 16, 1);
 	M_PrintWhite (168, 56, setup_myname); // woods change to white #namemaker
 
@@ -3423,8 +3475,11 @@ void M_Net_Draw (void)
 	int		f;
 	qpic_t	*p;
 
+	p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.lmp", (int)(realtime * 8) % 24 + 1));
+	M_DrawPic((320 - p->width) / 2, -64, p);
+
 	M_DrawTransPic (16, 4, Draw_CachePic ("gfx/qplaque.lmp") );
-	p = Draw_CachePic ("gfx/p_multi.lmp");
+	p = Draw_CachePic(va("gfx/a_mp/amp%i.lmp", (int)(realtime * 2) % 3 + 1));
 	M_DrawPic ( (320-p->width)/2, 4, p);
 
 	f = 32;
@@ -3437,9 +3492,9 @@ void M_Net_Draw (void)
 
 	f += 19;
 	if (ipv4Available || ipv6Available)
-		p = Draw_CachePic ("gfx/netmen4.lmp");
+		p = Draw_CachePic(va("gfx/netmen/netmen4_%i.lmp", (int)(realtime * 1) % 2 + 1));
 	else
-		p = Draw_CachePic ("gfx/dim_tcp.lmp");
+		p = Draw_CachePic(va("gfx/netmen/dim_tcp%i.lmp", (int)(realtime * 1) % 2 + 1));
 	M_DrawTransPic (72, f, p);
 
 	f = (320-26*8)/2;
@@ -3690,7 +3745,7 @@ void M_Options_Draw (void)
 		M_ReleaseSliderGrab();
 
 	M_DrawTransPic (16, 4, Draw_CachePic ("gfx/qplaque.lmp") );
-	p = Draw_CachePic ("gfx/p_option.lmp");
+	p = Draw_CachePic(va("gfx/a_opt/aopt%i.lmp", (int)(realtime * 2) % 3 + 1));
 	M_DrawPic ( (320-p->width)/2, 4, p);
 
 	// Draw menu items with search highlighting if active
@@ -4058,12 +4113,12 @@ const char *quakebindnames[][2] = // woods use iw quake bind names
 	{"+attack",			"Attack"},
 	{"impulse 10",		"Next weapon"},
 	{"impulse 12",		"Previous weapon"},
-	{"impulse 1",		"Axe"},
-	{"impulse 2",		"Shotgun"},
-	{"impulse 3",		"Super Shotgun"},
-	{"impulse 4",		"Nailgun"},
-	{"impulse 5",		"Super Nailgun"},
-	{"impulse 6",		"Grenade Launcher"},
+	{"impulse 1",		"Khopesh"},
+	{"impulse 2",		"Revolver"},
+	{"impulse 3",		"RB-12"},
+	{"impulse 4",		"Shuropovety"},
+	{"impulse 5",		"VHS-2"},
+	{"impulse 6",		"Grudnichkomyot"},
 	{"impulse 7",		"Rocket Launcher"},
 	{"impulse 8",		"Thunderbolt"},
 	{"impulse 225",		"Laser Cannon"},
@@ -4341,7 +4396,7 @@ void M_Keys_Draw(void)
 	int firstvis, numvis, x, y, cols;
 	qpic_t* p;
 
-	p = Draw_CachePic("gfx/ttl_cstm.lmp");
+	p = Draw_CachePic(va("gfx/a_cstm/acstm%i.lmp", (int)(realtime * 2) % 3 + 1));
 	M_DrawPic((320 - p->width) / 2, 4, p);
 	if (bind_grab)
 		M_Print(12, 32, "press a key or button for this action");
@@ -4746,7 +4801,7 @@ void M_Mouse_Draw(void)
 	float r;
 	enum mouse_e i;
 
-	p = Draw_CachePic("gfx/p_option.lmp");
+	p = Draw_CachePic(va("gfx/a_opt/aopt%i.lmp", (int)(realtime * 2) % 3 + 1));
 	M_DrawPic((320 - p->width) / 2, 4, p);
 
 	const char* title = "Mouse Options";
@@ -5330,7 +5385,7 @@ void M_Graphics_Draw(void)
 	float r;
 	int m;
 
-	p = Draw_CachePic("gfx/p_option.lmp");
+	p = Draw_CachePic(va("gfx/a_opt/aopt%i.lmp", (int)(realtime * 2) % 3 + 1));
 	M_DrawPic((320 - p->width) / 2, 4, p);
 
 	const char* title = "Graphics Options";
@@ -5420,7 +5475,7 @@ void M_Graphics_Draw(void)
 
 		case GRAPHICS_CLASSICPARTICLES:
 			text = " Classic Particles";
-			value = r_particles.value == 1 ? "round (winquake)" : "square (glquake)";
+			value = r_particles.value == 1 ? "round" : "square";
 			M_Print(178, y, value);
 			break;
 
@@ -5960,7 +6015,7 @@ void M_Sound_Draw(void)
 	qpic_t* p;
 	enum sound_e i;
 
-	p = Draw_CachePic("gfx/p_option.lmp");
+	p = Draw_CachePic(va("gfx/a_opt/aopt%i.lmp", (int)(realtime * 2) % 3 + 1));
 	M_DrawPic((320 - p->width) / 2, 4, p);
 
 	const char* title = "Sound Options";
@@ -7396,7 +7451,7 @@ void M_HUD_Draw(void)
 	float r, l;
 	const char* value;
 
-	p = Draw_CachePic("gfx/p_option.lmp");
+	p = Draw_CachePic(va("gfx/a_opt/aopt%i.lmp", (int)(realtime * 2) % 3 + 1));
 	M_DrawPic((320 - p->width) / 2, 4, p);
 
 	const char* title = "HUD Options";
@@ -8023,7 +8078,7 @@ void M_DrawMenuCrosshair(int x, int y)
 	// Regular crosshairs 1-5
 
 	if (crosshair.value == 1)
-		Draw_CharacterRGBA(-4, -4, '+', color, alpha);
+		Draw_CharacterRGBA(-4, -4, 14, color, alpha);
 
 	if (crosshair.value == 2)
 	{
@@ -8308,7 +8363,7 @@ void M_Crosshair_Draw(void)
 	float r;
 	enum crosshair_e i;
 
-	p = Draw_CachePic("gfx/p_option.lmp");
+	p = Draw_CachePic(va("gfx/a_opt/aopt%i.lmp", (int)(realtime * 2) % 3 + 1));
 	M_DrawPic((320 - p->width) / 2, 4, p);
 
 	const char* title = "Crosshair Options";
@@ -8742,7 +8797,7 @@ void M_Console_Draw(void)
 	enum console_e i;
 	const char* filter_text;
 
-	p = Draw_CachePic("gfx/p_option.lmp");
+	p = Draw_CachePic(va("gfx/a_opt/aopt%i.lmp", (int)(realtime * 2) % 3 + 1));
 	M_DrawPic((320 - p->width) / 2, 4, p);
 
 	const char* title = "Console Options";
@@ -9263,7 +9318,7 @@ void M_Extras_Draw(void)
 	qpic_t* p;
 	enum extras_e i;
 
-	p = Draw_CachePic("gfx/p_option.lmp");
+	p = Draw_CachePic(va("gfx/a_opt/aopt%i.lmp", (int)(realtime * 2) % 3 + 1));
 	M_DrawPic((320 - p->width) / 2, 4, p);
 
 	const char* title = "Miscellaneous Options";
@@ -10159,8 +10214,8 @@ void M_Menu_Help_f (void)
 	m_entersound = true;
 	help_page = 0;
 	IN_UpdateGrabs();
-	SCR_ModalMessage("The QSS-M webpage has been opened\nin your ^mweb browser^m\n\nMinimize QSS-M for further assistance", 3.5f); // woods
-	SDL_OpenURL("https://qssm.quakeone.com");
+	//SCR_ModalMessage("The QSS-M webpage has been opened\nin your ^mweb browser^m\n\nMinimize QSS-M for further assistance", 3.5f); // woods
+	//SDL_OpenURL("https://qssm.quakeone.com");
 }
 
 

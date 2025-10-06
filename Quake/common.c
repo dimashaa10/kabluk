@@ -3794,7 +3794,7 @@ static void COM_Dir_Open_f(void) // woods #openfolder opens folder outside of ga
 	if (c > 2 || c < 2)
 	{
 		Con_Printf("\n");
-		Con_Printf("^mopen^m <gamedir folder> or <id1 path>  ie: open id1, open id1/maps, open demos\n");
+		Con_Printf("^mopen^m <gamedir folder> or <kuzbass path>  ie: open kuzbass, open kuzbass/maps, open demos\n");
 		Con_Printf("\n");
 		return;
 	}
@@ -3803,7 +3803,7 @@ static void COM_Dir_Open_f(void) // woods #openfolder opens folder outside of ga
 		char	path[MAX_OSPATH];
 		char	folder[MAX_OSPATH];
 
-		if (strstr(Cmd_Argv(1), "id1"))
+		if (strstr(Cmd_Argv(1), "kuzbass"))
 			q_snprintf(path, sizeof(path), "file://%s/%s", com_basedir, Cmd_Argv(1));
 		else
 		{ 
@@ -4424,7 +4424,7 @@ void COM_UnPAK_f(void)
 	const char* dirs_to_try[] = {
 		com_gamedir,
 		com_basedir,
-		va("%s/id1", com_basedir)
+		va("%s/kuzbass", com_basedir)
 	};
 
 	const char* exts_to_try[] = { "pak", "pk3", "kpf" };
@@ -4746,7 +4746,7 @@ qboolean CompletePAKList(const char* partial, void* unused)
 	if (com_basedir[0] != '\0')
 	{
 #ifdef _WIN32
-		q_snprintf(filestring, sizeof(filestring), "%s\\id1\\*.*", com_basedir);
+		q_snprintf(filestring, sizeof(filestring), "%s\\kuzbass\\*.*", com_basedir);
 		fhnd = FindFirstFile(filestring, &fdat);
 		if (fhnd != INVALID_HANDLE_VALUE)
 		{
@@ -4757,7 +4757,7 @@ qboolean CompletePAKList(const char* partial, void* unused)
 			FindClose(fhnd);
 		}
 #else
-		q_snprintf(filestring, sizeof(filestring), "%s/id1", com_basedir);
+		q_snprintf(filestring, sizeof(filestring), "%s/kuzbass", com_basedir);
 		dir_p = opendir(filestring);
 		if (dir_p)
 		{
@@ -5594,7 +5594,7 @@ void Write_Log (const char* log_message, const char* filename)
 	// Construct the full path of the file
 	strncpy(fname, com_basedir, MAX_OSPATH - 1);
 	fname[MAX_OSPATH - 1] = '\0';  // Ensure null termination
-	strncat(fname, "/id1/backups/", MAX_OSPATH - strlen(fname) - 1);
+	strncat(fname, "/kuzbass/backups/", MAX_OSPATH - strlen(fname) - 1);
 	strncat(fname, filename, MAX_OSPATH - strlen(fname) - 1);
 
 	// Open the file in append+read mode
@@ -5635,7 +5635,7 @@ void Write_List(filelist_item_t* list, const char* list_name) // woods #bookmark
 	char fname[MAX_OSPATH];
 	FILE* log_file;
 
-	q_snprintf(fname, sizeof(fname), "%s/id1/backups/%s", com_basedir, list_name);
+	q_snprintf(fname, sizeof(fname), "%s/kuzbass/backups/%s", com_basedir, list_name);
 
 	log_file = fopen(fname, "w");
 	if (!log_file)

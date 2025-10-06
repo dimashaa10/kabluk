@@ -25,7 +25,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "quakedef.h"
 
 extern cvar_t r_drawflat, gl_overbright_models, gl_fullbrights, r_lerpmodels, r_lerpmove; //johnfitz
-extern cvar_t scr_fov, cl_gun_fovscale; // woods #zoom (ironwail)
+extern cvar_t scr_fov, cl_gun_fovscale, cl_gun_x, cl_gun_y, cl_gun_z;
 extern cvar_t r_coloredpowerupglow; // woods
 extern cvar_t r_model_light_desat; // woods - #desat
 extern cvar_t r_model_light_desat_list; // woods - #desat
@@ -1966,6 +1966,9 @@ void R_SetupAliasLighting (entity_t	*e)
 	lightcolor[2] *= e->netstate.colormod[2] / 32.0;
 }
 
+
+
+
 /*
 =================
 R_DrawAliasModel -- johnfitz -- almost completely rewritten
@@ -1992,6 +1995,9 @@ void R_DrawAliasModel (entity_t *e)
 
 	glsl = &r_alias_glsl[(paliashdr->poseverttype==PV_IQM&&lerpdata.bonestate)?ALIAS_GLSL_SKELETAL:ALIAS_GLSL_BASIC];
 
+	if (lerpdata.pose1 == lerpdata.pose2)
+		lerpdata.blend = 0.f;
+
 	if (e->eflags & EFLAGS_VIEWMODEL)
 	{
 		if (skyroom_drawing)
@@ -2007,7 +2013,14 @@ void R_DrawAliasModel (entity_t *e)
 
 		//FIXME: this needs to go. combine with depthrange and explicit viewmodel-only fov into a different projection matrix..
 		if (r_refdef.basefov > 90.f && cl_gun_fovscale.value)
-			fovscale = 1.0f / tan(DEG2RAD(r_refdef.basefov / 2.0)) / cl_gun_fovscale.value; // woods
+		{
+			fovscale = tan(r_refdef.basefov * (0.5f * M_PI / 180.f));
+			fovscale = 1.f + (fovscale - 1.f) * cl_gun_fovscale.value;
+		}
+
+		VectorMA(lerpdata.origin, cl_gun_x.value * paliashdr->scale[0] * fovscale, vright, lerpdata.origin);
+		VectorMA(lerpdata.origin, cl_gun_y.value * paliashdr->scale[1] * fovscale, vup, lerpdata.origin);
+		VectorMA(lerpdata.origin, cl_gun_z.value * paliashdr->scale[2], vpn, lerpdata.origin);
 	}
 	else
 	{

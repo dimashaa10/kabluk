@@ -431,10 +431,10 @@ void Log_Last_Demo_f (void) // woods #lastdemo
 	FILE* f;
 	char demodir[MAX_OSPATH];
 
-	q_snprintf(demodir, sizeof(demodir), "%s/id1/backups", com_basedir);
+	q_snprintf(demodir, sizeof(demodir), "%s/kuzbass/backups", com_basedir);
 	Sys_mkdir(demodir);
 
-	f = fopen(va("%s/id1/backups/%s.txt", com_basedir, "lastdemo"), "w");
+	f = fopen(va("%s/kuzbass/backups/%s.txt", com_basedir, "lastdemo"), "w");
 
 	if (!f)
 	{
@@ -452,7 +452,7 @@ void Load_Last_Demo (void) // woods #lastdemo
 	FILE* f;
 	char demodir[MAX_OSPATH];
 
-	q_snprintf(demodir, sizeof(demodir), "%s/id1/backups/lastdemo.txt", com_basedir);
+	q_snprintf(demodir, sizeof(demodir), "%s/kuzbass/backups/lastdemo.txt", com_basedir);
 
 	f = fopen(demodir, "r");
 	if (!f)

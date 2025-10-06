@@ -1842,7 +1842,7 @@ void Draw_ConsoleBackground (void)
 
 			/* Fallback: behave like scr_conback "" (use gfx/conback.lmp). */
 			if (!pic) {
-				pic = Draw_CachePic("gfx/conback.lmp");
+				pic = Draw_CachePic("gfx/conback2.lmp");
 			}
 
 		pic->width = vid.conwidth;
@@ -2037,17 +2037,17 @@ Draw_GetMenuTransform -- woods #mousemenu (iw)
 void Draw_GetMenuTransform(vrect_t* bounds, vrect_t* viewport)
 {
 	float s;
-	s = q_min((float)glwidth / 320.0, (float)glheight / 200.0);
+	s = q_min((float)glwidth / 640.0, (float)glheight / 400.0);
 	s = CLAMP(1.0, scr_menuscale.value, s);
 	// ericw -- doubled width to 640 to accommodate long keybindings
 	bounds->x = 0;
 	bounds->y = 0;
 	bounds->width = 640;
-	bounds->height = 200;
+	bounds->height = 400;
 	viewport->x = glx + (glwidth - 320 * s) / 2;
 	viewport->y = gly + (glheight - 200 * s) / 2;
 	viewport->width = 640 * s;
-	viewport->height = 200 * s;
+	viewport->height = 400 * s;
 }
 
 float canvas_scaling; // woods #autoid
@@ -2104,14 +2104,14 @@ void GL_SetCanvas (canvastype newcanvas)
 		glViewport (glx + (glwidth - 320*s) / 2, gly + (glheight - 200*s) / 2, 640*s, 200*s);
 		break;
 	case CANVAS_MENU2:
-		s = q_min((float)glwidth / 320.0, (float)glheight / 200.0);
+		s = q_min((float)glwidth / 640.0, (float)glheight / 400.0);
 		s = CLAMP(1.0, scr_menuscale.value-1, s);
 		// ericw -- doubled width to 640 to accommodate long keybindings
 		glOrtho(0, 640, 200, 0, -99999, 99999);
 		glViewport(glx + (glwidth - 320 * s) / 2, gly + (glheight - 200 * s) / 2, 640 * s, 200 * s);
 		break;
 	case CANVAS_MENUQC:
-		s = q_min((float)glwidth / 320.0, (float)glheight / 200.0);
+		s = q_min((float)glwidth / 640.0, (float)glheight / 400.0);
 		s = CLAMP (1.0, scr_menuscale.value, s);
 		glOrtho (0, glwidth/s, glheight/s, 0, -99999, 99999);
 		glViewport (glx, gly, glwidth, glheight);

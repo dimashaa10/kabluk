@@ -85,6 +85,7 @@ typedef struct entity_s
 	byte					eflags;			//spike -- mostly a mirror of netstate, but handles tag inheritance (eww!)
 	byte					alpha;			//johnfitz -- alpha
 	byte					lerpflags;		//johnfitz -- lerping
+	byte					scale;
 
 	union
 	{

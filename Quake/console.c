@@ -554,12 +554,12 @@ void Ghost_ID_Backup_f (void)
 	char ghost[MAX_OSPATH];
 	char str[6];
 
-	q_snprintf(ghost, sizeof(ghost), "%s/id1/backups", com_basedir); //  create backups folder if not there
+	q_snprintf(ghost, sizeof(ghost), "%s/kuzbass/backups", com_basedir); //  create backups folder if not there
 	Sys_mkdir(ghost);
 
 	sprintf(str, "ghost");
 
-	f = fopen(va("%s/id1/backups/%s.txt", com_basedir, str), "w");
+	f = fopen(va("%s/kuzbass/backups/%s.txt", com_basedir, str), "w");
 
 	if (!f)
 	{

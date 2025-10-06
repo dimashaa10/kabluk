@@ -808,7 +808,7 @@ void Load_Ghost_ID_f (void)
 
 	FILE* f;
 
-	f = fopen(va("%s/id1/backups/ghost.txt", com_basedir), "r");
+	f = fopen(va("%s/kuzbass/backups/ghost.txt", com_basedir), "r");
 
 	if (f == NULL) // lets not load backup
 	{
@@ -954,7 +954,7 @@ void Cmd_PrintTxt_f(void)
 
 	if (Cmd_Argc() != 2)
 	{
-		Con_Printf("\nprinttxt <txtfile> : prints a text file located in quake folder\n\nexample: printtxt id1/config.cfg or printtxt history.txt\n\n");
+		Con_Printf("\nprinttxt <txtfile> : prints a text file located in quake folder\n\nexample: printtxt kuzbass/config.cfg or printtxt history.txt\n\n");
 		return;
 	}
 
@@ -996,7 +996,7 @@ void Cmd_History_f(void)
 	
 		if (!strcmp(secondary, "servers") || !strcmp(secondary, "-s") || !strcmp(secondary, "s"))
 		{ 
-			Cmd_ExecuteString("printtxt id1/backups/servers.txt\n", src_command);
+			Cmd_ExecuteString("printtxt kuzbass/backups/servers.txt\n", src_command);
 			return;
 		}
 	
@@ -1009,7 +1009,7 @@ void Cmd_History_f(void)
 		if (!strcmp(secondary, "all") || !strcmp(secondary, "-a") || !strcmp(secondary, "a"))
 		{
 			Con_Printf("\n^mserver history:\n");
-			Cmd_ExecuteString("printtxt id1/backups/servers.txt\n", src_command);
+			Cmd_ExecuteString("printtxt kuzbass/backups/servers.txt\n", src_command);
 			Con_Printf("^mconsole history:\n");
 			Cmd_ExecuteString("printtxt history.txt\n", src_command);
 			return;

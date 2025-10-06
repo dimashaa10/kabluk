@@ -73,7 +73,7 @@ void Host_Quit_f (void)
 	Host_ShutdownServer(false);
 
 	if (!cl_afk.value) // if I disable it, lets delete it
-		remove(va("%s/id1/backups/name.txt", com_basedir));
+		remove(va("%s/kuzbass/backups/name.txt", com_basedir));
 
 	Sys_Quit ();
 }
@@ -294,7 +294,7 @@ void InitializeMapDescJSON(void)
 	char fname[MAX_OSPATH];
 	FILE* file;
 
-	q_snprintf(fname, sizeof(fname), "%s/id1/backups/mapdesc.json", com_basedir);
+	q_snprintf(fname, sizeof(fname), "%s/kuzbass/backups/mapdesc.json", com_basedir);
 
 	file = fopen(fname, "r");
 	if (file) {
@@ -317,7 +317,7 @@ void SaveMapDescriptionsToJSON(filelist_item_t* extralevels)
 	char fname[MAX_OSPATH];
 	FILE* file;
 
-	if (q_snprintf(fname, sizeof(fname), "%s/id1/backups/mapdesc.json", com_basedir) >= sizeof(fname)) {
+	if (q_snprintf(fname, sizeof(fname), "%s/kuzbass/backups/mapdesc.json", com_basedir) >= sizeof(fname)) {
 		Con_DPrintf("Path too long for buffer\n");
 		return;
 	}
@@ -378,7 +378,7 @@ void LoadMapDescriptionsFromJSON(filelist_item_t** extralevels_from_json)
 
 	InitializeMapDescJSON();
 
-	q_snprintf(fname, sizeof(fname), "%s/id1/backups/mapdesc.json", com_basedir);
+	q_snprintf(fname, sizeof(fname), "%s/kuzbass/backups/mapdesc.json", com_basedir);
 
 	file = fopen(fname, "rb");
 	if (!file) {
@@ -642,7 +642,7 @@ void FolderList_Init(void)
 		}
 	} while (FindNextFile(fhnd, &fdat));
 
-	FolderList_Add ("id1");
+	FolderList_Add ("kuzbass");
 
 	FindClose(fhnd);
 }
@@ -673,7 +673,7 @@ void FolderList_Init(void)
 		closedir(mod_dir_p);
 	}
 
-	FolderList_Add("id1");
+	FolderList_Add("kuzbass");
 
 	closedir(dir_p);
 }
@@ -770,13 +770,13 @@ void ServerList_Init(void)
 	int i;
 	char	name[MAX_OSPATH];
 
-	q_snprintf(name, sizeof(name), "%s/id1", com_basedir); //  make an id1 folder if it doesnt exist already #smartafk
+	q_snprintf(name, sizeof(name), "%s/kuzbass", com_basedir); //  make an id1 folder if it doesnt exist already #smartafk
 	Sys_mkdir(name);
 
-	q_snprintf(name, sizeof(name), "%s/id1/backups", com_basedir); //  create backups folder if not there
+	q_snprintf(name, sizeof(name), "%s/kuzbass/backups", com_basedir); //  create backups folder if not there
 	Sys_mkdir(name);
 
-	FILE* file = fopen(va("%s/id1/backups/%s", com_basedir, SERVERLIST), "r");
+	FILE* file = fopen(va("%s/kuzbass/backups/%s", com_basedir, SERVERLIST), "r");
 	
 	if (file == NULL) {
 		return;
@@ -818,13 +818,13 @@ void BookmarksList_Init(void)
 {
 	char	name[MAX_OSPATH];
 
-	q_snprintf(name, sizeof(name), "%s/id1", com_basedir); //  make an id1 folder if it doesnt exist already #smartafk
+	q_snprintf(name, sizeof(name), "%s/kuzbass", com_basedir); //  make an id1 folder if it doesnt exist already #smartafk
 	Sys_mkdir(name);
 
-	q_snprintf(name, sizeof(name), "%s/id1/backups", com_basedir); //  create backups folder if not there
+	q_snprintf(name, sizeof(name), "%s/kuzbass/backups", com_basedir); //  create backups folder if not there
 	Sys_mkdir(name);
 
-	FILE* file = fopen(va("%s/id1/backups/%s", com_basedir, BOOKMARKSLIST), "r");
+	FILE* file = fopen(va("%s/kuzbass/backups/%s", com_basedir, BOOKMARKSLIST), "r");
 
 	if (file == NULL) {
 		return;
@@ -1627,9 +1627,9 @@ void TextList_Init(void)
 
 	char id1Path[MAX_OSPATH]; // always search the "id1" directory
 #ifdef _WIN32
-	q_snprintf(id1Path, sizeof(id1Path), "%s\\id1", com_basedir);
+	q_snprintf(id1Path, sizeof(id1Path), "%s\\kuzbass", com_basedir);
 #else
-	q_snprintf(id1Path, sizeof(id1Path), "%s/id1", com_basedir);
+	q_snprintf(id1Path, sizeof(id1Path), "%s/kuzbass", com_basedir);
 #endif
 	FileList_Recurse(id1Path, 0, initialBasePath);
 
@@ -1647,7 +1647,7 @@ void TextList_Init(void)
 	if (lastSep)
 		memmove(gameDirName, lastSep + 1, strlen(lastSep));
 
-	if (q_strcasecmp(gameDirName, "id1") != 0) // if com_gamedir is not "id1", also search com_gamedir
+	if (q_strcasecmp(gameDirName, "kuzbass") != 0) // if com_gamedir is not "id1", also search com_gamedir
 	{
 		FileList_Recurse(com_gamedir, 0, initialBasePath);
 	}
@@ -2886,13 +2886,13 @@ void Log_Last_Server_f(void)
 
 	char server[MAX_OSPATH];
 
-	q_snprintf(server, sizeof(server), "%s/id1/backups", com_basedir); //  create backups folder if not there
+	q_snprintf(server, sizeof(server), "%s/kuzbass/backups", com_basedir); //  create backups folder if not there
 	Sys_mkdir(server);
 
 	if (!q_strcasecmp(lastmphost, "local"))
 		return;
 
-	f = fopen(va("%s/id1/backups/%s.txt", com_basedir, "lastserver"), "w");
+	f = fopen(va("%s/kuzbass/backups/%s.txt", com_basedir, "lastserver"), "w");
 
 	if (!f)
 	{
@@ -2915,7 +2915,7 @@ void Host_ConnectToLastServer_f (void) // woods #connectlast (Qrack)
 	FILE* f;
 	char name[NET_NAMELEN];
 
-	f = fopen(va("%s/id1/backups/%s.txt", com_basedir, "lastserver"), "r+");
+	f = fopen(va("%s/kuzbass/backups/%s.txt", com_basedir, "lastserver"), "r+");
 
 	if (f == NULL)
 	{
@@ -3621,7 +3621,7 @@ void Host_Name_Backup_f(void)
 	char	name[MAX_OSPATH];
 	char str[24];
 
-	q_snprintf(name, sizeof(name), "%s/id1/backups", com_basedir); //  create backups folder if not there
+	q_snprintf(name, sizeof(name), "%s/kuzbass/backups", com_basedir); //  create backups folder if not there
 	Sys_mkdir(name);
 
 	sprintf(str, "name");
@@ -3630,7 +3630,7 @@ void Host_Name_Backup_f(void)
 	// config.cfg cvars
 	if (host_initialized && !isDedicated && !host_parms->errstate)
 	{
-		f = fopen(va("%s/id1/backups/%s.txt", com_basedir, str), "w");
+		f = fopen(va("%s/kuzbass/backups/%s.txt", com_basedir, str), "w");
 
 		if (!f)
 		{
@@ -3655,7 +3655,7 @@ void Host_Name_Load_Backup_f(void)
 
 	FILE* f;
 
-		f = fopen(va("%s/id1/backups/name.txt", com_basedir), "r");
+		f = fopen(va("%s/kuzbass/backups/name.txt", com_basedir), "r");
 
 		if (f == NULL) // lets not load backup
 		{

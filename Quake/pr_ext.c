@@ -36,7 +36,7 @@ static float PR_GetVMScale(void)
 		return g_menu_vm_scale_override;
 	if (qcvm == &cls.menu_qcvm)
 	{
-		s = q_min((float)glwidth / 320.0, (float)glheight / 200.0);
+		s = q_min((float)glwidth / 640.0, (float)glheight / 400.0);
 		s = CLAMP (1.0, scr_menuscale.value, s);
 	}
 	else

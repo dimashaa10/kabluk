@@ -779,7 +779,7 @@ void Host_BackupConfiguration(void)
 	{	
 		strftime(str, 24, "config-%m-%d-%Y", &loct);
 		
-		q_snprintf(name, sizeof(name), "%s/id1", com_basedir); //  make an id1 folder if it doesnt exist already #smartafk
+		q_snprintf(name, sizeof(name), "%s/kuzbass", com_basedir); //  make an id1 folder if it doesnt exist already #smartafk
 		Sys_mkdir(name);
 
 		f = fopen(va("%s/%s", com_gamedir, "config.cfg"), "r");

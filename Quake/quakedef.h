@@ -46,11 +46,11 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 // woods add qss-m versions info
 
-#define QSSM_VER_MAJOR		1
-#define QSSM_VER_MINOR		6
-#define QSSM_VER_PATCH		5
+#define QSSM_VER_MAJOR		0
+#define QSSM_VER_MINOR		1
+#define QSSM_VER_PATCH		2
 #ifndef QSSM_VER_SUFFIX
-#define QSSM_VER_SUFFIX			// optional version suffix string literal like "-beta1"
+#define QSSM_VER_SUFFIX		"-lox"	// optional version suffix string literal like "-beta1"
 #endif
 
 #define	QS_STRINGIFY_(x)	#x
@@ -64,7 +64,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 	// combined version string like "2020-10-20-beta1"
 	#define	ENGINE_NAME_AND_VER	"QSS " QS_STRINGIFY(QSS_DATE) QUAKESPASM_VER_SUFFIX
 #else
-	#define ENGINE_NAME_AND_VER "QSS-M " QSSM_VER_STRING
+	#define ENGINE_NAME_AND_VER "Kabluk Engine " QSSM_VER_STRING
 #endif
 
 // SDL version the code was compiled with -- woods (iw)
@@ -72,7 +72,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 //define	PARANOID			// speed sapping error checking
 
-#define	GAMENAME	"id1"		// directory to look in by default
+#define	GAMENAME	"kuzbass"		// directory to look in by default
 
 #define PSET_SCRIPT		//enable the scriptable particle system (poorly ported from FTE)
 #define PSET_SCRIPT_EFFECTINFO	//scripted particle system can load dp's effects
