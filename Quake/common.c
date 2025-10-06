@@ -3437,7 +3437,7 @@ static void COM_AddGameDirectory (const char *dir)
 	char purename[MAX_OSPATH];
 	qboolean been_here = false;
 	FILE *listing;
-	const char* enginepacknames[] = { "quakespasm", "qssm" }; // woods
+	const char* enginepacknames[] = { "quakespasm", "kabluk" }; // woods
 	int num_enginepacks = sizeof(enginepacknames) / sizeof(enginepacknames[0]); // Number of engine pack names
 
 	if (*dir == '*')

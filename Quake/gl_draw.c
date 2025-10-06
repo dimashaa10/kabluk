@@ -2042,12 +2042,12 @@ void Draw_GetMenuTransform(vrect_t* bounds, vrect_t* viewport)
 	// ericw -- doubled width to 640 to accommodate long keybindings
 	bounds->x = 0;
 	bounds->y = 0;
-	bounds->width = 640;
-	bounds->height = 400;
+	bounds->width = 320;
+	bounds->height = 200;
 	viewport->x = glx + (glwidth - 320 * s) / 2;
 	viewport->y = gly + (glheight - 200 * s) / 2;
-	viewport->width = 640 * s;
-	viewport->height = 400 * s;
+	viewport->width = 320 * s;
+	viewport->height = 200 * s;
 }
 
 float canvas_scaling; // woods #autoid
