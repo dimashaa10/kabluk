@@ -1303,7 +1303,7 @@ void M_Main_Draw (void) // woods #modsmenu #demosmenu (iw)
 	glEnable(GL_ALPHA_TEST);
 	glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
 
-	M_DrawTransPic(16, 4, Draw_CachePic("gfx/qplaque.lmp"));
+	M_DrawTransPic(16, 4, Draw_CachePic("tga/qplaque.tga"));
 
 	//qpic_t* pic = Draw_CachePic(va("gfx/david/tanec%i.lmp", (int)(realtime * 10) % 29 + 1));
 	//M_DrawTransPic(320, 2, pic);
@@ -10542,8 +10542,12 @@ void M_LanConfig_Draw (void)
 	const char	*startJoin;
 	//const char	*protocol;
 
+
+	p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.lmp", (int)(realtime * 8) % 24 + 1));
+	M_DrawPic((320 - p->width) / 2, -64, p);
+
 	M_DrawTransPic (16, 4, Draw_CachePic ("gfx/qplaque.lmp") );
-	p = Draw_CachePic ("gfx/p_multi.lmp");
+	p = Draw_CachePic(va("gfx/a_join/joining%i.lmp", (int)(realtime * 2) % 4 + 1));
 	basex = (320-p->width)/2;
 	M_DrawPic (basex, 4, p);
 
@@ -12031,8 +12035,11 @@ void M_GameOptions_Draw (void)
 	qpic_t	*p;
 	int y = 40;
 
+	p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.lmp", (int)(realtime * 8) % 24 + 1));
+	M_DrawPic((320 - p->width) / 2, -64, p);
+
 	M_DrawTransPic (16, 4, Draw_CachePic ("gfx/qplaque.lmp") );
-	p = Draw_CachePic ("gfx/p_multi.lmp");
+	p = Draw_CachePic(va("gfx/a_creat/creating%i.lmp", (int)(realtime * 2) % 3 + 1));
 	M_DrawPic ( (320-p->width)/2, 4, p);
 
 	M_DrawTextBox (152, y-8, 10, 1);
@@ -12397,7 +12404,7 @@ void M_Search_Draw (void)
 	qpic_t	*p;
 	int x;
 
-	p = Draw_CachePic ("gfx/p_multi.lmp");
+	p = Draw_CachePic(va("gfx/a_search/search%i.lmp", (int)(realtime * 2) % 3 + 1));
 	M_DrawPic ( (320-p->width)/2, 4, p);
 	x = (320/2) - ((12*8)/2) + 4;
 	M_DrawTextBox (x-8, 32, 12, 1);
@@ -12421,7 +12428,7 @@ void M_Search_Draw (void)
 		return;
 	}
 
-	M_PrintWhite ((320/2) - ((22*8)/2), 64, "No Quake servers found");
+	M_PrintWhite ((320/2) - ((22*8)/2), 64, "No Kuzba$$ servers found");
 	if ((realtime - searchCompleteTime) < 3.0)
 		return;
 
@@ -12958,7 +12965,10 @@ void M_ServerList_Draw (void)
 	x = 16;
 	y = 28;
 	cols = 36;
+	qpic_t* p;
 
+	p = Draw_CachePic(va("gfx/a_servs/servs%i.lmp", (int)(realtime * 2) % 3 + 1));
+	M_DrawPic((320 - p->width) / 2, 0, p);
 	serversmenu.x = x;
 	serversmenu.y = y;
 	serversmenu.cols = cols;
@@ -12974,8 +12984,8 @@ void M_ServerList_Draw (void)
 		M_Ticker_Update(&serversmenu.ticker);
 	}
 
-	Draw_String(x, y - 28, "Servers");
-	M_DrawQuakeBar(x - 8, y - 16, cols + 2);
+	//Draw_String(x, y - 28, "Servers");
+	//M_DrawQuakeBar(x - 8, y - 16, cols + 2);
 
 	M_List_GetVisibleRange(&serversmenu.list, &firstvis, &numvis);
 	for (i = 0; i < numvis; i++) {

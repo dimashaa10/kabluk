@@ -2021,6 +2021,13 @@ void R_DrawAliasModel (entity_t *e)
 		VectorMA(lerpdata.origin, cl_gun_x.value * paliashdr->scale[0] * fovscale, vright, lerpdata.origin);
 		VectorMA(lerpdata.origin, cl_gun_y.value * paliashdr->scale[1] * fovscale, vup, lerpdata.origin);
 		VectorMA(lerpdata.origin, cl_gun_z.value * paliashdr->scale[2], vpn, lerpdata.origin);
+
+		glPushMatrix();
+		glLoadIdentity();
+		glRotatef(-90, 1, 0, 0);	    // put Z going up
+		glRotatef(90, 0, 0, 1);	    // put Z going up
+
+		glDepthRange(0, 0.3);
 	}
 	else
 	{

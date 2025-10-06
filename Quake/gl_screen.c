@@ -108,10 +108,10 @@ void Sbar_SortFrags_TeamOrder(qboolean sort_ascending); // woods #teamscoreboard
 qboolean Sbar_ShouldSortByTeam(void); // woods #teamscoreboard
 
 //johnfitz -- new cvars
-cvar_t		scr_menuscale = {"scr_menuscale", "1", CVAR_ARCHIVE};
+cvar_t		scr_menuscale = {"scr_menuscale", "2", CVAR_ARCHIVE};
 cvar_t		scr_centerprintbg = {"scr_centerprintbg", "0", CVAR_ARCHIVE}; // 0 = off; 1 = text box; 2 = menu box; 3 = menu strip -- woods #centerprintbg (iw)
 cvar_t		scr_sbarscale = {"scr_sbarscale", "1", CVAR_ARCHIVE};
-cvar_t		scr_sbaralpha = {"scr_sbaralpha", "0.75", CVAR_ARCHIVE}; // woods #sbarstyles
+cvar_t		scr_sbaralpha = {"scr_sbaralpha", "0.99", CVAR_ARCHIVE}; // woods #sbarstyles
 cvar_t		scr_sbaralphaqwammo = {"scr_sbaralphaqwammo", "1", CVAR_ARCHIVE};
 cvar_t		scr_sbarshowqeammo = {"scr_sbarshowqeammo", "1", CVAR_ARCHIVE}; // woods
 cvar_t		scr_sbar = {"scr_sbar", "1", CVAR_ARCHIVE}; // woods #sbarstyles
@@ -148,7 +148,7 @@ cvar_t		cl_predict = { "cl_predict", "0", CVAR_NONE }; // 2021 re-release
 
 cvar_t		scr_demobar_timeout = {"scr_demobar_timeout", "1", CVAR_ARCHIVE}; // woods (iw) #democontrols
 cvar_t		scr_viewsize = {"viewsize","100", CVAR_ARCHIVE};
-cvar_t		scr_fov = {"fov","90",CVAR_ARCHIVE};	// 10 - 170
+cvar_t		scr_fov = {"fov","104",CVAR_ARCHIVE};	// 10 - 170
 cvar_t		scr_fov_adapt = {"fov_adapt","1",CVAR_ARCHIVE};
 cvar_t		scr_zoomfov = {"zoom_fov","30",CVAR_ARCHIVE};	// 10 - 170 // woods #zoom (ironwail)
 cvar_t		scr_zoomspeed = {"zoom_speed","8",CVAR_ARCHIVE}; // woods #zoom (ironwail)
