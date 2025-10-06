@@ -1274,6 +1274,25 @@ void M_Menu_Main_f (void)
 	IN_UpdateGrabs();
 }
 
+void M_DrawLogo (void)
+{
+	qpic_t* p;
+
+	glDisable(GL_SCISSOR_TEST); // Отключаем clipping, если он включён
+	GL_SetCanvas(CANVAS_DEFAULT); // Переключаемся на полный экран (0,0 = верхний левый угол)
+
+	p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.lmp", (int)(realtime * 8) % 24 + 1));
+
+	// Рисуем в центре экрана (пример)
+	int logo_x = (glwidth - p->width) / 2;
+	int logo_y = 256;
+
+	M_DrawPic(logo_x, logo_y, p);
+
+	GL_SetCanvas(CANVAS_MENU); // Возвращаемся к меню-канвасу
+	glEnable(GL_SCISSOR_TEST); // Возвращаем clipping, если нужно
+}
+
 void M_Main_Draw (void) // woods #modsmenu #demosmenu (iw)
 {
 	int cursor, f;
@@ -1310,8 +1329,10 @@ void M_Main_Draw (void) // woods #modsmenu #demosmenu (iw)
 
 	p = Draw_CachePic(va("gfx/a_main/amain%i.bmp", (int)(realtime * 2) % 3 + 1));
 	M_DrawPic((320 - p->width) / 2, 4, p);
-	p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.lmp", (int)(realtime * 8) % 24 + 1));
-	M_DrawPic((320 - p->width) / 2, -64, p);
+	//p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.lmp", (int)(realtime * 8) % 24 + 1));
+	//M_DrawPic((320 - p->width) / 2, -64, p);
+	M_DrawLogo();
+
 
 	p = Draw_CachePic(va("gfx/a_mmenu/mainmenu%i.bmp", (int)(realtime * 1) % 2 + 1));
 	int split = 60;

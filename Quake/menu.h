@@ -100,6 +100,6 @@ void M_DrawCheckbox (int x, int y, int on);
 void M_DrawTextBox(int x, int y, int width, int lines); // woods (iw) #democontrols
 void M_DrawTextBox_WithAlpha (int x, int y, int width, int lines, float alpha); // woods #centerprintbg (iw)
 void M_PrintHighlight(int x, int y, const char* str, const char* search, int searchlen); // woods #centerprintbg (iw)
+void M_DrawLogo(void);
 
 #endif	/* _QUAKE_MENU_H */
-
