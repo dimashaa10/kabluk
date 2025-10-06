@@ -434,6 +434,9 @@ qboolean R_CullModelForEntity (entity_t *e);
 void R_RotateForEntity (vec3_t origin, vec3_t angles, unsigned char scale);
 void R_MarkLights (dlight_t *light, vec3_t lightorg, int framecount, int num, mnode_t *node);
 
+void R_EntityMatrix(float matrix[16], vec3_t origin, vec3_t angles, unsigned char scale);
+
+
 void R_InitParticles (void);
 void R_DrawParticles (void);
 void CL_RunParticles (void);

@@ -1974,7 +1974,8 @@ void R_SetupAliasLighting (entity_t	*e)
 R_DrawAliasModel -- johnfitz -- almost completely rewritten
 =================
 */
-void R_DrawAliasModel (entity_t *e)
+
+void R_DrawAliasModel(entity_t* e)
 {
 	aliasglsl_t *glsl;
 	aliashdr_t	*paliashdr;
@@ -1985,6 +1986,7 @@ void R_DrawAliasModel (entity_t *e)
 	int surf;
 	float		fovscale = 1.0f;
 	qmodel_t* clmodel = currententity->model;   // woods lightning alpha #lightalpha & doubleeyes 
+	float		model_matrix[16];
 
 	//
 	// setup pose/lerp data -- do it first so we don't miss updates due to culling
@@ -2001,31 +2003,30 @@ void R_DrawAliasModel (entity_t *e)
 	if (e->eflags & EFLAGS_VIEWMODEL)
 	{
 		if (skyroom_drawing)
-			return;	//no viewmodels inside skyrooms!
+			return;
 
-		//transform it relative to the view, by rebuilding the modelview matrix without the view position.
-		glPushMatrix ();
+		glPushMatrix();
 		glLoadIdentity();
-		glRotatef (-90,  1, 0, 0);	    // put Z going up
-		glRotatef (90,  0, 0, 1);	    // put Z going up
+		glRotatef(-90, 1, 0, 0);
+		glRotatef(90, 0, 0, 1);
 
-		glDepthRange (0, 0.3);
+		glDepthRange(0, 0.3);
 
-		//FIXME: this needs to go. combine with depthrange and explicit viewmodel-only fov into a different projection matrix..
 		if (r_refdef.basefov > 90.f && cl_gun_fovscale.value)
 		{
 			fovscale = tan(r_refdef.basefov * (0.5f * M_PI / 180.f));
 			fovscale = 1.f + (fovscale - 1.f) * cl_gun_fovscale.value;
 		}
 
-		VectorMA(lerpdata.origin, cl_gun_x.value * paliashdr->scale[0] * fovscale, vright, lerpdata.origin);
-		VectorMA(lerpdata.origin, cl_gun_y.value * paliashdr->scale[1] * fovscale, vup, lerpdata.origin);
-		VectorMA(lerpdata.origin, cl_gun_z.value * paliashdr->scale[2], vpn, lerpdata.origin);
+		// Тут ты можешь сдвинуть Z, не используя vpn
+		lerpdata.origin[0] += cl_gun_x.value * paliashdr->scale[0] * fovscale;
+		lerpdata.origin[1] += cl_gun_y.value * paliashdr->scale[1] * fovscale;
+		lerpdata.origin[2] += (cl_gun_z.value + 5.0f) * paliashdr->scale[2]; // тут Z-смещение
 
 		glPushMatrix();
 		glLoadIdentity();
-		glRotatef(-90, 1, 0, 0);	    // put Z going up
-		glRotatef(90, 0, 0, 1);	    // put Z going up
+		glRotatef(-90, 1, 0, 0);
+		glRotatef(90, 0, 0, 1);
 
 		glDepthRange(0, 0.3);
 	}
@@ -2040,8 +2041,13 @@ void R_DrawAliasModel (entity_t *e)
 		//
 		// transform it
 		//
+		
 		glPushMatrix ();
 	}
+
+	//R_EntityMatrix (model_matrix, lerpdata.origin, lerpdata.angles, e->scale);
+	//ApplyTranslation(model_matrix, paliashdr->scale_origin[0], paliashdr->scale_origin[1] * fovscale, paliashdr->scale_origin[2] * fovscale);
+	//ApplyScale(model_matrix, paliashdr->scale[0], paliashdr->scale[1] * fovscale, paliashdr->scale[2] * fovscale);
 
 	R_RotateForEntity (lerpdata.origin, lerpdata.angles, e->netstate.scale);
 

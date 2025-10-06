@@ -94,8 +94,8 @@ cvar_t		sfxvolume = {"volume", "0.7", CVAR_ARCHIVE};
 cvar_t		precache = {"precache", "1", CVAR_NONE};
 cvar_t		loadas8bit = {"loadas8bit", "0", CVAR_NONE};
 
-cvar_t		sndspeed = {"sndspeed", "11025", CVAR_NONE};
-cvar_t		snd_mixspeed = {"snd_mixspeed", "44100", CVAR_ARCHIVE};
+cvar_t		sndspeed = {"sndspeed", "48000", CVAR_NONE};
+cvar_t		snd_mixspeed = {"snd_mixspeed", "48000", CVAR_ARCHIVE};
 
 cvar_t		snd_waterfx = {"snd_waterfx", "1", CVAR_ARCHIVE}; // woods #waterfx (ironwail)
 

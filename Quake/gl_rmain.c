@@ -488,6 +488,81 @@ qboolean R_CullModelForEntity (entity_t *e)
 	return R_CullBox (mins, maxs);
 }
 
+
+/*
+===============
+R_EntityMatrix
+===============
+*/
+void R_EntityMatrix(float matrix[16], vec3_t origin, vec3_t angles, unsigned char scale)
+{
+	float scalefactor = ENTSCALE_DECODE(scale);
+	float yaw = DEG2RAD(angles[YAW]);
+	float pitch = angles[PITCH];
+	float roll = angles[ROLL];
+	if (pitch == 0.f && roll == 0.f)
+	{
+		float sy = sin(yaw) * scalefactor;
+		float cy = cos(yaw) * scalefactor;
+
+		// First column
+		matrix[0] = cy;
+		matrix[1] = sy;
+		matrix[2] = 0.f;
+		matrix[3] = 0.f;
+
+		// Second column
+		matrix[4] = -sy;
+		matrix[5] = cy;
+		matrix[6] = 0.f;
+		matrix[7] = 0.f;
+
+		// Third column
+		matrix[8] = 0.f;
+		matrix[9] = 0.f;
+		matrix[10] = scalefactor;
+		matrix[11] = 0.f;
+	}
+	else
+	{
+		float sy, sp, sr, cy, cp, cr;
+		pitch = DEG2RAD(pitch);
+		roll = DEG2RAD(roll);
+		sy = sin(yaw);
+		sp = sin(pitch);
+		sr = sin(roll);
+		cy = cos(yaw);
+		cp = cos(pitch);
+		cr = cos(roll);
+
+		// https://www.symbolab.com/solver/matrix-multiply-calculator FTW!
+
+		// First column
+		matrix[0] = scalefactor * cy * cp;
+		matrix[1] = scalefactor * sy * cp;
+		matrix[2] = scalefactor * sp;
+		matrix[3] = 0.f;
+
+		// Second column
+		matrix[4] = scalefactor * (-cy * sp * sr - cr * sy);
+		matrix[5] = scalefactor * (cr * cy - sy * sp * sr);
+		matrix[6] = scalefactor * cp * sr;
+		matrix[7] = 0.f;
+
+		// Third column
+		matrix[8] = scalefactor * (sy * sr - cr * cy * sp);
+		matrix[9] = scalefactor * (-cy * sr - cr * sy * sp);
+		matrix[10] = scalefactor * cr * cp;
+		matrix[11] = 0.f;
+	}
+
+	// Fourth column
+	matrix[12] = origin[0];
+	matrix[13] = origin[1];
+	matrix[14] = origin[2];
+	matrix[15] = 1.f;
+}
+
 /*
 ===============
 R_RotateForEntity -- johnfitz -- modified to take origin and angles instead of pointer to entity

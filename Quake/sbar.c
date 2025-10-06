@@ -1863,6 +1863,7 @@ void Sbar_DrawFace (void)
 	Sbar_DrawPic(112, 0, face_pic);
 
 	// Handle damage hue first (highest priority)
+	
 	if (cl.time <= cl.faceanimtime && cl_damagehue.value && cl_damagehuecolor.value)
 	{
 		plcolour_t color = CL_PLColours_Parse(cl_damagehuecolor.string);
@@ -1894,11 +1895,11 @@ void Sbar_DrawFace_Team (void)
 	if (clampedSbar == 3 && scr_viewsize.value <= 110)
 		{
 			GL_SetCanvas(CANVAS_BOTTOMLEFTQE);
-			Draw_Fill(18, 164, 23, 1, color, .7); // top
-			Draw_Fill(18, 187, 23, 1, color, .7); // bottom
+			//Draw_Fill(18, 164, 23, 1, color, .7); // top
+			//Draw_Fill(18, 187, 23, 1, color, .7); // bottom
 
-			Draw_Fill(18, 164, 1, 24, color, .7); // left
-			Draw_Fill(41, 164, 1, 24, color, .7);  // right
+			//Draw_Fill(18, 164, 1, 24, color, .7); // left
+			//Draw_Fill(41, 164, 1, 24, color, .7);  // right
 		}
 
 	if (sb_showscores == true)
@@ -1909,8 +1910,8 @@ void Sbar_DrawFace_Team (void)
 		{
 			GL_SetCanvas(CANVAS_SBAR);
 
-			Draw_Fill(111, 24, 1, 25, color, .7); // left
-			Draw_Fill(136, 24, 1, 25, color, .7);  // right
+			//Draw_Fill(111, 24, 1, 25, color, .7); // left
+			//Draw_Fill(136, 24, 1, 25, color, .7);  // right
 		}
 	}
 }
@@ -2794,10 +2795,10 @@ void Sbar_IntermissionOverlay (void)
 
 	GL_SetCanvas (CANVAS_MENU); //johnfitz
 
-	pic = Draw_CachePic ("gfx/complete.lmp");
+	pic = Draw_CachePic(va("gfx/a_cmplt/acmplt%i.bmp", (int)(realtime * 2) % 5 + 1));
 	Draw_Pic (64, 24, pic);
 
-	pic = Draw_CachePic ("gfx/inter.lmp");
+	pic = Draw_CachePic(va("gfx/a_inter/ainter%i.bmp", (int)(realtime * 1) % 2 + 1));
 	Draw_Pic (0, 56, pic);
 
 	dig = cl.completed_time/60;
@@ -2828,6 +2829,6 @@ void Sbar_FinaleOverlay (void)
 
 	GL_SetCanvas (CANVAS_MOD); //johnfitz -- woods, maintain alignment
 
-	pic = Draw_CachePic ("gfx/finale.lmp");
+	pic = Draw_CachePic(va("gfx/a_cngrt/apsmp%i.lmp", (int)(realtime * 2) % 3 + 1));
 	Draw_Pic ( (320 - pic->width)/2, 16, pic); //johnfitz -- stretched menus
 }
