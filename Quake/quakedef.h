@@ -48,7 +48,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #define QSSM_VER_MAJOR		0
 #define QSSM_VER_MINOR		1
-#define QSSM_VER_PATCH		3
+#define QSSM_VER_PATCH		4
 #ifndef QSSM_VER_SUFFIX
 #define QSSM_VER_SUFFIX		"-lox"	// optional version suffix string literal like "-beta1"
 #endif
@@ -276,6 +276,8 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define	SERVERLIST	"servers.txt"	// woods for server history + tab complete #serverlist
 #define	BOOKMARKSLIST	"bookmarks.txt"	// woods #bookmarksmenu
 
+#define USE_JSON_UI
+
 #if defined(__APPLE__) && defined(__aarch64__)
 #define MACBOOK_ARM_HACK // woods #collinear
 #endif
@@ -355,6 +357,9 @@ typedef struct
 #include "glquake.h"
 #include "location.h"      // rook / woods #pqteam
 #include "iplog.h"		// JPG 1.05 - ip address logging // woods #iplog
+
+#include "cjson.h"
+#include "cjson_utils.h"
 
 //=============================================================================
 

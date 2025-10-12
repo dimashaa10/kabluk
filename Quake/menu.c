@@ -34,6 +34,104 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include <dirent.h>
 #endif
 
+#ifdef USE_JSON_UI
+#include "cjson.h"
+#endif
+
+#ifdef USE_JSON_UI
+
+typedef struct {
+	char* type;
+	float x, y, width, height;
+	char* text;
+	char* background;
+	char* action;
+	char* src;
+} ui_element_t;
+
+char* read_file(const char* filename) {
+	FILE* file = fopen(filename, "rb");
+	if (!file) {
+		printf("Файл не найден: %s\n", filename);
+		return NULL;
+	}
+
+	fseek(file, 0, SEEK_END);
+	long length = ftell(file);
+	fseek(file, 0, SEEK_SET);
+
+	char* buffer = (char*)malloc(length + 1);
+	fread(buffer, 1, length, file);
+	buffer[length] = '\0';
+	fclose(file);
+
+	return buffer;
+}
+
+void RenderUIElement(ui_element_t* el) {
+	glColor3f(1, 1, 1); // Убедимся, что цвет белый
+
+	if (strcmp(el->type, "button") == 0) {
+		glColor3f(0.2f, 0.2f, 0.2f);
+		glBegin(GL_QUADS);
+		glVertex2f(el->x, el->y);
+		glVertex2f(el->x + el->width, el->y);
+		glVertex2f(el->x + el->width, el->y + el->height);
+		glVertex2f(el->x, el->y + el->height);
+		glEnd();
+
+		Draw_String(el->x + 10, el->y + 10, el->text);
+	}
+	else if (strcmp(el->type, "text") == 0) {
+		Draw_String(el->x, el->y, el->text);
+	}
+	else if (strcmp(el->type, "image") == 0) {
+		qpic_t* pic = Draw_CachePic(el->src);
+		if (pic) {
+			M_DrawPic(el->x, el->y, pic);
+		}
+	}
+}
+
+void ParseUI(const char* json_str) {
+	cJSON* root = cJSON_Parse(json_str);
+	if (!root) {
+		const char* error = cJSON_GetErrorPtr();
+		printf("Ошибка JSON: %s\n", error);
+		return;
+	}
+
+	cJSON* elements = cJSON_GetObjectItem(root, "elements");
+	if (cJSON_IsArray(elements)) {
+		int size = cJSON_GetArraySize(elements);
+		for (int i = 0; i < size; i++) {
+			cJSON* el = cJSON_GetArrayItem(elements, i);
+			// Парсим элемент
+			ui_element_t element = { 0 };
+			element.type = cJSON_GetStringValue(cJSON_GetObjectItem(el, "type"));
+			element.text = cJSON_GetStringValue(cJSON_GetObjectItem(el, "text"));
+			element.x = cJSON_GetObjectItem(el, "x")->valuedouble;
+			element.y = cJSON_GetObjectItem(el, "y")->valuedouble;
+			element.width = cJSON_GetObjectItem(el, "width")->valuedouble;
+			element.height = cJSON_GetObjectItem(el, "height")->valuedouble;
+
+			RenderUIElement(&element);
+		}
+	}
+
+	cJSON_Delete(root);
+}
+
+void M_DrawJSONUI() {
+	char* json_str = read_file("djui/ui.json"); 
+	if (json_str) {
+		ParseUI(json_str);
+		free(json_str);
+	}
+}
+
+#endif // USE_JSON_UI
+
 void (*vid_menucmdfn)(void); //johnfitz
 void (*vid_menudrawfn)(void);
 void (*vid_menukeyfn)(int key);
@@ -1295,6 +1393,7 @@ void M_DrawLogo (void)
 
 void M_Main_Draw (void) // woods #modsmenu #demosmenu (iw)
 {
+	
 	int cursor, f;
 	qpic_t* p;
 
@@ -1372,6 +1471,11 @@ void M_Main_Draw (void) // woods #modsmenu #demosmenu (iw)
 	if (!m_main_demos && cursor >= MAIN_DEMOS) cursor--;
 
 	M_DrawTransPic(54, 32 + cursor * 20, Draw_CachePic(va("gfx/menudot%i.lmp", f + 1)));
+/*
+#ifdef USE_JSON_UI
+	M_DrawJSONUI();
+#endif
+*/
 }
 
 static double m_lastkey_time;
