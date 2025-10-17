@@ -340,7 +340,7 @@ void Sys_Init (void)
 	VER_SET_CONDITION(conditionMask, VER_MINORVERSION, op);
 
 	if (!VerifyVersionInfo(&vinfo, VER_MAJORVERSION | VER_MINORVERSION, conditionMask))
-		Sys_Error ("QuakeSpasm requires at least Win95 or NT 4.0");
+		Sys_Error ("Kabluk Engine requires at least x64 OS");
 
 	// Check if we're on NT platform
 	vinfo.dwPlatformId = VER_PLATFORM_WIN32_NT;
@@ -417,7 +417,7 @@ void Sys_mkdir (const char *path)
 }
 
 static const char errortxt1[] = "\nERROR-OUT BEGIN\n\n";
-static const char errortxt2[] = "\nQUAKE ERROR: ";
+static const char errortxt2[] = "\nKABLUK ERROR: ";
 
 void Sys_Error (const char *error, ...)
 {

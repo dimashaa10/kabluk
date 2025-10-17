@@ -49,6 +49,7 @@ enum m_state_e {
 	m_demos, // woods #demosmenu
 	m_help,
 	m_quit,
+	m_casino,
 	m_lanconfig,
 	m_gameoptions,
 	m_search,
@@ -101,5 +102,8 @@ void M_DrawTextBox(int x, int y, int width, int lines); // woods (iw) #democontr
 void M_DrawTextBox_WithAlpha (int x, int y, int width, int lines, float alpha); // woods #centerprintbg (iw)
 void M_PrintHighlight(int x, int y, const char* str, const char* search, int searchlen); // woods #centerprintbg (iw)
 void M_DrawLogo(void);
+void M_Menu_Casino_f(void);
+void M_Casino_Draw(void);
+void M_Casino_Key(int key);
 
 #endif	/* _QUAKE_MENU_H */

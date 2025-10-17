@@ -304,6 +304,249 @@ void FileList_Subtract(const char* name, filelist_item_t** list); // woods #hist
 static qboolean has_custom_progs = false; // woods #botdetect
 qboolean progs_check_done = false; // woods #botdetect
 
+// Состояние слот-машины
+typedef struct {
+	int credits;           // Кредиты игрока
+	int bet;              // Размер ставки
+	qboolean spinning;    // Крутятся ли барабаны
+	float spin_time;      // Время вращения
+
+	// Позиции барабанов (0-6 для 7 символов)
+	int reel1_current;
+	int reel2_current;
+	int reel3_current;
+
+	// Целевые позиции
+	int reel1_target;
+	int reel2_target;
+	int reel3_target;
+
+	// Скорости вращения
+	float reel1_speed;
+	float reel2_speed;
+	float reel3_speed;
+
+	// Анимация
+	float reel1_offset;
+	float reel2_offset;
+	float reel3_offset;
+} casino_state_t;
+
+static casino_state_t casino_state;
+static qpic_t* slot_pics[7];
+static qpic_t* spin_btn;
+static int       spin_x, spin_y, spin_w, spin_h;
+
+
+// Символы на барабанах
+typedef enum {
+	SLOT_CHERRY,
+	SLOT_LEMON,
+	SLOT_ORANGE,
+	SLOT_BAR,
+	SLOT_SEVEN,
+	SLOT_DIAMOND,
+	SLOT_BELL
+} slot_symbol_t;
+
+// Названия символов для отрисовки
+static const char* slot_symbols[] = {
+	"CHERRY",
+	"LEMON",
+	"ORANGE",
+	"BAR",
+	"SEVEN",
+	"DIAMOND",
+	"BELL"
+};
+
+// Цвета символов (R, G, B)
+static const float slot_colors[][3] = {
+	{1.0f, 0.0f, 0.0f},  // Cherry - красный
+	{1.0f, 1.0f, 0.0f},  // Lemon - желтый
+	{1.0f, 0.5f, 0.0f},  // Orange - оранжевый
+	{0.5f, 0.0f, 0.5f},  // Bar - фиолетовый
+	{1.0f, 0.8f, 0.0f},  // Seven - золотой
+	{0.0f, 1.0f, 1.0f},  // Diamond - голубой
+	{0.8f, 0.8f, 0.0f}   // Bell - золотисто-желтый
+};
+
+// Генерация случайного символа
+static int Casino_RandomSymbol(void)
+{
+	return (int)(rand() % 7);
+}
+
+// Запуск вращения
+static void Casino_StartSpin(void)
+{
+	if (casino_state.spinning || casino_state.credits < casino_state.bet) {
+		return;
+	}
+
+	// Списываем ставку
+	casino_state.credits -= casino_state.bet;
+
+	// Генерируем случайные результаты
+	casino_state.reel1_target = Casino_RandomSymbol();
+	casino_state.reel2_target = Casino_RandomSymbol();
+	casino_state.reel3_target = Casino_RandomSymbol();
+
+	// Устанавливаем начальные скорости (символов в секунду)
+	casino_state.reel1_speed = 15.0f;
+	casino_state.reel2_speed = 17.0f;
+	casino_state.reel3_speed = 19.0f;
+
+	casino_state.spinning = true;
+	casino_state.spin_time = 0;
+	casino_state.reel1_offset = 0;
+	casino_state.reel2_offset = 0;
+	casino_state.reel3_offset = 0;
+}
+
+// Проверка выигрыша
+static void Casino_CheckWin(void)
+{
+	int winnings = 0;
+
+	// Три одинаковых символа
+	if (casino_state.reel1_target == casino_state.reel2_target &&
+		casino_state.reel2_target == casino_state.reel3_target) {
+
+		switch (casino_state.reel1_target) {
+		case SLOT_SEVEN:
+			winnings = casino_state.bet * 100;  // Джекпот!
+			break;
+		case SLOT_DIAMOND:
+			winnings = casino_state.bet * 50;
+			break;
+		case SLOT_BAR:
+			winnings = casino_state.bet * 25;
+			break;
+		case SLOT_BELL:
+			winnings = casino_state.bet * 15;
+			break;
+		default:
+			winnings = casino_state.bet * 10;
+			break;
+		}
+	}
+	// Два одинаковых
+	else if (casino_state.reel1_target == casino_state.reel2_target ||
+		casino_state.reel2_target == casino_state.reel3_target ||
+		casino_state.reel1_target == casino_state.reel3_target) {
+		winnings = casino_state.bet * 2;
+	}
+
+	casino_state.credits += winnings;
+
+	if (winnings > 0) {
+		Con_Printf("YOU WIN %d CREDITS!\n", winnings);
+	}
+}
+
+// Обновление анимации вращения
+static void Casino_UpdateSpin(void)
+{
+	float frametime = host_frametime;
+
+	if (!casino_state.spinning) return;
+
+	casino_state.spin_time += frametime;
+
+	// Обновляем смещения барабанов
+	casino_state.reel1_offset += casino_state.reel1_speed * frametime;
+	casino_state.reel2_offset += casino_state.reel2_speed * frametime;
+	casino_state.reel3_offset += casino_state.reel3_speed * frametime;
+
+	// Замедление первого барабана после 1 секунды
+	if (casino_state.spin_time > 1.0f) {
+		casino_state.reel1_speed *= 0.92f;
+
+		if (casino_state.reel1_speed < 0.5f) {
+			casino_state.reel1_current = casino_state.reel1_target;
+			casino_state.reel1_offset = 0;
+			casino_state.reel1_speed = 0;
+		}
+		else {
+			// Обновляем текущую позицию
+			while (casino_state.reel1_offset >= 1.0f) {
+				casino_state.reel1_offset -= 1.0f;
+				casino_state.reel1_current = (casino_state.reel1_current + 1) % 7;
+			}
+		}
+	}
+
+	// Замедление второго барабана после 1.5 секунд
+	if (casino_state.spin_time > 1.5f) {
+		casino_state.reel2_speed *= 0.92f;
+
+		if (casino_state.reel2_speed < 0.5f) {
+			casino_state.reel2_current = casino_state.reel2_target;
+			casino_state.reel2_offset = 0;
+			casino_state.reel2_speed = 0;
+		}
+		else {
+			while (casino_state.reel2_offset >= 1.0f) {
+				casino_state.reel2_offset -= 1.0f;
+				casino_state.reel2_current = (casino_state.reel2_current + 1) % 7;
+			}
+		}
+	}
+
+	// Замедление третьего барабана после 2 секунд
+	if (casino_state.spin_time > 2.0f) {
+		casino_state.reel3_speed *= 0.92f;
+
+		if (casino_state.reel3_speed < 0.5f) {
+			casino_state.reel3_current = casino_state.reel3_target;
+			casino_state.reel3_offset = 0;
+			casino_state.reel3_speed = 0;
+
+			// Все барабаны остановились
+			Casino_CheckWin();
+			casino_state.spinning = false;
+		}
+		else {
+			while (casino_state.reel3_offset >= 1.0f) {
+				casino_state.reel3_offset -= 1.0f;
+				casino_state.reel3_current = (casino_state.reel3_current + 1) % 7;
+			}
+		}
+	}
+}
+
+// Вспомогательная функция для отрисовки барабана
+/*
+static void Casino_DrawReel(int x, int y, int symbol, float offset, qboolean spinning)
+{
+	int display_symbol = symbol;
+	int next_symbol = (symbol + 1) % 7;
+	float y_offset = offset * 10;  // Пиксели смещения
+
+	// Текущий символ
+	glColor3fv(slot_colors[display_symbol]);
+	M_Print(x, y - (int)y_offset, slot_symbols[display_symbol]);
+
+	// Следующий символ (для плавности)
+	if (spinning && offset > 0.01f) {
+		glColor3fv(slot_colors[next_symbol]);
+		M_Print(x, y + 10 - (int)y_offset, slot_symbols[next_symbol]);
+	}
+
+	// Восстанавливаем белый цвет
+	glColor3f(1, 1, 1);
+}
+*/
+static void Casino_DrawReel(int x, int y, int symbol, float offset, qboolean spinning)
+{
+	M_DrawTransPic(x, y - (int)(offset * 24), slot_pics[symbol]);
+
+	if (spinning && offset > 0.01f) {
+		int next = (symbol + 1) % 7;
+		M_DrawTransPic(x, y + 24 - (int)(offset * 24), slot_pics[next]);
+	}
+}
 /*
 ================
 M_DrawCharacter
@@ -5179,6 +5422,23 @@ void M_Mouse_Key(int k)
 		M_Mouse_AdjustSliders(1);
 		break;
 	}
+	if (key_dest != key_menu || m_state != m_casino)
+		return;
+
+	if (!keydown == K_MOUSE1) {
+		int mx = 320; // глобальные переменные с координатами мыши
+		int my = 240;
+
+		// Проверяем попадание в прямоугольник кнопки
+		if (mx >= spin_x && mx < spin_x + spin_w
+			&& my >= spin_y && my < spin_y + spin_h) {
+			// Как при нажатии SPACE
+			Casino_StartSpin();
+			S_LocalSound("misc/menu2.wav");
+			return;
+		}
+	}
+
 }
 
 void M_Mouse_Mousemove(int cx, int cy)
@@ -14471,6 +14731,7 @@ static struct
 	{"menu_bookmarks", M_Menu_Bookmarks_f}, // woods #bookmarksmenu
 	{"bookmark", M_Shortcut_Bookmarks_Edit_f}, // woods #bookmarksmenu
 	{"menu_history", M_Menu_History_f}, // woods #historymenu
+	{"menu_casino", M_Menu_Casino_f}, //kazik ofikal
 };
 
 //=============================================================================
@@ -14607,6 +14868,7 @@ void M_Init (void)
 	Cmd_AddCommand ("togglemenu", M_ToggleMenu_f);
 	Cmd_AddCommand ("menu_cmd", MQC_Command_f);
 	Cmd_AddCommand ("menu_restart", M_MenuRestart_f);	//qss still loads progs on hunk, so we can't do this safely.
+	//Cmd_AddCommand("menu_casino", M_Menu_Casino_f);
 
 	if (!MQC_Init())
 		MQC_Shutdown();
@@ -14817,6 +15079,9 @@ void M_Draw (void)
 	case m_slist:
 		M_ServerList_Draw ();
 		break;
+	case m_casino:        // НОВОЕ
+		M_Casino_Draw();
+		break;
 	}
 
 	if (m_entersound)
@@ -14969,6 +15234,9 @@ void M_Keydown (int key)
 
 	case m_slist:
 		M_ServerList_Key (key);
+		return;
+	case m_casino:        // НОВОЕ
+		M_Casino_Key(key);
 		return;
 	}
 }
@@ -15246,4 +15514,167 @@ void M_CheckMods(void) // woods #modsmenu (iw)
 
 	m_skill_usecustomtitle = M_CheckCustomGfx("gfx/p_skill.lmp",
 		"gfx/ttl_sgl.lmp", 6728, sgl_hashes, countof(sgl_hashes));
+}
+
+
+void M_Menu_Casino_f(void)
+{
+	key_dest = key_menu;
+	m_state = m_casino;
+	m_entersound = true;
+
+	// Инициализация состояния при первом входе
+	if (casino_state.credits == 0) {
+		casino_state.credits = 1000;
+		casino_state.bet = 10;
+		casino_state.spinning = false;
+		casino_state.spin_time = 0;
+		casino_state.reel1_current = 0;
+		casino_state.reel2_current = 1;
+		casino_state.reel3_current = 2;
+	}
+	
+	if (!slot_pics[0]) {
+		slot_pics[SLOT_CHERRY] = Draw_CachePic("gfx/a_kazik/cherry.pcx");
+		slot_pics[SLOT_LEMON] = Draw_CachePic("gfx/a_kazik/lemon.pcx");
+		slot_pics[SLOT_ORANGE] = Draw_CachePic("gfx/a_kazik/orange.pcx");
+		slot_pics[SLOT_BAR] = Draw_CachePic("gfx/a_kazik/bar.pcx");
+		slot_pics[SLOT_SEVEN] = Draw_CachePic("gfx/a_kazik/seven.pcx");
+		slot_pics[SLOT_DIAMOND] = Draw_CachePic("gfx/a_kazik/diamond.pcx");
+		slot_pics[SLOT_BELL] = Draw_CachePic("gfx/a_kazik/bell.pcx");
+	}
+
+	if (!spin_btn) {
+		spin_btn = Draw_CachePic("gfx/casino/spinbtn.tga");
+	}
+
+}
+
+
+
+void M_Casino_Draw(void)
+{
+	qpic_t* p;
+	int x, y;
+	char str[64];
+
+	// Обновляем анимацию
+	Casino_UpdateSpin();
+
+	// Фон
+	M_DrawTextBox(0, 0, 320, 200);
+
+	// Заголовок
+	p = Draw_CachePic("gfx/a_kazik/kazik1.lmp");
+	M_DrawPic((320 - p->width) / 2, 4, p);
+	M_PrintWhite((320 - 8 * 8) / 2, 32, "Kuzba$$ Rich Region Casino");
+
+	// Информация об игроке
+	y = 50;
+	q_snprintf(str, sizeof(str), "Credits: %d", casino_state.credits);
+	M_Print(40, y, str);
+
+	y += 10;
+	q_snprintf(str, sizeof(str), "Bet: %d", casino_state.bet);
+	M_Print(40, y, str);
+
+	// Барабаны слот-машины
+	y = 90;
+	x = 80;
+
+	// Рамки барабанов
+	M_DrawTextBox(x - 8, y - 8, 5, 5);
+	M_DrawTextBox(x + 52, y - 8, 5, 5);
+	M_DrawTextBox(x + 112, y - 8, 5, 5);
+
+	// Отрисовка символов на барабанах
+	Casino_DrawReel(x, y, casino_state.reel1_current,
+		casino_state.reel1_offset, casino_state.reel1_speed > 0);
+	Casino_DrawReel(x + 60, y, casino_state.reel2_current,
+		casino_state.reel2_offset, casino_state.reel2_speed > 0);
+	Casino_DrawReel(x + 120, y, casino_state.reel3_current,
+		casino_state.reel3_offset, casino_state.reel3_speed > 0);
+
+	spin_w = spin_btn->width;   // например 64
+	spin_h = spin_btn->height;  // например 24
+	spin_x = (vid.width - spin_w) / 2; // по центру по X
+	spin_y = 150 * vid.height / 200;     // 150 строка в оригинальном 320×200
+	M_DrawPic(spin_x, spin_y, spin_btn); // отрисовка кнопки спин
+	// Кнопки управления
+	y = 150;
+	if (!casino_state.spinning) {
+		M_PrintWhite(120, y, "[SPACE] SPIN");
+	}
+	else {
+		M_PrintWhite(110, y, "SPINNING...");
+	}
+
+	y += 20;
+	M_Print(90, y, "[+/-] Change bet");
+
+	y += 10;
+	M_Print(100, y, "[ESC] Exit");
+
+	// Таблица выплат
+	y = 50;
+	x = 300;
+	M_Print(x, y, "PAYOUTS:");
+	y += 10;
+	M_Print(x, y, "3x SEVEN: 100x");
+	y += 8;
+	M_Print(x, y, "3x DIAMOND: 50x");
+	y += 8;
+	M_Print(x, y, "3x BAR: 25x");
+	y += 8;
+	M_Print(x, y, "3x BELL: 15x");
+	y += 8;
+	M_Print(x, y, "3x Other: 10x");
+	y += 8;
+	M_Print(x, y, "2x Match: 2x");
+
+	if (m_state == m_casino)
+		
+	M_DrawQuakeCursor(320 - 8, 240 - 8);
+
+}
+
+
+
+void M_Casino_Key(int key)
+{
+	switch (key) {
+	case K_ESCAPE:
+		M_Menu_Main_f();
+		break;
+
+	case K_SPACE:
+	case K_ENTER:
+		if (!casino_state.spinning) {
+			Casino_StartSpin();
+			S_LocalSound("misc/menu2.wav");
+		}
+		break;
+
+	case '+':
+	case '=':
+		if (!casino_state.spinning) {
+			casino_state.bet += 10;
+			if (casino_state.bet > 100) {
+				casino_state.bet = 100;
+			}
+			S_LocalSound("misc/menu1.wav");
+		}
+		break;
+
+	case '-':
+	case '_':
+		if (!casino_state.spinning) {
+			casino_state.bet -= 10;
+			if (casino_state.bet < 10) {
+				casino_state.bet = 10;
+			}
+			S_LocalSound("misc/menu1.wav");
+		}
+		break;
+	}
 }

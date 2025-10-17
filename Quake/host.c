@@ -1715,7 +1715,7 @@ void Host_Init (void)
 	host_hunklevel = Hunk_LowMark ();
 
 	host_initialized = true;
-	Con_Printf ("\n========= Quake Initialized =========\n\n");
+	Con_Printf ("\n========= Kabluk Engine Initialized =========\n\n");
 
 	if (setjmp (host_abortserver) )
 		return;			// something bad happened		
