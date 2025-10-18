@@ -371,6 +371,8 @@ static const float slot_colors[][3] = {
 	{0.8f, 0.8f, 0.0f}   // Bell - золотисто-желтый
 };
 
+
+
 // Генерация случайного символа
 static int Casino_RandomSymbol(void)
 {
@@ -402,6 +404,7 @@ static void Casino_StartSpin(void)
 	casino_state.reel1_offset = 0;
 	casino_state.reel2_offset = 0;
 	casino_state.reel3_offset = 0;
+	//S_LocalSound("casino/spin.wav");
 }
 
 // Проверка выигрыша
@@ -441,7 +444,12 @@ static void Casino_CheckWin(void)
 	casino_state.credits += winnings;
 
 	if (winnings > 0) {
-		Con_Printf("YOU WIN %d CREDITS!\n", winnings);
+		Con_Printf("YOU WIN %d RUBLES!\n", winnings);
+		//S_LocalSound("casino/win.wav");
+	}
+	else {
+		Con_Printf("YOU LOSE.\n");
+		//S_LocalSound("casino/lose.wav");
 	}
 }
 
@@ -516,37 +524,45 @@ static void Casino_UpdateSpin(void)
 	}
 }
 
-// Вспомогательная функция для отрисовки барабана
-/*
+
+
 static void Casino_DrawReel(int x, int y, int symbol, float offset, qboolean spinning)
 {
-	int display_symbol = symbol;
-	int next_symbol = (symbol + 1) % 7;
-	float y_offset = offset * 10;  // Пиксели смещения
+	const int SPRITE_W = 40;
+	const int SPRITE_H = 40;
+	const int WINDOW_H = SPRITE_H * 1;  // высота области прокрутки
+	const int SYMBOLS_COUNT = 7;
 
-	// Текущий символ
-	glColor3fv(slot_colors[display_symbol]);
-	M_Print(x, y - (int)y_offset, slot_symbols[display_symbol]);
+	if (!slot_pics[symbol]) return;
 
-	// Следующий символ (для плавности)
-	if (spinning && offset > 0.01f) {
-		glColor3fv(slot_colors[next_symbol]);
-		M_Print(x, y + 10 - (int)y_offset, slot_symbols[next_symbol]);
+	// Смещение в пикселях
+	int y_off = (int)(offset * SPRITE_H) % SPRITE_H;
+
+	// Верхняя граница прокрутки
+	int window_top = y;
+	int window_bottom = y + WINDOW_H;
+
+	// Рисуем несколько подряд идущих символов
+	for (int i = 0; i < 4; i++)
+	{
+		// Индекс символа для этой позиции
+		int idx = (symbol + i) % SYMBOLS_COUNT;
+
+		// Рассчитываем Y для рисования
+		int draw_y = y - y_off + i * SPRITE_H;
+
+		// Проверяем, что спрайт хотя бы частично виден в окне:
+		// его нижняя граница > top И верхняя < bottom
+		if (draw_y + SPRITE_H > window_top && draw_y < window_bottom)
+		{
+			Draw_Pic(x, draw_y, slot_pics[idx]);
+		}
 	}
-
-	// Восстанавливаем белый цвет
-	glColor3f(1, 1, 1);
 }
-*/
-static void Casino_DrawReel(int x, int y, int symbol, float offset, qboolean spinning)
-{
-	M_DrawTransPic(x, y - (int)(offset * 24), slot_pics[symbol]);
 
-	if (spinning && offset > 0.01f) {
-		int next = (symbol + 1) % 7;
-		M_DrawTransPic(x, y + 24 - (int)(offset * 24), slot_pics[next]);
-	}
-}
+
+
+
 /*
 ================
 M_DrawCharacter
@@ -5427,7 +5443,7 @@ void M_Mouse_Key(int k)
 
 	if (!keydown == K_MOUSE1) {
 		int mx = 320; // глобальные переменные с координатами мыши
-		int my = 240;
+		int my = 200;
 
 		// Проверяем попадание в прямоугольник кнопки
 		if (mx >= spin_x && mx < spin_x + spin_w
@@ -14870,6 +14886,7 @@ void M_Init (void)
 	Cmd_AddCommand ("menu_restart", M_MenuRestart_f);	//qss still loads progs on hunk, so we can't do this safely.
 	//Cmd_AddCommand("menu_casino", M_Menu_Casino_f);
 
+
 	if (!MQC_Init())
 		MQC_Shutdown();
 }
@@ -15545,7 +15562,7 @@ void M_Menu_Casino_f(void)
 	}
 
 	if (!spin_btn) {
-		spin_btn = Draw_CachePic("gfx/casino/spinbtn.tga");
+		spin_btn = Draw_CachePic("gfx/a_kazik/spin.pcx");
 	}
 
 }
@@ -15557,13 +15574,38 @@ void M_Casino_Draw(void)
 	qpic_t* p;
 	int x, y;
 	char str[64];
+	int cursor, f;
 
+	qpic_t* menup = Draw_CachePic("gfx/david/tanec1.lmp");
+	int boxw = menup ? menup->width : 256;
+	int boxh = menup ? menup->height : 256;
+	vrect_t bounds, vp;
+	Draw_GetMenuTransform(&bounds, &vp);
+	// Convert menu virtual coords (640x200) to absolute pixels via viewport
+	float s = (float)vp.width / (float)bounds.width;
+	float px = vp.x + 300 * s;
+	float py = vp.y + 32 * s;
+	float pw = boxw * s;
+	float ph = boxh * s;
+	DrawSpinningModelToMenuPixels("progs/invulner.mdl",
+		px, py, pw, ph,
+		45.0f,
+		-10.0f,
+		1, 2, 3, 4);
+
+	// Restore menu 2D canvas to keep coordinates/cursor aligned
+	GL_SetCanvas(CANVAS_MENU);
+	glDisable(GL_BLEND);
+	glEnable(GL_ALPHA_TEST);
+	glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+	
 	// Обновляем анимацию
 	Casino_UpdateSpin();
 
 	// Фон
-	M_DrawTextBox(0, 0, 320, 200);
-
+	//M_DrawTextBox(0, 0, 320, 200);
+	p = Draw_CachePic("gfx/a_kazik/kazikback.pcx");
+	M_DrawPic(0, 0, p);
 	// Заголовок
 	p = Draw_CachePic("gfx/a_kazik/kazik1.lmp");
 	M_DrawPic((320 - p->width) / 2, 4, p);
@@ -15571,7 +15613,7 @@ void M_Casino_Draw(void)
 
 	// Информация об игроке
 	y = 50;
-	q_snprintf(str, sizeof(str), "Credits: %d", casino_state.credits);
+	q_snprintf(str, sizeof(str), "Rubles: %d", casino_state.credits);
 	M_Print(40, y, str);
 
 	y += 10;
@@ -15583,17 +15625,18 @@ void M_Casino_Draw(void)
 	x = 80;
 
 	// Рамки барабанов
-	M_DrawTextBox(x - 8, y - 8, 5, 5);
-	M_DrawTextBox(x + 52, y - 8, 5, 5);
-	M_DrawTextBox(x + 112, y - 8, 5, 5);
-
-	// Отрисовка символов на барабанах
 	Casino_DrawReel(x, y, casino_state.reel1_current,
 		casino_state.reel1_offset, casino_state.reel1_speed > 0);
 	Casino_DrawReel(x + 60, y, casino_state.reel2_current,
 		casino_state.reel2_offset, casino_state.reel2_speed > 0);
 	Casino_DrawReel(x + 120, y, casino_state.reel3_current,
 		casino_state.reel3_offset, casino_state.reel3_speed > 0);
+
+	qpic_t* border = Draw_CachePic("gfx/a_kazik/frame_border.tga");
+	// после отрисовки слотов
+	M_DrawPic(x - 8, y - 8, border);
+	M_DrawPic(x + 52, y - 8, border);
+	M_DrawPic(x + 112, y - 8, border);
 
 	spin_w = spin_btn->width;   // например 64
 	spin_h = spin_btn->height;  // например 24
@@ -15624,7 +15667,7 @@ void M_Casino_Draw(void)
 	y += 8;
 	M_Print(x, y, "3x DIAMOND: 50x");
 	y += 8;
-	M_Print(x, y, "3x BAR: 25x");
+	M_Print(x, y, "3x LOX: 25x");
 	y += 8;
 	M_Print(x, y, "3x BELL: 15x");
 	y += 8;
@@ -15634,7 +15677,7 @@ void M_Casino_Draw(void)
 
 	if (m_state == m_casino)
 		
-	M_DrawQuakeCursor(320 - 8, 240 - 8);
+	M_DrawQuakeCursor(320 - 32, 200 - 32);
 
 }
 

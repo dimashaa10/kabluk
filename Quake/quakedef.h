@@ -48,7 +48,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #define QSSM_VER_MAJOR		0
 #define QSSM_VER_MINOR		1
-#define QSSM_VER_PATCH		5
+#define QSSM_VER_PATCH		6
 #ifndef QSSM_VER_SUFFIX
 #define QSSM_VER_SUFFIX		"-lox"	// optional version suffix string literal like "-beta1"
 #endif
@@ -275,6 +275,8 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #define	SERVERLIST	"servers.txt"	// woods for server history + tab complete #serverlist
 #define	BOOKMARKSLIST	"bookmarks.txt"	// woods #bookmarksmenu
+
+
 
 #define USE_JSON_UI
 
