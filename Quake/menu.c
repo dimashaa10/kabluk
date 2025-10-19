@@ -349,6 +349,18 @@ typedef enum {
 	SLOT_BELL
 } slot_symbol_t;
 
+typedef struct {
+	qboolean active;
+	float y_position;
+	float timer;
+	int phase;
+	qboolean bounce_sound_played;  // НОВОЕ: флаг для звука упругости
+} win_animation_t;
+
+static win_animation_t win_anim = { 0 };
+static qpic_t* win_pic;  // картинка выигрыша
+
+
 // Названия символов для отрисовки
 static const char* slot_symbols[] = {
 	"CHERRY",
@@ -385,7 +397,7 @@ static void Casino_StartSpin(void)
 	if (casino_state.spinning || casino_state.credits < casino_state.bet) {
 		return;
 	}
-
+	S_LocalSound("kazik/krutim.wav");
 	// Списываем ставку
 	casino_state.credits -= casino_state.bet;
 
@@ -404,8 +416,62 @@ static void Casino_StartSpin(void)
 	casino_state.reel1_offset = 0;
 	casino_state.reel2_offset = 0;
 	casino_state.reel3_offset = 0;
-	//S_LocalSound("casino/spin.wav");
+	
 }
+
+static void Casino_UpdateWinAnimation(void)
+{
+	if (!win_anim.active) return;
+
+	float frametime = host_frametime;
+
+	// Скорость падения (пикселей в секунду)
+	const float FALL_SPEED = 100.0f;  // больше = быстрее
+
+	// Время паузы в центре (секунды)
+	const float PAUSE_TIME = 3.0f;    // больше = дольше висит
+
+	int center_y = (vid.height - win_pic->height) / 2;  // центр экрана
+
+	switch (win_anim.phase) {
+	case 0:
+		win_anim.y_position += FALL_SPEED * frametime;
+
+		// Эффект "упругости" при остановке
+		if (!win_anim.bounce_sound_played &&
+			win_anim.y_position >= center_y - 20) {
+			S_LocalSound("weapons/bounce.wav");
+			win_anim.bounce_sound_played = true;
+		}
+
+		// Достигли центра?
+		if (win_anim.y_position >= center_y) {
+			win_anim.y_position = center_y;
+			win_anim.phase = 1;
+			win_anim.timer = 0;
+		}
+		break;
+
+	case 1:  // Фаза 2: пауза в центре
+		win_anim.timer += frametime;
+
+		if (win_anim.timer >= PAUSE_TIME) {
+			win_anim.phase = 2;
+		}
+		break;
+
+	case 2:  // Фаза 3: летит дальше вниз за экран
+		win_anim.y_position += FALL_SPEED * frametime;
+
+		// Улетела за экран?
+		if (win_anim.y_position > vid.height) {
+			win_anim.active = false;  // анимация закончена
+		}
+		break;
+	}
+}
+
+
 
 // Проверка выигрыша
 static void Casino_CheckWin(void)
@@ -445,11 +511,16 @@ static void Casino_CheckWin(void)
 
 	if (winnings > 0) {
 		Con_Printf("YOU WIN %d RUBLES!\n", winnings);
-		//S_LocalSound("casino/win.wav");
+		S_LocalSound("kazik/ganzillion.wav");
+		win_anim.active = true;
+		win_anim.y_position = -win_pic->height;  // начинаем сверху (за экраном)
+		win_anim.timer = 0;
+		win_anim.phase = 0;
+		win_anim.bounce_sound_played = false;
 	}
 	else {
 		Con_Printf("YOU LOSE.\n");
-		//S_LocalSound("casino/lose.wav");
+		S_LocalSound("kazik/proebal.wav");
 	}
 }
 
@@ -14884,7 +14955,7 @@ void M_Init (void)
 	Cmd_AddCommand ("togglemenu", M_ToggleMenu_f);
 	Cmd_AddCommand ("menu_cmd", MQC_Command_f);
 	Cmd_AddCommand ("menu_restart", M_MenuRestart_f);	//qss still loads progs on hunk, so we can't do this safely.
-	//Cmd_AddCommand("menu_casino", M_Menu_Casino_f);
+
 
 
 	if (!MQC_Init())
@@ -15564,6 +15635,7 @@ void M_Menu_Casino_f(void)
 	if (!spin_btn) {
 		spin_btn = Draw_CachePic("gfx/a_kazik/spin.pcx");
 	}
+	win_pic = Draw_CachePic("gfx/a_kazik/win.tga");
 
 }
 
@@ -15591,7 +15663,7 @@ void M_Casino_Draw(void)
 		px, py, pw, ph,
 		45.0f,
 		-10.0f,
-		1, 2, 3, 4);
+		0, 0, 0, 0);
 
 	// Restore menu 2D canvas to keep coordinates/cursor aligned
 	GL_SetCanvas(CANVAS_MENU);
@@ -15609,16 +15681,16 @@ void M_Casino_Draw(void)
 	// Заголовок
 	p = Draw_CachePic("gfx/a_kazik/kazik1.lmp");
 	M_DrawPic((320 - p->width) / 2, 4, p);
-	M_PrintWhite((320 - 8 * 8) / 2, 32, "Kuzba$$ Rich Region Casino");
+	M_PrintWhite((240 - 8 * 8) / 2, 32, "Kuzba$$ Rich Region Casino");
 
 	// Информация об игроке
 	y = 50;
 	q_snprintf(str, sizeof(str), "Rubles: %d", casino_state.credits);
-	M_Print(40, y, str);
+	M_Print(2, y, str);
 
 	y += 10;
 	q_snprintf(str, sizeof(str), "Bet: %d", casino_state.bet);
-	M_Print(40, y, str);
+	M_Print(2, y, str);
 
 	// Барабаны слот-машины
 	y = 90;
@@ -15660,16 +15732,16 @@ void M_Casino_Draw(void)
 
 	// Таблица выплат
 	y = 50;
-	x = 300;
+	x = 260;
 	M_Print(x, y, "PAYOUTS:");
 	y += 10;
 	M_Print(x, y, "3x SEVEN: 100x");
 	y += 8;
-	M_Print(x, y, "3x DIAMOND: 50x");
+	M_Print(x, y, "3x PASAAN: 50x");
 	y += 8;
 	M_Print(x, y, "3x LOX: 25x");
 	y += 8;
-	M_Print(x, y, "3x BELL: 15x");
+	M_Print(x, y, "3x SIGA: 15x");
 	y += 8;
 	M_Print(x, y, "3x Other: 10x");
 	y += 8;
@@ -15679,6 +15751,14 @@ void M_Casino_Draw(void)
 		
 	M_DrawQuakeCursor(320 - 32, 200 - 32);
 
+	// Обновляем анимацию выигрыша
+	Casino_UpdateWinAnimation();
+
+	// Рисуем картинку выигрыша (если анимация активна)
+	if (win_anim.active && win_pic) {
+		int x = (vid.width - win_pic->width) / 2;  // по центру X
+		Draw_Pic(x, (int)win_anim.y_position, win_pic);
+	}
 }
 
 

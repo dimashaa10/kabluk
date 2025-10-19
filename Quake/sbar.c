@@ -22,7 +22,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 // sbar.c -- status bar code
 
 #include "quakedef.h"
-//#include "menu.h"
+#include "menu.h"
 
 extern	qboolean premul_hud;
 int		sb_updates;		// if >= vid.numpages, no update needed
@@ -65,6 +65,10 @@ qpic_t		*rsb_weapons[5];
 qpic_t		*rsb_items[2];
 qpic_t		*rsb_ammo[3];
 qpic_t		*rsb_teambord;		// PGM 01/19/97 - team color border
+
+static qpic_t* slot_pics[7];
+static qpic_t* win_pic;
+
 
 //MED 01/04/97 added two more weapons + 3 alternates for grenade launcher
 qpic_t		*hsb_weapons[7][5];   // 0 is active, 1 is owned, 2-5 are flashes
@@ -298,6 +302,16 @@ void Sbar_LoadPics (void)
 		rsb_ammo[1] = Sbar_CheckPicFromWad ("r_ammomulti");
 		rsb_ammo[2] = Sbar_CheckPicFromWad ("r_ammoplasma");
 	}
+
+	slot_pics[0] = Draw_CachePic("gfx/a_kazik/cherry.pcx");
+	slot_pics[1] = Draw_CachePic("gfx/a_kazik/lemon.pcx");
+	slot_pics[2] = Draw_CachePic("gfx/a_kazik/orange.pcx");
+	slot_pics[3] = Draw_CachePic("gfx/a_kazik/bar.pcx");
+	slot_pics[4] = Draw_CachePic("gfx/a_kazik/seven.pcx");
+	slot_pics[5] = Draw_CachePic("gfx/a_kazik/diamond.pcx");
+	slot_pics[6] = Draw_CachePic("gfx/a_kazik/bell.pcx");
+	win_pic = Draw_CachePic("gfx/a_kazik/win.tga");
+	
 }
 
 /*
