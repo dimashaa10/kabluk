@@ -44,7 +44,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #define QSS_VER	"19-10-25" // woods
 
-// woods add qss-m versions info
+// kabluk version info
 
 #define QSSM_VER_MAJOR		0
 #define QSSM_VER_MINOR		1
