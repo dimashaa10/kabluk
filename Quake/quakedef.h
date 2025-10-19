@@ -50,7 +50,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define QSSM_VER_MINOR		1
 #define QSSM_VER_PATCH		7
 #ifndef QSSM_VER_SUFFIX
-#define QSSM_VER_SUFFIX		"-lox"	// optional version suffix string literal like "-beta1"
+#define QSSM_VER_SUFFIX		"-lox"	// napishi chto ti lox
 #endif
 
 #define	QS_STRINGIFY_(x)	#x
