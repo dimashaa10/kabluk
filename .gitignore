@@ -1,10 +1,11 @@
-```
-# Compiled object files
-*.o
-*.obj
-*.d
+# Windows 
+/Windows/VisualStudio/.vs/
+/Windows/VisualStudio/Build-kabluk/
+/Windows/VisualStudio/history.txt
+/Windows/VisualStudio/*.user
+/Windows/VisualStudio/kuzbass/
+/Windows/VisualStudio/Backup/
+Windows/VisualStudio/UpgradeLog.htm
 
-# Build artifacts
-Quake/*.o
-Quake/*.d
-```
+# macOS
+.DS_Store
