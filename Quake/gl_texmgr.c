@@ -48,6 +48,11 @@ unsigned int d_8to24table_nobright[256];
 unsigned int d_8to24table_nobright_fence[256];
 unsigned int d_8to24table_conchars[256];
 
+unsigned short d_8to16table[256];  // 16-bit RGB565 palette table
+unsigned short d_8to16table_fbright[256];
+unsigned short d_8to16table_nobright[256];
+unsigned short d_8to16table_conchars[256];
+
 static void TexMgr_ColormapTexture_Free(struct gltexture_s *basetex);
 
 static struct
@@ -743,6 +748,45 @@ void TexMgr_LoadPalette (void)
 	memcpy(d_8to24table_conchars, d_8to24table, 256*4);
 	((byte *) &d_8to24table_conchars[0]) [3] = 0;
 
+	// 16-bit RGB565 palette conversion
+#define RGB565(r,g,b) (((r>>3)<<11) | ((g>>2)<<5) | (b>>3))
+	for (i = 0; i < 256; i++)
+	{
+		int r = pal[i*3 + 0];
+		int g = pal[i*3 + 1];
+		int b = pal[i*3 + 2];
+		d_8to16table[i] = RGB565(r, g, b);
+	}
+	// transparent index 255
+	d_8to16table[255] = 0; 
+
+	// fbright
+	for (i = 224; i < 256; i++)
+	{
+		int r = pal[i*3 + 0];
+		int g = pal[i*3 + 1];
+		int b = pal[i*3 + 2];
+		d_8to16table_fbright[i] = RGB565(r, g, b);
+	}
+	for (i = 0; i < 224; i++)
+		d_8to16table_fbright[i] = 0;
+
+	// nobright
+	for (i = 0; i < 256; i++)
+	{
+		int r = pal[i*3 + 0];
+		int g = pal[i*3 + 1];
+		int b = pal[i*3 + 2];
+		d_8to16table_nobright[i] = RGB565(r, g, b);
+	}
+	for (i = 224; i < 256; i++)
+		d_8to16table_nobright[i] = 0;
+
+	// conchars
+	memcpy(d_8to16table_conchars, d_8to16table, 256*2);
+	d_8to16table_conchars[0] = 0;
+#undef RGB565
+
 	Hunk_FreeToLowMark (mark);
 }
 
@@ -941,6 +985,31 @@ static unsigned *TexMgr_MipMapW (unsigned *data, int width, int height)
 
 /*
 ================
+TexMgr_MipMapW16 -- mipmap width for 16bit RGB565
+================
+*/
+static unsigned short *TexMgr_MipMapW16 (unsigned short *data, int width, int height)
+{
+	int	i, size;
+	unsigned short *out, *in;
+
+	out = in = data;
+	size = (width*height)>>1;
+
+	for (i = 0; i < size; i++, out++, in += 2)
+	{
+		unsigned short p0 = in[0];
+		unsigned short p1 = in[1];
+		int r0 = (p0>>11)&0x1F, g0 = (p0>>5)&0x3F, b0 = p0&0x1F;
+		int r1 = (p1>>11)&0x1F, g1 = (p1>>5)&0x3F, b1 = p1&0x1F;
+		*out = (((r0+r1)>>1)&0x1F)<<11 | (((g0+g1)>>1)&0x3F)<<5 | (((b0+b1)>>1)&0x1F);
+	}
+
+	return data;
+}
+
+/*
+================
 TexMgr_MipMapH
 ================
 */
@@ -961,6 +1030,34 @@ static unsigned *TexMgr_MipMapH (unsigned *data, int width, int height)
 			out[1] = (in[1] + in[width+1])>>1;
 			out[2] = (in[2] + in[width+2])>>1;
 			out[3] = (in[3] + in[width+3])>>1;
+		}
+	}
+
+	return data;
+}
+
+/*
+================
+TexMgr_MipMapH16 -- mipmap height for 16bit RGB565
+================
+*/
+static unsigned short *TexMgr_MipMapH16 (unsigned short *data, int width, int height)
+{
+	int	i, j;
+	unsigned short *out, *in;
+
+	out = in = data;
+	height>>=1;
+
+	for (i = 0; i < height; i++, in += width)
+	{
+		for (j = 0; j < width; j++, out++, in++)
+		{
+			unsigned short p0 = in[0];
+			unsigned short p1 = in[width];
+			int r0 = (p0>>11)&0x1F, g0 = (p0>>5)&0x3F, b0 = p0&0x1F;
+			int r1 = (p1>>11)&0x1F, g1 = (p1>>5)&0x3F, b1 = p1&0x1F;
+			*out = (((r0+r1)>>1)&0x1F)<<11 | (((g0+g1)>>1)&0x3F)<<5 | (((b0+b1)>>1)&0x1F);
 		}
 	}
 
@@ -1082,6 +1179,61 @@ static void TexMgr_AlphaEdgeFix (byte *data, int width, int height)
 
 /*
 ===============
+TexMgr_AlphaEdgeFix16
+
+eliminate pink edges on sprites, etc.
+operates in place on 16bit RGB565 data
+===============
+*/
+static void TexMgr_AlphaEdgeFix16 (unsigned short *data, int width, int height)
+{
+	int	i, j, n = 0, b, c[3] = {0,0,0},
+		lastrow, thisrow, nextrow,
+		lastpix, thispix, nextpix;
+	unsigned short *dest = data;
+	unsigned short pixel;
+	int r, g, bl;
+
+	for (i = 0; i < height; i++)
+	{
+		lastrow = width * ((i == 0) ? height-1 : i-1);
+		thisrow = width * i;
+		nextrow = width * ((i == height-1) ? 0 : i+1);
+
+		for (j = 0; j < width; j++, dest++)
+		{
+			if (*dest != 0) //not transparent (0 is transparent in RGB565)
+				continue;
+
+			lastpix = ((j == 0) ? width-1 : j-1);
+			thispix = j;
+			nextpix = ((j == width-1) ? 0 : j+1);
+
+			b = lastrow + lastpix; pixel = data[b]; if (pixel) {r = (pixel>>11)&0x1F; g = (pixel>>5)&0x3F; bl = pixel&0x1F; c[0] += r; c[1] += g; c[2] += bl; n++;}
+			b = thisrow + lastpix; pixel = data[b]; if (pixel) {r = (pixel>>11)&0x1F; g = (pixel>>5)&0x3F; bl = pixel&0x1F; c[0] += r; c[1] += g; c[2] += bl; n++;}
+			b = nextrow + lastpix; pixel = data[b]; if (pixel) {r = (pixel>>11)&0x1F; g = (pixel>>5)&0x3F; bl = pixel&0x1F; c[0] += r; c[1] += g; c[2] += bl; n++;}
+			b = lastrow + thispix; pixel = data[b]; if (pixel) {r = (pixel>>11)&0x1F; g = (pixel>>5)&0x3F; bl = pixel&0x1F; c[0] += r; c[1] += g; c[2] += bl; n++;}
+			b = nextrow + thispix; pixel = data[b]; if (pixel) {r = (pixel>>11)&0x1F; g = (pixel>>5)&0x3F; bl = pixel&0x1F; c[0] += r; c[1] += g; c[2] += bl; n++;}
+			b = lastrow + nextpix; pixel = data[b]; if (pixel) {r = (pixel>>11)&0x1F; g = (pixel>>5)&0x3F; bl = pixel&0x1F; c[0] += r; c[1] += g; c[2] += bl; n++;}
+			b = thisrow + nextpix; pixel = data[b]; if (pixel) {r = (pixel>>11)&0x1F; g = (pixel>>5)&0x3F; bl = pixel&0x1F; c[0] += r; c[1] += g; c[2] += bl; n++;}
+			b = nextrow + nextpix; pixel = data[b]; if (pixel) {r = (pixel>>11)&0x1F; g = (pixel>>5)&0x3F; bl = pixel&0x1F; c[0] += r; c[1] += g; c[2] += bl; n++;}
+
+			//average all non-transparent neighbors
+			if (n)
+			{
+				r = c[0]/n;
+				g = c[1]/n;
+				bl = c[2]/n;
+				*dest = ((r&0x1F)<<11) | ((g&0x3F)<<5) | (bl&0x1F);
+
+				n = c[0] = c[1] = c[2] = 0;
+			}
+		}
+	}
+}
+
+/*
+===============
 TexMgr_PadEdgeFixW -- special case of AlphaEdgeFix for textures that only need it because they were padded
 
 operates in place on 32bit data, and expects unpadded height and width values
@@ -1115,6 +1267,40 @@ static void TexMgr_PadEdgeFixW (byte *data, int width, int height)
 		dst[2] = src[2];
 		src += padw * 4;
 		dst += padw * 4;
+	}
+}
+
+/*
+===============
+TexMgr_PadEdgeFixW16 -- special case of AlphaEdgeFix16 for textures that only need it because they were padded
+
+operates in place on 16bit RGB565 data, and expects unpadded height and width values
+===============
+*/
+static void TexMgr_PadEdgeFixW16 (unsigned short *data, int width, int height)
+{
+	unsigned short *src, *dst;
+	int i, padw, padh;
+
+	padw = TexMgr_PadConditional(width);
+	padh = TexMgr_PadConditional(height);
+
+	//copy last full column to first empty column
+	src = data + (width - 1);
+	for (i = 0; i < padh; i++)
+	{
+		src[1] = src[0];
+		src += padw;
+	}
+
+	//copy first full column to last empty column
+	src = data;
+	dst = data + (padw - 1);
+	for (i = 0; i < padh; i++)
+	{
+		dst[0] = src[0];
+		src += padw;
+		dst += padw;
 	}
 }
 
@@ -1159,6 +1345,42 @@ static void TexMgr_PadEdgeFixH (byte *data, int width, int height)
 }
 
 /*
+===============
+TexMgr_PadEdgeFixH16 -- special case of AlphaEdgeFix16 for textures that only need it because they were padded
+
+operates in place on 16bit RGB565 data, and expects unpadded height and width values
+===============
+*/
+static void TexMgr_PadEdgeFixH16 (unsigned short *data, int width, int height)
+{
+	unsigned short *src, *dst;
+	int i, padw, padh;
+
+	padw = TexMgr_PadConditional(width);
+	padh = TexMgr_PadConditional(height);
+
+	//copy last full row to first empty row
+	dst = data + height * padw;
+	src = dst - padw;
+	for (i = 0; i < padw; i++)
+	{
+		dst[0] = src[0];
+		src++;
+		dst++;
+	}
+
+	//copy first full row to last empty row
+	dst = data + (padh - 1) * padw;
+	src = data;
+	for (i = 0; i < padw; i++)
+	{
+		dst[0] = src[0];
+		src++;
+		dst++;
+	}
+}
+
+/*
 ================
 TexMgr_8to32
 ================
@@ -1169,6 +1391,24 @@ static unsigned *TexMgr_8to32 (byte *in, int pixels, unsigned int *usepal)
 	unsigned *out, *data;
 
 	out = data = (unsigned *) Hunk_Alloc(pixels*4);
+
+	for (i = 0; i < pixels; i++)
+		*out++ = usepal[*in++];
+
+	return data;
+}
+
+/*
+================
+TexMgr_8to16 -- convert 8bit indexed to 16bit RGB565
+================
+*/
+static unsigned short *TexMgr_8to16 (byte *in, int pixels, unsigned short *usepal)
+{
+	int i;
+	unsigned short *out, *data;
+
+	out = data = (unsigned short *) Hunk_Alloc(pixels*2);
 
 	for (i = 0; i < pixels; i++)
 		*out++ = usepal[*in++];
@@ -1358,6 +1598,91 @@ static void TexMgr_LoadImage32 (gltexture_t *glt, unsigned *data)
 	TexMgr_SetFilterModes (glt);
 }
 
+/*
+================
+TexMgr_LoadImage16 -- handles 16bit RGB565 source data
+================
+*/
+static void TexMgr_LoadImage16 (gltexture_t *glt, unsigned short *data)
+{
+	int	miplevel, mipwidth, mipheight, picmip;
+	char mapname[MAX_QPATH];
+
+	// mipmap down
+	picmip = (glt->flags & TEXPREF_NOPICMIP) ? 0 : q_max((int)gl_picmip.value, 0);
+
+	if (gl_max_size.value)
+	{ 
+		COM_FileBase (glt->name, mapname, sizeof(mapname));
+
+		if (!strstr(glt->name, "maps") || isSpecialMap(mapname) || strstr(glt->name, "*") || strstr(glt->name, "sky"))
+		{
+			mipwidth = TexMgr_SafeTextureSize2 (glt->width >> picmip);
+			mipheight = TexMgr_SafeTextureSize2 (glt->height >> picmip);
+		}
+		else
+		{
+			mipwidth = TexMgr_SafeTextureSize (glt->width >> picmip);
+			mipheight = TexMgr_SafeTextureSize (glt->height >> picmip);
+		}
+	}
+	else
+	{
+		mipwidth = TexMgr_SafeTextureSize(glt->width >> picmip);
+		mipheight = TexMgr_SafeTextureSize(glt->height >> picmip);
+	}
+
+	if (strstr(glt->name, "*") && r_fastturb.value)
+	{
+		mipwidth = TexMgr_SafeTextureSize3 (glt->width >> picmip);
+		mipheight = TexMgr_SafeTextureSize3 (glt->height >> picmip);
+	}
+
+	while ((int) glt->width > mipwidth)
+	{
+		TexMgr_MipMapW16 (data, glt->width, glt->height);
+		glt->width >>= 1;
+		if (glt->flags & TEXPREF_ALPHA)
+			TexMgr_AlphaEdgeFix16 (data, glt->width, glt->height);
+	}
+	while ((int) glt->height > mipheight)
+	{
+		TexMgr_MipMapH16 (data, glt->width, glt->height);
+		glt->height >>= 1;
+		if (glt->flags & TEXPREF_ALPHA)
+			TexMgr_AlphaEdgeFix16 (data, glt->width, glt->height);
+	}
+
+	// upload
+	GL_Bind (glt);
+	glTexImage2D (GL_TEXTURE_2D, 0, GL_RGB565, glt->width, glt->height, 0, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, data);
+
+	// upload mipmaps
+	if (glt->flags & TEXPREF_MIPMAP && !(glt->flags & TEXPREF_WARPIMAGE))
+	{
+		mipwidth = glt->width;
+		mipheight = glt->height;
+
+		for (miplevel=1; mipwidth > 1 || mipheight > 1; miplevel++)
+		{
+			if (mipwidth > 1)
+			{
+				TexMgr_MipMapW16 (data, mipwidth, mipheight);
+				mipwidth >>= 1;
+			}
+			if (mipheight > 1)
+			{
+				TexMgr_MipMapH16 (data, mipwidth, mipheight);
+				mipheight >>= 1;
+			}
+			glTexImage2D (GL_TEXTURE_2D, miplevel, GL_RGB565, mipwidth, mipheight, 0, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, data);
+		}
+	}
+
+	// set filter modes
+	TexMgr_SetFilterModes (glt);
+}
+
 void TexMgr_BlockSize (enum srcformat format, int *bytes, int *width, int *height)
 {
 	*width = 1;
@@ -1536,33 +1861,34 @@ static void TexMgr_LoadImage8 (gltexture_t *glt, byte *data)
 	if (glt->flags & TEXPREF_FULLBRIGHT)
 	{
 		if (glt->flags & TEXPREF_ALPHA)
-			usepal = d_8to24table_fbright_fence;
+			usepal = d_8to16table_fbright;
 		else
-			usepal = d_8to24table_fbright;
+			usepal = d_8to16table_fbright;
 		padbyte = 0;
 	}
 	else if (glt->flags & TEXPREF_NOBRIGHT && gl_fullbrights.value)
 	{
 		if (glt->flags & TEXPREF_ALPHA)
-			usepal = d_8to24table_nobright_fence;
+			usepal = d_8to16table_nobright;
 		else
-			usepal = d_8to24table_nobright;
+			usepal = d_8to16table_nobright;
 		padbyte = 0;
 	}
 	else if (glt->flags & TEXPREF_CONCHARS)
 	{
-		usepal = d_8to24table_conchars;
+		usepal = d_8to16table_conchars;
 		padbyte = 0;
 	}
 	else
 	{
-		usepal = d_8to24table;
+		usepal = d_8to16table;
 		padbyte = 255;
 	}
 
 	if (glt->shirt.type || glt->pants.type)
 	{
 		int shirt, pants, m;
+		unsigned short translation[256];
 		//create new translation table
 		for (i = 0; i < 256; i++)
 			translation[i] = usepal[i];
@@ -1572,10 +1898,10 @@ static void TexMgr_LoadImage8 (gltexture_t *glt, byte *data)
 			for (i = 0; i < 16; i++)
 			{
 				m = i|(i<<4);
-				((byte *) &translation[TOP_RANGE+i])[0] = (m * glt->shirt.rgb[0])>>8;
-				((byte *) &translation[TOP_RANGE+i])[1] = (m * glt->shirt.rgb[1])>>8;
-				((byte *) &translation[TOP_RANGE+i])[2] = (m * glt->shirt.rgb[2])>>8;
-				((byte *) &translation[TOP_RANGE+i])[3] = 255;
+				int r = (m * glt->shirt.rgb[0])>>8;
+				int g = (m * glt->shirt.rgb[1])>>8;
+				int b = (m * glt->shirt.rgb[2])>>8;
+				translation[TOP_RANGE+i] = ((r>>3)<<11) | ((g>>2)<<5) | (b>>3);
 			}
 		}
 		else if (glt->shirt.type == 1)
@@ -1598,10 +1924,10 @@ static void TexMgr_LoadImage8 (gltexture_t *glt, byte *data)
 			for (i = 0; i < 16; i++)
 			{
 				m = i|(i<<4);
-				((byte *) &translation[BOTTOM_RANGE+i])[0] = (m * glt->pants.rgb[0])>>8;
-				((byte *) &translation[BOTTOM_RANGE+i])[1] = (m * glt->pants.rgb[1])>>8;
-				((byte *) &translation[BOTTOM_RANGE+i])[2] = (m * glt->pants.rgb[2])>>8;
-				((byte *) &translation[BOTTOM_RANGE+i])[3] = 255;
+				int r = (m * glt->pants.rgb[0])>>8;
+				int g = (m * glt->pants.rgb[1])>>8;
+				int b = (m * glt->pants.rgb[2])>>8;
+				translation[BOTTOM_RANGE+i] = ((r>>3)<<11) | ((g>>2)<<5) | (b>>3);
 			}
 		}
 		else if (glt->pants.type == 1)
@@ -1639,22 +1965,22 @@ static void TexMgr_LoadImage8 (gltexture_t *glt, byte *data)
 		}
 	}
 
-	// convert to 32bit
-	data = (byte *)TexMgr_8to32(data, glt->width * glt->height, usepal);
+	// convert to 16bit
+	data = (byte *)TexMgr_8to16(data, glt->width * glt->height, usepal);
 
 	// fix edges
 	if ((glt->flags & TEXPREF_ALPHA) && !(glt->flags & TEXPREF_PREMULTIPLY))
-		TexMgr_AlphaEdgeFix (data, glt->width, glt->height);
+		TexMgr_AlphaEdgeFix16 (data, glt->width, glt->height);
 	else
 	{
 		if (padw)
-			TexMgr_PadEdgeFixW (data, glt->source_width, glt->source_height);
+			TexMgr_PadEdgeFixW16 (data, glt->source_width, glt->source_height);
 		if (padh)
-			TexMgr_PadEdgeFixH (data, glt->source_width, glt->source_height);
+			TexMgr_PadEdgeFixH16 (data, glt->source_width, glt->source_height);
 	}
 
 	// upload it
-	TexMgr_LoadImage32 (glt, (unsigned *)data);
+	TexMgr_LoadImage16 (glt, (unsigned short *)data);
 }
 
 /*
