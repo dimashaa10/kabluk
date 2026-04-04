@@ -996,6 +996,14 @@ void Key_Console (int key)
 			return;
 		}
 		break;
+	case 'a': // woods #consolecursor
+	case 'A':
+#if defined(PLATFORM_OSX) || defined(PLATFORM_MAC) // woods #conselection
+		if (keydown[K_COMMAND]) { Con_SelectAll(); return; }
+#else
+		if (keydown[K_CTRL]) { Con_SelectAll(); return; }
+#endif
+		break;
 
 	case 'c':
 	case 'C':
@@ -1823,6 +1831,12 @@ void Key_EventWithKeycode (int key, qboolean down, int keycode)
 
 	if (key < 0 || key >= MAX_KEYS)
 		return;
+	if (key_dest == key_console &&
+		(key == K_MOUSE1 || key == K_MOUSE3)) {
+		/* Do not update keydown[] here; console uses SDL_GetMouseState().
+		   Returning early prevents weapon fires/uses/etc. */
+		return;
+	}
 
 	if (key == K_CTRL) // woods #saymodifier
 	{

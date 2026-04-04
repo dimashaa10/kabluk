@@ -1667,6 +1667,21 @@ dynamic:
 	}
 }
 
+static qboolean RSceneCache_HasActiveDlights(const dlight_t* lights, size_t count, double time)
+{
+	size_t i;
+
+	for (i = 0; i < count; ++i)
+	{
+		if (lights[i].die < time || !lights[i].radius)
+			continue;
+		return true;
+	}
+
+	return false;
+}
+
+
 static int RSceneCache_Thread(void *ctx)
 {
 	unsigned int i, j, e;
@@ -2021,6 +2036,7 @@ static qboolean RSceneCache_Queue(byte *vis)
 			}
 			else if (r_dynamic.value)
 			{	//check if there's active dlights. FIXME: they may take a little longer to disappear
+				qboolean have_active_dlights = false;
 				dlight_t *l = cl_dlights;
 				size_t i;
 
@@ -2034,9 +2050,13 @@ static qboolean RSceneCache_Queue(byte *vis)
 					
 					if (l->die < cl.time || !l->radius)
 						continue;
+					have_active_dlights = true;
 					cache = NULL;
 					break;
 				}
+				if (!have_active_dlights && best &&
+					RSceneCache_HasActiveDlights(best->dlights, countof(best->dlights), best->time))
+					cache = NULL;
 			}
 		}
 	}

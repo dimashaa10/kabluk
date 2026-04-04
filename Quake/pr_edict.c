@@ -33,6 +33,7 @@ int		type_size[8] = {
 	1,	// sizeof(func_t) / 4		// ev_function
 	1	// sizeof(void *) / 4		// ev_pointer
 };
+#define	NUM_TYPE_SIZES	(int)(sizeof(type_size) / sizeof(type_size[0]))
 
 static ddef_t	*ED_FieldAtOfs (int ofs);
 
@@ -471,6 +472,9 @@ void ED_Print (edict_t *ed)
 	// if the value is still all 0, skip the field
 		type = d->type & ~DEF_SAVEGLOBAL;
 
+		if (type >= NUM_TYPE_SIZES)
+			continue;
+
 		for (j = 0; j < type_size[type]; j++)
 		{
 			if (v[j])
@@ -522,6 +526,10 @@ void ED_Write (FILE *f, edict_t *ed)
 
 	// if the value is still all 0, skip the field
 		type = d->type & ~DEF_SAVEGLOBAL;
+
+		if (type >= NUM_TYPE_SIZES)
+			continue;
+
 		for (j = 0; j < type_size[type]; j++)
 		{
 			if (v[j])

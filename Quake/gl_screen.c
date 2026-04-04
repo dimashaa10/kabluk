@@ -5597,6 +5597,7 @@ static GLuint FXAA_CreateShader_Simple(void)
 		"{\n"
 		"    vec2 pos = gl_TexCoord[0].xy;\n"
 		"    vec4 color = texture2D(u_tex, pos);\n"
+		"    float alpha = color.a;\n"
 		"    \n"
 		"    // Enhanced FXAA implementation with quality parameters\n"
 		"    vec4 nw = texture2D(u_tex, pos + vec2(-1.0, -1.0) * u_rcpFrame);\n"
@@ -5604,14 +5605,13 @@ static GLuint FXAA_CreateShader_Simple(void)
 		"    vec4 sw = texture2D(u_tex, pos + vec2(-1.0, 1.0) * u_rcpFrame);\n"
 		"    vec4 se = texture2D(u_tex, pos + vec2(1.0, 1.0) * u_rcpFrame);\n"
 		"    \n"
-		"    vec4 m = texture2D(u_tex, pos);\n"
-		"    vec4 blur = (nw + ne + sw + se + m) * 0.2;\n"
+		"    vec4 blur = (nw + ne + sw + se + color) * 0.2;\n"
 		"    \n"
 		"    float luma_nw = dot(nw.rgb, vec3(0.299, 0.587, 0.114));\n"
 		"    float luma_ne = dot(ne.rgb, vec3(0.299, 0.587, 0.114));\n"
 		"    float luma_sw = dot(sw.rgb, vec3(0.299, 0.587, 0.114));\n"
 		"    float luma_se = dot(se.rgb, vec3(0.299, 0.587, 0.114));\n"
-		"    float luma_m = dot(m.rgb, vec3(0.299, 0.587, 0.114));\n"
+		"    float luma_m = dot(color.rgb, vec3(0.299, 0.587, 0.114));\n"
 		"    \n"
 		"    float luma_min = min(luma_m, min(min(luma_nw, luma_ne), min(luma_sw, luma_se)));\n"
 		"    float luma_max = max(luma_m, max(max(luma_nw, luma_ne), max(luma_sw, luma_se)));\n"
@@ -5621,8 +5621,10 @@ static GLuint FXAA_CreateShader_Simple(void)
 		"    \n"
 		"    if (contrast < threshold)\n"
 		"        gl_FragColor = color;\n"
-		"    else\n"
-		"        gl_FragColor = mix(color, blur, u_subpix);\n"
+		"    else {\n"
+		"        vec3 blended = mix(color.rgb, blur.rgb, u_subpix);\n"
+		"        gl_FragColor = vec4(blended, alpha);\n"
+		"    }\n"
 		"}\n";
     
     if (!gl_glsl_able || !GL_CreateShaderFunc)
@@ -5700,7 +5702,9 @@ static GLuint FXAA_CreateShader_FTE(void)
         "  vec3 rgbNE = texture2D(u_tex, gl_TexCoord[0].xy + vec2( 1.0,-1.0)*u_rcpFrame).rgb;\n"
         "  vec3 rgbSW = texture2D(u_tex, gl_TexCoord[0].xy + vec2(-1.0, 1.0)*u_rcpFrame).rgb;\n"
         "  vec3 rgbSE = texture2D(u_tex, gl_TexCoord[0].xy + vec2( 1.0, 1.0)*u_rcpFrame).rgb;\n"
-        "  vec3 rgbM  = texture2D(u_tex, gl_TexCoord[0].xy).rgb;\n"
+		"  vec4 rgbaM = texture2D(u_tex, gl_TexCoord[0].xy);\n"
+		"  vec3 rgbM  = rgbaM.rgb;\n"
+		"  float alpha = rgbaM.a;\n"
         "\n"
         "  float lumaNW=dot(rgbNW,luma), lumaNE=dot(rgbNE,luma);\n"
         "  float lumaSW=dot(rgbSW,luma), lumaSE=dot(rgbSE,luma);\n"
@@ -5726,7 +5730,8 @@ static GLuint FXAA_CreateShader_FTE(void)
         "  vec3 rgbB = 0.25*(texture2D(u_tex, gl_TexCoord[0].xy + dir*(-0.5)).rgb +\n"
         "                    texture2D(u_tex, gl_TexCoord[0].xy + dir*( 0.5)).rgb) + 0.5*rgbA;\n"
         "  float lumaB = dot(rgbB,luma);\n"
-        "  gl_FragColor = vec4( ((lumaB < lumaMin)||(lumaB > lumaMax)) ? rgbA : rgbB , 1.0);\n"
+		"  vec3 rgbOut = ((lumaB < lumaMin)||(lumaB > lumaMax)) ? rgbA : rgbB;\n"
+		"  gl_FragColor = vec4(rgbOut, alpha);\n"
         "}\n";
     
     if (!gl_glsl_able || !GL_CreateShaderFunc)
@@ -5966,8 +5971,14 @@ void FXAA_EndFrame(void)
     GLboolean wasDepthTest = glIsEnabled(GL_DEPTH_TEST);
     GLboolean wasCullFace = glIsEnabled(GL_CULL_FACE);
     GLboolean wasScissorTest = glIsEnabled(GL_SCISSOR_TEST);
+	GLboolean wasTexture2D = glIsEnabled(GL_TEXTURE_2D);
     GLint polygonMode[2];
     glGetIntegerv(GL_POLYGON_MODE, polygonMode);
+	GLint activeTexture = GL_TEXTURE0;
+	if (GL_SelectTextureFunc)
+		glGetIntegerv(GL_ACTIVE_TEXTURE, &activeTexture);
+	GLint boundTexture = 0;
+	glGetIntegerv(GL_TEXTURE_BINDING_2D, &boundTexture);
         
     // Bind back buffer
     GL_BindFramebufferFunc(GL_FRAMEBUFFER, 0);
@@ -5979,6 +5990,8 @@ void FXAA_EndFrame(void)
     glDisable(GL_CULL_FACE);
     glDisable(GL_BLEND);
     glDisable(GL_ALPHA_TEST);
+	if (!wasTexture2D)
+		glEnable(GL_TEXTURE_2D);
     glDisable(GL_SCISSOR_TEST);
     glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
     
@@ -5987,6 +6000,7 @@ void FXAA_EndFrame(void)
     GL_UseProgramFunc(prog);
     
     // Bind texture and set uniforms
+	if (GL_SelectTextureFunc)
     GL_SelectTextureFunc(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, fxaa.color_texture);
     
@@ -6009,8 +6023,16 @@ void FXAA_EndFrame(void)
     glEnd();
     
     // Cleanup
-    GL_UseProgramFunc(0);
-    glBindTexture(GL_TEXTURE_2D, 0);
+	if (GL_SelectTextureFunc) {
+		if (activeTexture != GL_TEXTURE0)
+			GL_SelectTextureFunc((GLenum)activeTexture);
+		glBindTexture(GL_TEXTURE_2D, (GLuint)boundTexture);
+		if (activeTexture != GL_TEXTURE0)
+			GL_SelectTextureFunc(GL_TEXTURE0);
+	}
+	else {
+		glBindTexture(GL_TEXTURE_2D, (GLuint)boundTexture);
+	}
     
     // Restore state
     if (wasDepthTest) glEnable(GL_DEPTH_TEST);
@@ -6018,6 +6040,10 @@ void FXAA_EndFrame(void)
     if (wasBlend) glEnable(GL_BLEND);
     if (wasAlphaTest) glEnable(GL_ALPHA_TEST);
     if (wasScissorTest) glEnable(GL_SCISSOR_TEST);
+	if (!wasTexture2D)
+		glDisable(GL_TEXTURE_2D);
+	if (GL_SelectTextureFunc && activeTexture != GL_TEXTURE0)
+		GL_SelectTextureFunc((GLenum)activeTexture);
     glPolygonMode(GL_FRONT, polygonMode[0]);
     glPolygonMode(GL_BACK, polygonMode[1]);
 }

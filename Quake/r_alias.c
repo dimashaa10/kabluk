@@ -1049,7 +1049,7 @@ static void GL_DrawAliasFrame_GLSL (aliasglsl_t *glsl, aliashdr_t *paliashdr, le
 		qboolean isSamePants = sb->pants.basic == cl.scores[cl.viewentity - 1].pants.basic;
 		qboolean isSelf = sb->userinfo == cl.scores[cl.viewentity - 1].userinfo;
 
-		if ((isTeamColorSet || isEnemyColorSet) && !cls.demoplayback && !isSelf) // woods #enemycolors, do we run it?
+		if ((isTeamColorSet || isEnemyColorSet) && !cls.demoplayback && !isSelf && key_dest != key_menu)
 		{
 			if (isTeamColorSet && !isEnemyColorSet && cl.teamcolor[0]) // team color active, enemy blank
 			{
