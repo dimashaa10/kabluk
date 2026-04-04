@@ -32,6 +32,7 @@ static cvar_t	gl_texture_anisotropy = {"gl_texture_anisotropy", "1", CVAR_ARCHIV
 cvar_t	gl_max_size = {"gl_max_size", "0", CVAR_NONE}; // woods remove static for menu
 cvar_t	gl_picmip = {"gl_picmip", "0", CVAR_NONE}; // woods remove static for #f_config
 cvar_t	r_fastturb = {"r_fastturb", "0", CVAR_ARCHIVE}; // woods #fastturb
+cvar_t	gl_highcolor = {"gl_highcolor", "0", CVAR_ARCHIVE}; // 16-bit per channel textures
 
 void VID_ChangedRestart_f (cvar_t* var); // woods #vidrestart
 
@@ -52,6 +53,12 @@ unsigned short d_8to16table[256];  // 16-bit RGB565 palette table
 unsigned short d_8to16table_fbright[256];
 unsigned short d_8to16table_nobright[256];
 unsigned short d_8to16table_conchars[256];
+
+// 16-bit per channel palette tables (48-bit RGB)
+unsigned short d_8to48table[256][3];  // [R][G][B] each 16-bit
+unsigned short d_8to48table_fbright[256][3];
+unsigned short d_8to48table_nobright[256][3];
+unsigned short d_8to48table_conchars[256][3];
 
 static void TexMgr_ColormapTexture_Free(struct gltexture_s *basetex);
 
@@ -787,6 +794,68 @@ void TexMgr_LoadPalette (void)
 	d_8to16table_conchars[0] = 0;
 #undef RGB565
 
+	// 16-bit per channel palette conversion (48-bit RGB)
+#define RGB16(r) ((unsigned short)((r << 8) | r))  // Expand 8-bit to 16-bit
+	for (i = 0; i < 256; i++)
+	{
+		int r = pal[i*3 + 0];
+		int g = pal[i*3 + 1];
+		int b = pal[i*3 + 2];
+		d_8to48table[i][0] = RGB16(r);
+		d_8to48table[i][1] = RGB16(g);
+		d_8to48table[i][2] = RGB16(b);
+	}
+	// transparent index 255 (set to black for now, alpha handled separately)
+	d_8to48table[255][0] = 0;
+	d_8to48table[255][1] = 0;
+	d_8to48table[255][2] = 0;
+
+	// fbright
+	for (i = 224; i < 256; i++)
+	{
+		int r = pal[i*3 + 0];
+		int g = pal[i*3 + 1];
+		int b = pal[i*3 + 2];
+		d_8to48table_fbright[i][0] = RGB16(r);
+		d_8to48table_fbright[i][1] = RGB16(g);
+		d_8to48table_fbright[i][2] = RGB16(b);
+	}
+	for (i = 0; i < 224; i++)
+	{
+		d_8to48table_fbright[i][0] = 0;
+		d_8to48table_fbright[i][1] = 0;
+		d_8to48table_fbright[i][2] = 0;
+	}
+
+	// nobright
+	for (i = 0; i < 256; i++)
+	{
+		int r = pal[i*3 + 0];
+		int g = pal[i*3 + 1];
+		int b = pal[i*3 + 2];
+		d_8to48table_nobright[i][0] = RGB16(r);
+		d_8to48table_nobright[i][1] = RGB16(g);
+		d_8to48table_nobright[i][2] = RGB16(b);
+	}
+	for (i = 224; i < 256; i++)
+	{
+		d_8to48table_nobright[i][0] = 0;
+		d_8to48table_nobright[i][1] = 0;
+		d_8to48table_nobright[i][2] = 0;
+	}
+
+	// conchars
+	for (i = 0; i < 256; i++)
+	{
+		d_8to48table_conchars[i][0] = d_8to48table[i][0];
+		d_8to48table_conchars[i][1] = d_8to48table[i][1];
+		d_8to48table_conchars[i][2] = d_8to48table[i][2];
+	}
+	d_8to48table_conchars[0][0] = 0;
+	d_8to48table_conchars[0][1] = 0;
+	d_8to48table_conchars[0][2] = 0;
+#undef RGB16
+
 	Hunk_FreeToLowMark (mark);
 }
 
@@ -1066,6 +1135,57 @@ static unsigned short *TexMgr_MipMapH16 (unsigned short *data, int width, int he
 
 /*
 ================
+TexMgr_MipMapW48 -- mipmap width for 48bit RGB (16-bit per channel)
+================
+*/
+static unsigned short *TexMgr_MipMapW48 (unsigned short *data, int width, int height)
+{
+	int	i, size;
+	unsigned short *out, *in;
+
+	out = in = data;
+	size = (width*height)>>1;
+
+	for (i = 0; i < size; i++, out += 3, in += 6)
+	{
+		// Average two adjacent pixels (R,G,B each 16-bit)
+		out[0] = (in[0] + in[3]) >> 1;  // R
+		out[1] = (in[1] + in[4]) >> 1;  // G
+		out[2] = (in[2] + in[5]) >> 1;  // B
+	}
+
+	return data;
+}
+
+/*
+================
+TexMgr_MipMapH48 -- mipmap height for 48bit RGB (16-bit per channel)
+================
+*/
+static unsigned short *TexMgr_MipMapH48 (unsigned short *data, int width, int height)
+{
+	int	i, j;
+	unsigned short *out, *in;
+
+	out = in = data;
+	height>>=1;
+
+	for (i = 0; i < height; i++, in += width * 3)
+	{
+		for (j = 0; j < width; j++, out += 3, in += 3)
+		{
+			// Average pixel with the one below (R,G,B each 16-bit)
+			out[0] = (in[0] + in[width*3 + 0]) >> 1;  // R
+			out[1] = (in[1] + in[width*3 + 1]) >> 1;  // G
+			out[2] = (in[2] + in[width*3 + 2]) >> 1;  // B
+		}
+	}
+
+	return data;
+}
+
+/*
+================
 TexMgr_ResampleTexture -- bilinear resample
 ================
 */
@@ -1234,6 +1354,65 @@ static void TexMgr_AlphaEdgeFix16 (unsigned short *data, int width, int height)
 
 /*
 ===============
+TexMgr_AlphaEdgeFix48
+
+eliminate pink edges on sprites, etc.
+operates in place on 48bit RGB data (16-bit per channel)
+===============
+*/
+static void TexMgr_AlphaEdgeFix48 (unsigned short *data, int width, int height)
+{
+	int	i, j, n = 0, b, c[3] = {0,0,0},
+		lastrow, thisrow, nextrow,
+		lastpix, thispix, nextpix;
+	unsigned short *dest = data;
+	unsigned short r, g, bl;
+
+	// For 48-bit, we consider a pixel transparent if all channels are 0
+	for (i = 0; i < height; i++)
+	{
+		lastrow = width * ((i == 0) ? height-1 : i-1);
+		thisrow = width * i;
+		nextrow = width * ((i == height-1) ? 0 : i+1);
+
+		for (j = 0; j < width; j++, dest += 3)
+		{
+			// Check if pixel is transparent (all channels zero)
+			if (dest[0] != 0 || dest[1] != 0 || dest[2] != 0)
+				continue;
+
+			lastpix = ((j == 0) ? width-1 : j-1);
+			thispix = j;
+			nextpix = ((j == width-1) ? 0 : j+1);
+
+			// Sample 8 neighbors
+			b = (lastrow + lastpix) * 3; if (data[b] || data[b+1] || data[b+2]) {c[0] += data[b]; c[1] += data[b+1]; c[2] += data[b+2]; n++;}
+			b = (thisrow + lastpix) * 3; if (data[b] || data[b+1] || data[b+2]) {c[0] += data[b]; c[1] += data[b+1]; c[2] += data[b+2]; n++;}
+			b = (nextrow + lastpix) * 3; if (data[b] || data[b+1] || data[b+2]) {c[0] += data[b]; c[1] += data[b+1]; c[2] += data[b+2]; n++;}
+			b = (lastrow + thispix) * 3; if (data[b] || data[b+1] || data[b+2]) {c[0] += data[b]; c[1] += data[b+1]; c[2] += data[b+2]; n++;}
+			b = (nextrow + thispix) * 3; if (data[b] || data[b+1] || data[b+2]) {c[0] += data[b]; c[1] += data[b+1]; c[2] += data[b+2]; n++;}
+			b = (lastrow + nextpix) * 3; if (data[b] || data[b+1] || data[b+2]) {c[0] += data[b]; c[1] += data[b+1]; c[2] += data[b+2]; n++;}
+			b = (thisrow + nextpix) * 3; if (data[b] || data[b+1] || data[b+2]) {c[0] += data[b]; c[1] += data[b+1]; c[2] += data[b+2]; n++;}
+			b = (nextrow + nextpix) * 3; if (data[b] || data[b+1] || data[b+2]) {c[0] += data[b]; c[1] += data[b+1]; c[2] += data[b+2]; n++;}
+
+			//average all non-transparent neighbors
+			if (n)
+			{
+				r = c[0]/n;
+				g = c[1]/n;
+				bl = c[2]/n;
+				dest[0] = r;
+				dest[1] = g;
+				dest[2] = bl;
+
+				n = c[0] = c[1] = c[2] = 0;
+			}
+		}
+	}
+}
+
+/*
+===============
 TexMgr_PadEdgeFixW -- special case of AlphaEdgeFix for textures that only need it because they were padded
 
 operates in place on 32bit data, and expects unpadded height and width values
@@ -1381,6 +1560,80 @@ static void TexMgr_PadEdgeFixH16 (unsigned short *data, int width, int height)
 }
 
 /*
+===============
+TexMgr_PadEdgeFixW48 -- special case of AlphaEdgeFix48 for textures that only need it because they were padded
+
+operates in place on 48bit RGB data (16-bit per channel), and expects unpadded height and width values
+===============
+*/
+static void TexMgr_PadEdgeFixW48 (unsigned short *data, int width, int height)
+{
+	unsigned short *src, *dst;
+	int i, padw, padh;
+
+	padw = TexMgr_PadConditional(width);
+	padh = TexMgr_PadConditional(height);
+
+	//copy last full column to first empty column (3 channels per pixel)
+	src = data + (width - 1) * 3;
+	for (i = 0; i < padh; i++)
+	{
+		src[3] = src[0];
+		src[4] = src[1];
+		src[5] = src[2];
+		src += padw * 3;
+	}
+
+	//copy first full column to last empty column
+	src = data;
+	dst = data + (padw - 1) * 3;
+	for (i = 0; i < padh; i++)
+	{
+		dst[0] = src[0];
+		dst[1] = src[1];
+		dst[2] = src[2];
+		src += padw * 3;
+		dst += padw * 3;
+	}
+}
+
+/*
+===============
+TexMgr_PadEdgeFixH48 -- special case of AlphaEdgeFix48 for textures that only need it because they were padded
+
+operates in place on 48bit RGB data (16-bit per channel), and expects unpadded height and width values
+===============
+*/
+static void TexMgr_PadEdgeFixH48 (unsigned short *data, int width, int height)
+{
+	unsigned short *src, *dst;
+	int i, padw, padh;
+
+	padw = TexMgr_PadConditional(width);
+	padh = TexMgr_PadConditional(height);
+
+	//copy last full row to first empty row (3 channels per pixel)
+	dst = data + height * padw * 3;
+	src = dst - padw * 3;
+	for (i = 0; i < padw * 3; i++)
+	{
+		dst[0] = src[0];
+		src++;
+		dst++;
+	}
+
+	//copy first full row to last empty row
+	dst = data + (padh - 1) * padw * 3;
+	src = data;
+	for (i = 0; i < padw * 3; i++)
+	{
+		dst[0] = src[0];
+		src++;
+		dst++;
+	}
+}
+
+/*
 ================
 TexMgr_8to32
 ================
@@ -1412,6 +1665,29 @@ static unsigned short *TexMgr_8to16 (byte *in, int pixels, unsigned short *usepa
 
 	for (i = 0; i < pixels; i++)
 		*out++ = usepal[*in++];
+
+	return data;
+}
+
+/*
+================
+TexMgr_8to48 -- convert 8bit indexed to 48bit RGB (16-bit per channel)
+================
+*/
+static unsigned short *TexMgr_8to48 (byte *in, int pixels, unsigned short usepal[256][3])
+{
+	int i;
+	unsigned short *out, *data;
+
+	out = data = (unsigned short *) Hunk_Alloc(pixels*6);  // 3 channels * 2 bytes each
+
+	for (i = 0; i < pixels; i++)
+	{
+		int idx = *in++;
+		*out++ = usepal[idx][0];  // R
+		*out++ = usepal[idx][1];  // G
+		*out++ = usepal[idx][2];  // B
+	}
 
 	return data;
 }
@@ -1683,6 +1959,91 @@ static void TexMgr_LoadImage16 (gltexture_t *glt, unsigned short *data)
 	TexMgr_SetFilterModes (glt);
 }
 
+/*
+================
+TexMgr_LoadImage48 -- handles 48bit RGB source data (16-bit per channel)
+================
+*/
+static void TexMgr_LoadImage48 (gltexture_t *glt, unsigned short *data)
+{
+	int	miplevel, mipwidth, mipheight, picmip;
+	char mapname[MAX_QPATH];
+
+	// mipmap down
+	picmip = (glt->flags & TEXPREF_NOPICMIP) ? 0 : q_max((int)gl_picmip.value, 0);
+
+	if (gl_max_size.value)
+	{ 
+		COM_FileBase (glt->name, mapname, sizeof(mapname));
+
+		if (!strstr(glt->name, "maps") || isSpecialMap(mapname) || strstr(glt->name, "*") || strstr(glt->name, "sky"))
+		{
+			mipwidth = TexMgr_SafeTextureSize2 (glt->width >> picmip);
+			mipheight = TexMgr_SafeTextureSize2 (glt->height >> picmip);
+		}
+		else
+		{
+			mipwidth = TexMgr_SafeTextureSize (glt->width >> picmip);
+			mipheight = TexMgr_SafeTextureSize (glt->height >> picmip);
+		}
+	}
+	else
+	{
+		mipwidth = TexMgr_SafeTextureSize(glt->width >> picmip);
+		mipheight = TexMgr_SafeTextureSize(glt->height >> picmip);
+	}
+
+	if (strstr(glt->name, "*") && r_fastturb.value)
+	{
+		mipwidth = TexMgr_SafeTextureSize3 (glt->width >> picmip);
+		mipheight = TexMgr_SafeTextureSize3 (glt->height >> picmip);
+	}
+
+	while ((int) glt->width > mipwidth)
+	{
+		TexMgr_MipMapW48 (data, glt->width, glt->height);
+		glt->width >>= 1;
+		if (glt->flags & TEXPREF_ALPHA)
+			TexMgr_AlphaEdgeFix48 (data, glt->width, glt->height);
+	}
+	while ((int) glt->height > mipheight)
+	{
+		TexMgr_MipMapH48 (data, glt->width, glt->height);
+		glt->height >>= 1;
+		if (glt->flags & TEXPREF_ALPHA)
+			TexMgr_AlphaEdgeFix48 (data, glt->width, glt->height);
+	}
+
+	// upload
+	GL_Bind (glt);
+	glTexImage2D (GL_TEXTURE_2D, 0, GL_RGB16, glt->width, glt->height, 0, GL_RGB, GL_UNSIGNED_SHORT, data);
+
+	// upload mipmaps
+	if (glt->flags & TEXPREF_MIPMAP && !(glt->flags & TEXPREF_WARPIMAGE))
+	{
+		mipwidth = glt->width;
+		mipheight = glt->height;
+
+		for (miplevel=1; mipwidth > 1 || mipheight > 1; miplevel++)
+		{
+			if (mipwidth > 1)
+			{
+				TexMgr_MipMapW48 (data, mipwidth, mipheight);
+				mipwidth >>= 1;
+			}
+			if (mipheight > 1)
+			{
+				TexMgr_MipMapH48 (data, mipwidth, mipheight);
+				mipheight >>= 1;
+			}
+			glTexImage2D (GL_TEXTURE_2D, miplevel, GL_RGB16, mipwidth, mipheight, 0, GL_RGB, GL_UNSIGNED_SHORT, data);
+		}
+	}
+
+	// set filter modes
+	TexMgr_SetFilterModes (glt);
+}
+
 void TexMgr_BlockSize (enum srcformat format, int *bytes, int *width, int *height)
 {
 	*width = 1;
@@ -1825,28 +2186,177 @@ static void TexMgr_LoadImageCompressed (gltexture_t *glt, byte *data)
 
 /*
 ================
-TexMgr_LoadImage8 -- handles 8bit source data, then passes it to LoadImage32
+TexMgr_LoadImage8 -- handles 8bit source data, then passes it to LoadImage32 or LoadImage48
 ================
 */
 static void TexMgr_LoadImage8 (gltexture_t *glt, byte *data)
 {
 	extern cvar_t gl_fullbrights;
+	extern cvar_t gl_highcolor;
 	qboolean padw = false, padh = false;
 	byte padbyte;
-	unsigned int *usepal, translation[256];
+	unsigned int *usepal32, translation32[256];
+	unsigned short *usepal48, translation48[256][3];
 	int i;
 
-	// HACK HACK HACK -- taken from tomazquake
-	if (strstr(glt->name, "shot1sid") &&
-	    glt->width == 32 && glt->height == 32 &&
-	    CRC_Block(data, 1024) == 65393)
+	// Use high color mode if enabled
+	if (gl_highcolor.value)
 	{
-		// This texture in b_shell1.bsp has some of the first 32 pixels painted white.
-		// They are invisible in software, but look really ugly in GL. So we just copy
-		// 32 pixels from the bottom to make it look nice.
-		memcpy (data, data + 32*31, 32);
+		// detect false alpha cases
+		if (glt->flags & TEXPREF_ALPHA && !(glt->flags & TEXPREF_CONCHARS))
+		{
+			for (i = 0; i < (int) (glt->width * glt->height); i++)
+				if (data[i] == 255) //transparent index
+					break;
+			if (i == (int) (glt->width * glt->height))
+				glt->flags -= TEXPREF_ALPHA;
+		}
+
+		// choose palette and padbyte for 48-bit
+		if (glt->flags & TEXPREF_FULLBRIGHT)
+		{
+			usepal48 = d_8to48table_fbright;
+			padbyte = 0;
+		}
+		else if (glt->flags & TEXPREF_NOBRIGHT && gl_fullbrights.value)
+		{
+			usepal48 = d_8to48table_nobright;
+			padbyte = 0;
+		}
+		else if (glt->flags & TEXPREF_CONCHARS)
+		{
+			usepal48 = d_8to48table_conchars;
+			padbyte = 0;
+		}
+		else
+		{
+			usepal48 = d_8to48table;
+			padbyte = 255;
+		}
+
+		if (glt->shirt.type || glt->pants.type)
+		{
+			int shirt, pants, m;
+			//create new translation table
+			for (i = 0; i < 256; i++)
+			{
+				translation48[i][0] = usepal48[i][0];
+				translation48[i][1] = usepal48[i][1];
+				translation48[i][2] = usepal48[i][2];
+			}
+
+			if (glt->shirt.type == 2)
+			{
+				for (i = 0; i < 16; i++)
+				{
+					m = i|(i<<4);
+					int r = (m * glt->shirt.rgb[0])>>8;
+					int g = (m * glt->shirt.rgb[1])>>8;
+					int b = (m * glt->shirt.rgb[2])>>8;
+					translation48[TOP_RANGE+i][0] = (r << 8) | r;
+					translation48[TOP_RANGE+i][1] = (g << 8) | g;
+					translation48[TOP_RANGE+i][2] = (b << 8) | b;
+				}
+			}
+			else if (glt->shirt.type == 1)
+			{
+				shirt = glt->shirt.basic * 16;
+				if (shirt < 128)
+				{
+					for (i = 0; i < 16; i++)
+					{
+						translation48[TOP_RANGE+i][0] = usepal48[shirt + i][0];
+						translation48[TOP_RANGE+i][1] = usepal48[shirt + i][1];
+						translation48[TOP_RANGE+i][2] = usepal48[shirt + i][2];
+					}
+				}
+				else
+				{
+					for (i = 0; i < 16; i++)
+					{
+						translation48[TOP_RANGE+i][0] = usepal48[shirt+15-i][0];
+						translation48[TOP_RANGE+i][1] = usepal48[shirt+15-i][1];
+						translation48[TOP_RANGE+i][2] = usepal48[shirt+15-i][2];
+					}
+				}
+			}
+
+			if (glt->pants.type == 2)
+			{
+				for (i = 0; i < 16; i++)
+				{
+					m = i|(i<<4);
+					int r = (m * glt->pants.rgb[0])>>8;
+					int g = (m * glt->pants.rgb[1])>>8;
+					int b = (m * glt->pants.rgb[2])>>8;
+					translation48[BOTTOM_RANGE+i][0] = (r << 8) | r;
+					translation48[BOTTOM_RANGE+i][1] = (g << 8) | g;
+					translation48[BOTTOM_RANGE+i][2] = (b << 8) | b;
+				}
+			}
+			else if (glt->pants.type == 1)
+			{
+				pants = glt->pants.basic * 16;
+				if (pants < 128)
+				{
+					for (i = 0; i < 16; i++)
+					{
+						translation48[BOTTOM_RANGE+i][0] = usepal48[pants + i][0];
+						translation48[BOTTOM_RANGE+i][1] = usepal48[pants + i][1];
+						translation48[BOTTOM_RANGE+i][2] = usepal48[pants + i][2];
+					}
+				}
+				else
+				{
+					for (i = 0; i < 16; i++)
+					{
+						translation48[BOTTOM_RANGE+i][0] = usepal48[pants+15-i][0];
+						translation48[BOTTOM_RANGE+i][1] = usepal48[pants+15-i][1];
+						translation48[BOTTOM_RANGE+i][2] = usepal48[pants+15-i][2];
+					}
+				}
+			}
+
+			usepal48 = translation48;
+		}
+
+		// pad each dimention, but only if it's not going to be downsampled later
+		if (glt->flags & TEXPREF_PAD)
+		{
+			if ((int) glt->width < TexMgr_SafeTextureSize(glt->width))
+			{
+				data = TexMgr_PadImageW (data, glt->width, glt->height, padbyte);
+				glt->width = TexMgr_Pad(glt->width);
+				padw = true;
+			}
+			if ((int) glt->height < TexMgr_SafeTextureSize(glt->height))
+			{
+				data = TexMgr_PadImageH (data, glt->width, glt->height, padbyte);
+				glt->height = TexMgr_Pad(glt->height);
+				padh = true;
+			}
+		}
+
+		// convert to 48bit (16-bit per channel)
+		data = (byte *)TexMgr_8to48(data, glt->width * glt->height, usepal48);
+
+		// fix edges
+		if ((glt->flags & TEXPREF_ALPHA) && !(glt->flags & TEXPREF_PREMULTIPLY))
+			TexMgr_AlphaEdgeFix48 (data, glt->width, glt->height);
+		else
+		{
+			if (padw)
+				TexMgr_PadEdgeFixW48 (data, glt->source_width, glt->source_height);
+			if (padh)
+				TexMgr_PadEdgeFixH48 (data, glt->source_width, glt->source_height);
+		}
+
+		// upload it
+		TexMgr_LoadImage48 (glt, (unsigned short *)data);
+		return;
 	}
 
+	// Original 16-bit RGB565 path
 	// detect false alpha cases
 	if (glt->flags & TEXPREF_ALPHA && !(glt->flags & TEXPREF_CONCHARS))
 	{
@@ -1861,29 +2371,40 @@ static void TexMgr_LoadImage8 (gltexture_t *glt, byte *data)
 	if (glt->flags & TEXPREF_FULLBRIGHT)
 	{
 		if (glt->flags & TEXPREF_ALPHA)
-			usepal = d_8to16table_fbright;
+			usepal32 = d_8to24table_fbright;
 		else
-			usepal = d_8to16table_fbright;
+			usepal32 = d_8to16table_fbright;
 		padbyte = 0;
 	}
 	else if (glt->flags & TEXPREF_NOBRIGHT && gl_fullbrights.value)
 	{
 		if (glt->flags & TEXPREF_ALPHA)
-			usepal = d_8to16table_nobright;
+			usepal32 = d_8to24table_nobright;
 		else
-			usepal = d_8to16table_nobright;
+			usepal32 = d_8to16table_nobright;
 		padbyte = 0;
 	}
 	else if (glt->flags & TEXPREF_CONCHARS)
 	{
-		usepal = d_8to16table_conchars;
+		usepal32 = NULL;  // Will use d_8to16table_conchars below
 		padbyte = 0;
 	}
 	else
 	{
-		usepal = d_8to16table;
+		usepal32 = NULL;  // Will use d_8to16table below
 		padbyte = 255;
 	}
+
+	// For simplicity in the original path, just use the 16-bit tables directly
+	unsigned short *usepal16;
+	if (glt->flags & TEXPREF_FULLBRIGHT)
+		usepal16 = d_8to16table_fbright;
+	else if (glt->flags & TEXPREF_NOBRIGHT && gl_fullbrights.value)
+		usepal16 = d_8to16table_nobright;
+	else if (glt->flags & TEXPREF_CONCHARS)
+		usepal16 = d_8to16table_conchars;
+	else
+		usepal16 = d_8to16table;
 
 	if (glt->shirt.type || glt->pants.type)
 	{
@@ -1891,7 +2412,7 @@ static void TexMgr_LoadImage8 (gltexture_t *glt, byte *data)
 		unsigned short translation[256];
 		//create new translation table
 		for (i = 0; i < 256; i++)
-			translation[i] = usepal[i];
+			translation[i] = usepal16[i];
 
 		if (glt->shirt.type == 2)
 		{
@@ -1910,12 +2431,12 @@ static void TexMgr_LoadImage8 (gltexture_t *glt, byte *data)
 			if (shirt < 128)
 			{
 				for (i = 0; i < 16; i++)
-					translation[TOP_RANGE+i] = usepal[shirt + i];
+					translation[TOP_RANGE+i] = usepal16[shirt + i];
 			}
 			else
 			{
 				for (i = 0; i < 16; i++)
-					translation[TOP_RANGE+i] = usepal[shirt+15-i];
+					translation[TOP_RANGE+i] = usepal16[shirt+15-i];
 			}
 		}
 
@@ -1936,16 +2457,16 @@ static void TexMgr_LoadImage8 (gltexture_t *glt, byte *data)
 			if (pants < 128)
 			{
 				for (i = 0; i < 16; i++)
-					translation[BOTTOM_RANGE+i] = usepal[pants + i];
+					translation[BOTTOM_RANGE+i] = usepal16[pants + i];
 			}
 			else
 			{
 				for (i = 0; i < 16; i++)
-					translation[BOTTOM_RANGE+i] = usepal[pants+15-i];
+					translation[BOTTOM_RANGE+i] = usepal16[pants+15-i];
 			}
 		}
 
-		usepal = translation;
+		usepal16 = translation;
 	}
 
 	// pad each dimention, but only if it's not going to be downsampled later
@@ -1966,7 +2487,7 @@ static void TexMgr_LoadImage8 (gltexture_t *glt, byte *data)
 	}
 
 	// convert to 16bit
-	data = (byte *)TexMgr_8to16(data, glt->width * glt->height, usepal);
+	data = (byte *)TexMgr_8to16(data, glt->width * glt->height, usepal16);
 
 	// fix edges
 	if ((glt->flags & TEXPREF_ALPHA) && !(glt->flags & TEXPREF_PREMULTIPLY))

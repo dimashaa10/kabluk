@@ -9,3 +9,10 @@ Windows/VisualStudio/UpgradeLog.htm
 
 # macOS
 .DS_Store
+```
+# Compiled and build artifacts
+*.o
+*.d
+Quake/*.o
+Quake/*.d
+```
