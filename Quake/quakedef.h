@@ -48,7 +48,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #define QSSM_VER_MAJOR		0
 #define QSSM_VER_MINOR		1
-#define QSSM_VER_PATCH		8
+#define QSSM_VER_PATCH		9
 #ifndef QSSM_VER_SUFFIX
 #define QSSM_VER_SUFFIX		"-lox"	// napishi chto ti lox
 #endif

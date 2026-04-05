@@ -26,6 +26,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "q_ctype.h"
 #include <errno.h>
 #include <sys/stat.h>
+#include "bgmusic.h"
 
 #ifndef _WIN32
 	#include <dirent.h>
@@ -219,7 +220,7 @@ void Vec_Append(void** pvec, size_t element_size, const void* data, size_t count
 	if (!count)
 		return;
 	Vec_Grow(pvec, element_size, count);
-	memcpy((byte*)*pvec + VEC_HEADER(*pvec).size, data, count * element_size);
+	memcpy((byte*)*pvec + VEC_HEADER(*pvec).size * element_size, data, count * element_size);
 	VEC_HEADER(*pvec).size += count;
 }
 
@@ -3726,6 +3727,7 @@ static void COM_Game_f (void)
 		if (!isDedicated)
 			Draw_ReloadTextures(true);
 		ExtraMaps_NewGame ();
+		BGM_Stop();
 		Host_Resetdemos ();
 		DemoList_Rebuild ();
 		ParticleList_Rebuild (); // woods #particlelist

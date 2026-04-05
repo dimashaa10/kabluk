@@ -123,6 +123,19 @@ void DrawGLTriangleFan (glpoly_t *p)
 =============================================================
 */
 
+static qboolean R_IsStaticEntity(const entity_t* e)
+{
+	int i;
+
+	for (i = 0; i < cl.num_statics; i++)
+	{
+		if (cl.static_entities[i].ent == e)
+			return true;
+	}
+
+	return false;
+}
+
 #if 0
 /*
 ================
@@ -511,6 +524,7 @@ void R_DrawBrushModel (entity_t *e)
 	mplane_t	*pplane;
 	qmodel_t	*clmodel;
 	vec3_t		lightorg;
+	qboolean	zfix;
 	extern byte *skipsubmodels;
 
 	if (e->model->submodelof == cl.worldmodel &&
@@ -523,6 +537,7 @@ void R_DrawBrushModel (entity_t *e)
 
 	currententity = e;
 	clmodel = e->model;
+	zfix = gl_zfix.value && !R_IsStaticEntity(e);
 
 	VectorSubtract (r_refdef.vieworg, e->origin, modelorg);
 	if (e->angles[0] || e->angles[1] || e->angles[2])
@@ -558,14 +573,14 @@ void R_DrawBrushModel (entity_t *e)
 
 	glPushMatrix ();
 	e->angles[0] = -e->angles[0];	// stupid quake bug
-	if (gl_zfix.value)
+	if (zfix)
 	{
 		e->origin[0] -= DIST_EPSILON;
 		e->origin[1] -= DIST_EPSILON;
 		e->origin[2] -= DIST_EPSILON;
 	}
 	R_RotateForEntity (e->origin, e->angles, e->netstate.scale);
-	if (gl_zfix.value)
+	if (zfix)
 	{
 		e->origin[0] += DIST_EPSILON;
 		e->origin[1] += DIST_EPSILON;
