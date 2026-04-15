@@ -263,7 +263,7 @@ void *Loader_GetResult(const char *name)
     load_job_t *job = loader_sys.job_queue;
     while (job)
     {
-        if (!q_strcmp(job->name, name) && job->complete)
+        if (!Q_strcmp(job->name, name) && job->complete)
         {
             result = job->result;
             break;
@@ -285,7 +285,7 @@ qboolean Loader_IsComplete(const char *name)
     load_job_t *job = loader_sys.job_queue;
     while (job)
     {
-        if (!q_strcmp(job->name, name))
+        if (!Q_strcmp(job->name, name))
         {
             complete = job->complete;
             break;
