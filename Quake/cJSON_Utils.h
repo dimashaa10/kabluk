@@ -30,11 +30,10 @@ extern "C"
 
 #include "cJSON.h"
 
-/* Implement RFC6901 (https://tools.ietf.org/html/rfc6901) JSON Pointer spec. */
 CJSON_PUBLIC(cJSON *) cJSONUtils_GetPointer(cJSON * const object, const char *pointer);
 CJSON_PUBLIC(cJSON *) cJSONUtils_GetPointerCaseSensitive(cJSON * const object, const char *pointer);
 
-/* Implement RFC6902 (https://tools.ietf.org/html/rfc6902) JSON Patch spec. */
+
 /* NOTE: This modifies objects in 'from' and 'to' by sorting the elements by their key */
 CJSON_PUBLIC(cJSON *) cJSONUtils_GeneratePatches(cJSON * const from, cJSON * const to);
 CJSON_PUBLIC(cJSON *) cJSONUtils_GeneratePatchesCaseSensitive(cJSON * const from, cJSON * const to);
@@ -65,7 +64,7 @@ CJSON_PUBLIC(int) cJSONUtils_ApplyPatchesCaseSensitive(cJSON * const object, con
 // Code not added to library since this strategy is a LOT slower.
 */
 
-/* Implement RFC7386 (https://tools.ietf.org/html/rfc7396) JSON Merge Patch spec. */
+
 /* target will be modified by patch. return value is new ptr for target. */
 CJSON_PUBLIC(cJSON *) cJSONUtils_MergePatch(cJSON *target, const cJSON * const patch);
 CJSON_PUBLIC(cJSON *) cJSONUtils_MergePatchCaseSensitive(cJSON *target, const cJSON * const patch);
