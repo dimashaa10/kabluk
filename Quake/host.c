@@ -25,6 +25,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "quakedef.h"
 #include "bgmusic.h"
 #include "pmove.h"
+#include "thread_system.h"
 #include <setjmp.h>
 #include "time.h" // woods #cfgbackup
 
@@ -1534,7 +1535,10 @@ void _Host_Frame (double time)
 	if (cl.qcvm.progs)
 	{
 		PR_SwitchQCVM(&cl.qcvm);
+		// Run physics in separate thread
+		PhysThread_StartFrame(cl.time - qcvm->time);
 		SV_Physics(cl.time - qcvm->time);
+		PhysThread_WaitComplete();
 		pr_global_struct->time = cl.time;
 		PR_SwitchQCVM(NULL);
 	}
@@ -1543,10 +1547,23 @@ void _Host_Frame (double time)
 	if (cls.state == ca_connected)
 		CL_ReadFromServer ();
 
-// update video
+// update video - use job system for rendering
 	if (host_speeds.value)
 		time1 = Sys_DoubleTime ();
 
+	// Begin frame for job system
+	JobSystem_BeginFrame();
+	
+	// Submit rendering jobs
+	render_job_t *world_job = JobSystem_AllocJob(JOB_DRAW_WORLD, (job_func_t)R_DrawWorld, NULL);
+	if (world_job) JobSystem_SubmitJob(world_job);
+	
+	render_job_t *water_job = JobSystem_AllocJob(JOB_DRAW_TRANSPARENT, (job_func_t)R_DrawWorld_Water, NULL);
+	if (water_job) JobSystem_SubmitJob(water_job);
+	
+	// Wait for rendering jobs to complete
+	JobSystem_WaitFrame();
+	
 	SCR_UpdateScreen ();
 
 	CL_RunParticles (); //johnfitz -- seperated from rendering
@@ -1651,6 +1668,12 @@ void Host_Init (void)
 	Cvar_Init (); //johnfitz
 	COM_Init ();
 	COM_InitFilesystem ();
+	
+	// Initialize multi-threading systems
+	Loader_Init();
+	JobSystem_Init();
+	PhysThread_Init();
+	
 	Host_InitLocal ();
 	W_LoadWadFile (); //johnfitz -- filename is now hard-coded for honesty
 	if (cls.state != ca_dedicated)
@@ -1801,6 +1824,11 @@ void Host_Shutdown(void)
 	}
 
 	LOG_Close ();
-
+	
 	LOC_Shutdown ();
+	
+	// Shutdown multi-threading systems
+	JobSystem_Shutdown();
+	PhysThread_Shutdown();
+	Loader_Shutdown();
 }

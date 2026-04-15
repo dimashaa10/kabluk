@@ -1,18 +1,1 @@
-# Windows 
-/Windows/VisualStudio/.vs/
-/Windows/VisualStudio/Build-kabluk/
-/Windows/VisualStudio/history.txt
-/Windows/VisualStudio/*.user
-/Windows/VisualStudio/kuzbass/
-/Windows/VisualStudio/Backup/
-Windows/VisualStudio/UpgradeLog.htm
-
-# macOS
-.DS_Store
-
-# Compiled and build artifacts
-*.o
-*.d
-Quake/*.o
-Quake/*.d
-
+Nothing to output - the file changes consist only of source code files (.c, .h) without any build artifacts, dependencies, or temporary files that need to be ignored.
