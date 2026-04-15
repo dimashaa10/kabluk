@@ -304,6 +304,8 @@ OBJS := strlcat.o \
 	sv_user.o \
 	world.o \
 	zone.o \
+	mt_system.o \
+	mt_examples.o \
 	$(SYSOBJ_SYS) $(SYSOBJ_MAIN)
 
 # ---------------------------

@@ -1,18 +1,58 @@
-# Windows 
-/Windows/VisualStudio/.vs/
-/Windows/VisualStudio/Build-kabluk/
-/Windows/VisualStudio/history.txt
-/Windows/VisualStudio/*.user
-/Windows/VisualStudio/kuzbass/
-/Windows/VisualStudio/Backup/
-Windows/VisualStudio/UpgradeLog.htm
-
-# macOS
-.DS_Store
-
+```
 # Compiled and build artifacts
 *.o
-*.d
-Quake/*.o
-Quake/*.d
+*.obj
+*.out
+build/
+dist/
 
+# Dependencies
+*.a
+*.so
+*.dll
+*.dylib
+
+# Logs and temp files
+*.log
+*.tmp
+
+# Environment
+.env
+.env.local
+*.env.*
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Coverage
+coverage/
+htmlcov/
+.coverage
+
+# Compression
+*.zip
+*.gz
+*.tar
+*.tgz
+*.bz2
+*.xz
+*.7z
+*.rar
+*.zst
+*.lz4
+*.lzh
+*.cab
+*.arj
+*.rpm
+*.deb
+*.Z
+*.lz
+*.lzo
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+*.tar.zst
+```

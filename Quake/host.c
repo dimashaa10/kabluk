@@ -1711,6 +1711,10 @@ void Host_Init (void)
 
 	LOC_Init (); // for 2021 rerelease support.
 
+	// Инициализация многопоточной системы
+	MT_Init ();
+	MT_InitCommands ();
+
 	Hunk_AllocName (0, "-HOST_HUNKLEVEL-");
 	host_hunklevel = Hunk_LowMark ();
 
@@ -1788,6 +1792,9 @@ void Host_Shutdown(void)
 	IPLog_WriteLog ();	// JPG 1.05 - ip loggging  // woods #iplog
 
 	NET_Shutdown ();
+
+	// Деинициализация многопоточной системы
+	MT_Shutdown ();
 
 	if (cls.state != ca_dedicated)
 	{
