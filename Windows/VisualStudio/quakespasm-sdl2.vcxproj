@@ -315,7 +315,6 @@ copy "$(SolutionDir)..\zlib\$(PlatformShortName)\*.dll" "$(TargetDir)"</Command>
     <ClInclude Include="..\..\Quake\bspfile.h" />
     <ClInclude Include="..\..\Quake\cdaudio.h" />
     <ClInclude Include="..\..\Quake\cfgfile.h" />
-    <ClInclude Include="..\..\Quake\cJSON.h" />
     <ClInclude Include="..\..\Quake\cJSON_Utils.h" />
     <ClInclude Include="..\..\Quake\client.h" />
     <ClInclude Include="..\..\Quake\cmd.h" />

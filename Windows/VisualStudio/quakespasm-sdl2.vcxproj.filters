@@ -488,9 +488,6 @@
     <ClInclude Include="..\..\Quake\json.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="..\..\Quake\cJSON.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="..\..\Quake\cJSON_Utils.h">
       <Filter>Header Files</Filter>
     </ClInclude>
