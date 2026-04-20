@@ -42,13 +42,13 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define	QUAKESPASM_VER_SUFFIX		// optional version suffix string literal like "-beta1"
 #endif
 
-#define QSS_VER	"04-04-26" // eggs
+#define QSS_VER	"20-04-26" // eggs
 
 // kabluk version info
 
 #define QSSM_VER_MAJOR		0
 #define QSSM_VER_MINOR		1
-#define QSSM_VER_PATCH		9
+#define QSSM_VER_PATCH		10
 #ifndef QSSM_VER_SUFFIX
 #define QSSM_VER_SUFFIX		"-lox"	// napishi chto ti lox
 #endif
@@ -62,7 +62,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #ifdef QSS_DATE
 	// combined version string like "2020-10-20-beta1"
-	#define	ENGINE_NAME_AND_VER	"QSS " QS_STRINGIFY(QSS_DATE) QUAKESPASM_VER_SUFFIX
+	#define	ENGINE_NAME_AND_VER	"Kabluk Engine " QS_STRINGIFY(QSS_DATE) QUAKESPASM_VER_SUFFIX
 #else
 	#define ENGINE_NAME_AND_VER "Kabluk Engine " QSSM_VER_STRING
 #endif
@@ -278,7 +278,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 
 
-#define USE_JSON_UI
+//#define USE_JSON_UI
 
 #if defined(__APPLE__) && defined(__aarch64__)
 #define MACBOOK_ARM_HACK // woods #collinear

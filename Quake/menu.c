@@ -1709,7 +1709,7 @@ void M_DrawLogo (void)
 	glDisable(GL_SCISSOR_TEST); // Отключаем clipping, если он включён
 	GL_SetCanvas(CANVAS_DEFAULT); // Переключаемся на полный экран (0,0 = верхний левый угол)
 
-	p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.lmp", (int)(realtime * 8) % 24 + 1));
+	p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.bmp", (int)(realtime * 8) % 24 + 1));
 
 	// Рисуем в центре экрана (пример)
 	int logo_x = (glwidth - p->width) / 2;
@@ -1756,14 +1756,14 @@ void M_Main_Draw (void) // woods #modsmenu #demosmenu (iw)
 	//qpic_t* pic = Draw_CachePic(va("gfx/david/tanec%i.lmp", (int)(realtime * 10) % 29 + 1));
 	//M_DrawTransPic(320, 2, pic);
 
-	p = Draw_CachePic(va("gfx/a_main/amain%i.bmp", (int)(realtime * 2) % 3 + 1));
+	p = Draw_CachePic(va("gfx/a_main/amain%i.lmp", (int)(realtime * 2) % 3 + 1));
 	M_DrawPic((320 - p->width) / 2, 4, p);
-	//p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.lmp", (int)(realtime * 8) % 24 + 1));
+	//p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.bmp", (int)(realtime * 8) % 24 + 1));
 	//M_DrawPic((320 - p->width) / 2, -64, p);
 	M_DrawLogo();
 
 
-	p = Draw_CachePic(va("gfx/a_mmenu/mainmenu%i.bmp", (int)(realtime * 1) % 2 + 1));
+	p = Draw_CachePic(va("gfx/a_mmenu/mainmenu%i.lmp", (int)(realtime * 1) % 2 + 1));
 	int split = 60;
 	int offset = 0;
 
@@ -1771,7 +1771,7 @@ void M_Main_Draw (void) // woods #modsmenu #demosmenu (iw)
 	{
 		M_DrawSubpic(72, 32, p, 0, 0, p->width, split);
 		M_DrawTransPic(74, 92, Draw_CachePic(va("gfx/a_mods/amods%i.lmp", (int)(realtime * 1) % 2 + 1)));
-		M_DrawTransPic(72, 52 + split, Draw_CachePic("gfx/menudemos.lmp"));
+		M_DrawTransPic(72, 52 + split, Draw_CachePic(va("gfx/a_demos/ademos%i.lmp", (int)(realtime * 1) % 2 + 1)));
 		M_DrawSubpic(72, 72 + split, p, 0, split, p->width, p->height - split);
 	}
 	
@@ -1786,13 +1786,13 @@ void M_Main_Draw (void) // woods #modsmenu #demosmenu (iw)
 	else if (m_main_demos && !m_main_mods) // only demos
 	{
 		M_DrawSubpic(72, 32 + offset, p, 0, 0, p->width, split);
-		M_DrawTransPic(72, 32 + offset + split, Draw_CachePic("gfx/menudemos.lmp"));
+		M_DrawTransPic(72, 32 + offset + split, Draw_CachePic(va("gfx/a_demos/ademos%i.lmp", (int)(realtime * 1) % 2 + 1)));
 		M_DrawSubpic(72, 32 + offset + split + 20, p, 0, split, p->width, p->height - split);
 		offset += split + 20; // Adjust offset if needed for further items
 	}
 
 	else
-		Draw_CachePic(va("gfx/a_mmenu/mainmenu%i.bmp", (int)(realtime * 1) % 2 + 1));
+		Draw_CachePic(va("gfx/a_mmenu/mainmenu%i.lmp", (int)(realtime * 1) % 2 + 1));
 	f = (int)(realtime * 10) % 6;
 	cursor = m_main_cursor;
 
@@ -1997,7 +1997,7 @@ void M_SinglePlayer_Draw(void)
 {
 	qpic_t* p;
 
-	p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.lmp", (int)(realtime * 8) % 24 + 1));
+	p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.bmp", (int)(realtime * 8) % 24 + 1));
 	M_DrawPic((320 - p->width) / 2, -64, p);
 
 	M_DrawTransPic(16, 4, Draw_CachePic("gfx/qplaque.pcx"));
@@ -2840,7 +2840,7 @@ void M_Skill_Draw(void)
 	int		x, y, f;
 	qpic_t* p;
 
-	p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.lmp", (int)(realtime * 8) % 24 + 1));
+	p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.bmp", (int)(realtime * 8) % 24 + 1));
 	M_DrawPic((320 - p->width) / 2, -64, p);
 
 	M_DrawTransPic(16, 4, Draw_CachePic("gfx/qplaque.pcx"));
@@ -3004,7 +3004,7 @@ void M_MultiPlayer_Draw (void)
 	int		f, i; // woods
 	qpic_t	*p;
 
-	p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.lmp", (int)(realtime * 8) % 24 + 1));
+	p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.bmp", (int)(realtime * 8) % 24 + 1));
 	M_DrawPic((320 - p->width) / 2, -64, p);
 
 	M_DrawTransPic (16, 4, Draw_CachePic ("gfx/qplaque.pcx") );
@@ -3327,7 +3327,7 @@ void M_Setup_Draw (void)
 		Cbuf_AddText("chase_active 1\n");
 	}
 
-	p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.lmp", (int)(realtime * 8) % 24 + 1));
+	p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.bmp", (int)(realtime * 8) % 24 + 1));
 	M_DrawPic((320 - p->width) / 2, -64, p);
 
 	M_DrawTransPic (16, 4, Draw_CachePic ("gfx/qplaque.pcx") );
@@ -3930,7 +3930,7 @@ void M_Net_Draw (void)
 	int		f;
 	qpic_t	*p;
 
-	p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.lmp", (int)(realtime * 8) % 24 + 1));
+	p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.bmp", (int)(realtime * 8) % 24 + 1));
 	M_DrawPic((320 - p->width) / 2, -64, p);
 
 	M_DrawTransPic (16, 4, Draw_CachePic ("gfx/qplaque.pcx") );
@@ -11015,11 +11015,11 @@ void M_LanConfig_Draw (void)
 	//const char	*protocol;
 
 
-	p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.lmp", (int)(realtime * 8) % 24 + 1));
+	p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.bmp", (int)(realtime * 8) % 24 + 1));
 	M_DrawPic((320 - p->width) / 2, -64, p);
 
 	M_DrawTransPic (16, 4, Draw_CachePic ("gfx/qplaque.pcx") );
-	p = Draw_CachePic(va("gfx/a_join/joining%i.bmp", (int)(realtime * 2) % 4 + 1));
+	p = Draw_CachePic(va("gfx/a_join/joining%i.png", (int)(realtime * 2) % 4 + 1));
 	basex = (320-p->width)/2;
 	M_DrawPic (basex, 4, p);
 
@@ -12507,7 +12507,7 @@ void M_GameOptions_Draw (void)
 	qpic_t	*p;
 	int y = 40;
 
-	p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.lmp", (int)(realtime * 8) % 24 + 1));
+	p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.bmp", (int)(realtime * 8) % 24 + 1));
 	M_DrawPic((320 - p->width) / 2, -64, p);
 
 	M_DrawTransPic (16, 4, Draw_CachePic ("gfx/qplaque.pcx") );
@@ -15588,19 +15588,19 @@ void M_CheckMods(void) // woods #modsmenu (iw)
 		sgl_hashes[] = { 0x7bba813d }
 	;
 
-	m_main_mods = M_CheckCustomGfx("gfx/menumods.lmp",
+	m_main_mods = M_CheckCustomGfx("gfx/a_mods/amods1.png",
 		"gfx/mainmenu.lmp", 26888, main_hashes, countof(main_hashes));
 
-	m_main_demos = M_CheckCustomGfx("gfx/menudemos.lmp", // woods #demosmenu
+	m_main_demos = M_CheckCustomGfx("gfx/a_demos/ademos1.lmp", // woods #demosmenu
 		"gfx/mainmenu.lmp", 26888, main_hashes, countof(main_hashes));
 
-	m_singleplayer_showlevels = M_CheckCustomGfx("gfx/sp_maps.lmp",
+	m_singleplayer_showlevels = M_CheckCustomGfx("gfx/a_levels/alev1.lmp",
 		"gfx/sp_menu.lmp", 14856, sp_hashes, countof(sp_hashes));
 
-	m_skill_usegfx = M_CheckCustomGfx("gfx/skillmenu.lmp",
+	m_skill_usegfx = M_CheckCustomGfx("gfx/a_skm/askm1.lmp",
 		"gfx/sp_menu.lmp", 14856, sp_hashes, countof(sp_hashes));
 
-	m_skill_usecustomtitle = M_CheckCustomGfx("gfx/p_skill.lmp",
+	m_skill_usecustomtitle = M_CheckCustomGfx("gfx/a_skill/askill1.lmp",
 		"gfx/ttl_sgl.lmp", 6728, sgl_hashes, countof(sgl_hashes));
 }
 
