@@ -2568,83 +2568,172 @@ void M_Menu_Maps_f(void)
 	M_Maps_Init();
 }
 
+void M_Maps_PrefetchNeighbors(void)
+{
+	int cursor = mapsmenu.list.cursor;
+	int count = mapsmenu.list.numitems;
+
+	for (int offset = -1; offset <= 1; offset += 2)
+	{
+		int idx = cursor + offset;
+		if (idx >= 0 && idx < count)
+		{
+			int map_idx = mapsmenu.filtered_indices[idx];
+			mapitem_t* item = &mapsmenu.items[map_idx];
+
+			char path[MAX_QPATH];
+			snprintf(path, sizeof(path), "maps/%s.bsp", item->name);
+
+			// Предзагрузка без рендера (если движок позволяет)
+			// Mod_ForName(path, false); // false = не загружать текстуры полностью
+		}
+	}
+}
+
 void M_Maps_Draw(void)
 {
-    int x, y, i, cols;
-    int firstvis, numvis;
+	int x, y, i, cols;
+	int firstvis, numvis;
 
-    x = 16;
-    y = 32;
-    cols = 36;
+	x = 16;
+	y = 32;
+	cols = 36;
 
-    mapsmenu.x = x;
-    mapsmenu.y = y;
-    mapsmenu.cols = cols;
+	mapsmenu.x = x;
+	mapsmenu.y = y;
+	mapsmenu.cols = cols;
 
-    if (!keydown[K_MOUSE1])
-        mapsmenu.scrollbar_grab = false;
+	M_List_GetVisibleRange(&mapsmenu.list, &firstvis, &numvis);
 
-    if (mapsmenu.prev_cursor != mapsmenu.list.cursor)
-    {
-        mapsmenu.prev_cursor = mapsmenu.list.cursor;
-        M_Ticker_Init(&mapsmenu.ticker);
-    }
-    else
-        M_Ticker_Update(&mapsmenu.ticker);
+	// ya loh
+	qpic_t* p;
+	qpic_t* menup = Draw_CachePic("gfx/david/tanec1.lmp");
+	int boxw = menup ? menup->width : 256;
+	int boxh = menup ? menup->height : 256;
+	vrect_t bounds, vp;
+	Draw_GetMenuTransform(&bounds, &vp);
 
-    Draw_String(x, y - 28, "Maps");
-    M_DrawQuakeBar(x - 8, y - 16, cols + 2);
+	float s = (float)vp.width / (float)bounds.width;
+	float px = vp.x + 300 * s;
+	float py = vp.y + 32 * s;
+	float pw = boxw * s;
+	float ph = boxh * s;
 
-    M_List_GetVisibleRange(&mapsmenu.list, &firstvis, &numvis);
-    for (i = 0; i < numvis; i++)
-    {
-        int idx = i + firstvis;
-        int map_idx = mapsmenu.filtered_indices[idx];
-        mapitem_t* map_item = &mapsmenu.items[map_idx];
-        qboolean selected = (idx == mapsmenu.list.cursor);
+	// --- Определение элемента под мышью ---
+	int hovered_map_idx = -1;
 
-        if (mapsmenu.list.search.len > 0)
-        {
-            M_PrintHighlightScroll2(x, y + i * 8, (cols - 2) * 8,
-                map_item->name,
-                map_item->date,
-                mapsmenu.list.search.text,
-                selected ? mapsmenu.ticker.scroll_time : 0.0);
-        }
-        else
-        {
-            M_PrintScroll2(x, y + i * 8, (cols - 2) * 8,
-                map_item->name,
-                map_item->date,
-                selected ? mapsmenu.ticker.scroll_time : 0.0);
-        }
+	// Получаем координаты мыши в виртуальных координатах меню
+	// m_mousex/m_mousey должны быть в пикселях экрана (как vp.x)
+	int mouse_mx = (m_mousex - vp.x) / s;
+	int mouse_my = (m_mousey - vp.y) / s;
 
-        if (selected)
-            M_DrawCharacter(x - 8, y + i * 8, 12 + ((int)(realtime * 4) & 1));
-    }
+	// Проверяем, находится ли мышь над областью списка
+	// Теперь numvis валиден, так как мы вызвали GetVisibleRange выше
+	if (mouse_mx >= x && mouse_mx < x + cols * 8 &&
+		mouse_my >= y && mouse_my < y + numvis * 8)
+	{
+		int hover_line = (mouse_my - y) / 8;
+		if (hover_line >= 0 && hover_line < numvis)
+		{
+			int vis_idx = firstvis + hover_line;
+			if (vis_idx >= 0 && vis_idx < mapsmenu.list.numitems)
+			{
+				hovered_map_idx = mapsmenu.filtered_indices[vis_idx];
+			}
+		}
+	}
 
-    if (M_List_GetOverflow(&mapsmenu.list) > 0)
-    {
-        M_List_DrawScrollbar(&mapsmenu.list, x + cols * 8 - 8, y);
+	// Фоллбэк: если мышь не над списком, берем выделенный клавиатурой элемент
+	if (hovered_map_idx < 0 && mapsmenu.list.numitems > 0)
+	{
+		// Проверка на валидность курсора
+		if (mapsmenu.list.cursor >= 0 && mapsmenu.list.cursor < mapsmenu.list.numitems)
+			hovered_map_idx = mapsmenu.filtered_indices[mapsmenu.list.cursor];
+	}
 
-        if (mapsmenu.list.scroll > 0)
-            M_DrawEllipsisBar(x, y - 8, cols);
-        if (mapsmenu.list.scroll + mapsmenu.list.viewsize < mapsmenu.list.numitems)
-            M_DrawEllipsisBar(x, y + mapsmenu.list.viewsize * 8, cols);
-    }
+	// Получаем путь к карте для превью
+	const char* preview_map = "maps/dev.bsp"; // дефолт
+	if (hovered_map_idx >= 0 && hovered_map_idx < mapsmenu.list.numitems)
+	{
+		mapitem_t* hover_item = &mapsmenu.items[hovered_map_idx];
+		if (hover_item->name && hover_item->name[0])
+		{
+			if (strstr(hover_item->name, "maps/"))
+				preview_map = hover_item->name;
+			else
+			{
+				static char map_path[MAX_QPATH];
+				snprintf(map_path, sizeof(map_path), "maps/%s.bsp", hover_item->name);
+				preview_map = map_path;
+			}
+		}
+	}
 
-    if (mapsmenu.list.search.len > 0) // Draw search box if search is active
-    {
-        M_DrawTextBox(16, 176, 32, 1);
-        M_PrintHighlight(24, 184, mapsmenu.list.search.text,
-            mapsmenu.list.search.text,
-            mapsmenu.list.search.len);
-        int cursor_x = 24 + 8 * mapsmenu.list.search.len; // Start position + character width * text length
+	// Рендерим модель
+	DrawSpinningModelToMenuPixels(preview_map, px, py, pw, ph, 90.0f, -50.0f, 0, 0, 0, 0);
+
+	// --- Дальше стандартная логика меню ---
+	if (!keydown[K_MOUSE1])
+		mapsmenu.scrollbar_grab = false;
+
+	if (mapsmenu.prev_cursor != mapsmenu.list.cursor)
+	{
+		mapsmenu.prev_cursor = mapsmenu.list.cursor;
+		M_Ticker_Init(&mapsmenu.ticker);
+	}
+	else
+		M_Ticker_Update(&mapsmenu.ticker);
+
+	Draw_String(x, y - 28, "Maps");
+	M_DrawQuakeBar(x - 8, y - 16, cols + 2);
+
+	for (i = 0; i < numvis; i++)
+	{
+		int idx = i + firstvis;
+		int map_idx = mapsmenu.filtered_indices[idx];
+		mapitem_t* map_item = &mapsmenu.items[map_idx];
+		qboolean selected = (idx == mapsmenu.list.cursor);
+
+		if (mapsmenu.list.search.len > 0)
+		{
+			M_PrintHighlightScroll2(x, y + i * 8, (cols - 2) * 8,
+				map_item->name, map_item->date,
+				mapsmenu.list.search.text,
+				selected ? mapsmenu.ticker.scroll_time : 0.0);
+		}
+		else
+		{
+			M_PrintScroll2(x, y + i * 8, (cols - 2) * 8,
+				map_item->name, map_item->date,
+				selected ? mapsmenu.ticker.scroll_time : 0.0);
+		}
+
+		if (selected)
+			M_DrawCharacter(x - 8, y + i * 8, 12 + ((int)(realtime * 4) & 1));
+	}
+
+	if (M_List_GetOverflow(&mapsmenu.list) > 0)
+	{
+		M_List_DrawScrollbar(&mapsmenu.list, x + cols * 8 - 8, y);
+		if (mapsmenu.list.scroll > 0)
+			M_DrawEllipsisBar(x, y - 8, cols);
+		if (mapsmenu.list.scroll + mapsmenu.list.viewsize < mapsmenu.list.numitems)
+			M_DrawEllipsisBar(x, y + mapsmenu.list.viewsize * 8, cols);
+	}
+
+	if (mapsmenu.list.search.len > 0)
+	{
+		M_DrawTextBox(16, 176, 32, 1);
+		M_PrintHighlight(24, 184, mapsmenu.list.search.text,
+			mapsmenu.list.search.text, mapsmenu.list.search.len);
+		int cursor_x = 24 + 8 * mapsmenu.list.search.len;
 		if (mapsmenu.list.numitems == 0)
 			M_DrawCharacter(cursor_x, 184, 11 ^ 128);
 		else
 			M_DrawCharacter(cursor_x, 184, 10 + ((int)(realtime * 4) & 1));
-    }
+	}
+
+	M_Maps_PrefetchNeighbors();
 }
 
 qboolean M_Maps_Match(int index, char initial)
