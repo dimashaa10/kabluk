@@ -2020,6 +2020,7 @@ static qpic_t* Sbar_FacePic(void)
 
 void Sbar_kukla(void)
 {
+	//сука из за куклы звуков нет чё за хуйня бля
 	vrect_t bounds, vp;
 	Draw_GetMenuTransform(&bounds, &vp);
 
@@ -2055,6 +2056,7 @@ void Sbar_Draw (void)
 	char buf2[15];
 	const char* obs = NULL; // woods #obspent
 	const char* star_obs = NULL;
+	//Sbar_kukla(); 
 
 	if (cls.demoplayback && cl.maxclients > 1) // woods #obspent
 		mpdemo = true;
@@ -2456,7 +2458,7 @@ void Sbar_Draw (void)
 
 		Sbar_DrawString(x - len * 8, y, tempstring);
 	}
-	Sbar_kukla();
+	
 }
 
 //=============================================================================
