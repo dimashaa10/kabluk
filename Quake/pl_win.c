@@ -108,7 +108,7 @@ char *PL_GetClipboardData (void)
 
 void PL_ErrorDialog(const char *errorMsg)
 {
-	MessageBox (NULL, errorMsg, "Quake Error",
+	MessageBox (NULL, errorMsg, "Kabluk Error",
 			MB_OK | MB_SETFOREGROUND | MB_ICONSTOP);
 }
 

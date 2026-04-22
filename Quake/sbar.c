@@ -2017,6 +2017,28 @@ static qpic_t* Sbar_FacePic(void)
 	return face_pic;
 }
 
+
+void Sbar_kukla(void)
+{
+	vrect_t bounds, vp;
+	Draw_GetMenuTransform(&bounds, &vp);
+
+	float model_size = (float)vp.height;
+	float px = (vp.x + (float)vp.width + 760) - model_size;
+	float py = (vp.y + (float)vp.height) - model_size;
+
+
+	//int p_frame = cl.entities[cl.viewentity].frame;
+	int p_frame = 0;
+	DrawSpinningModelToMenuPixels("progs/player.mdl",
+		px, py, model_size, model_size,
+		90.0f,
+		15.0f,
+		0,
+		p_frame, // текущий кадр анимации игрока
+		0, 0);
+}
+
 /*
 ===============
 Sbar_Draw
@@ -2434,7 +2456,7 @@ void Sbar_Draw (void)
 
 		Sbar_DrawString(x - len * 8, y, tempstring);
 	}
-
+	Sbar_kukla();
 }
 
 //=============================================================================

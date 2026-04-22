@@ -1726,8 +1726,6 @@ void M_Main_Draw (void) // woods #modsmenu #demosmenu (iw)
 	
 	int cursor, f;
 	qpic_t* p;
-
-	
 	qpic_t* menup = Draw_CachePic("gfx/david/tanec1.lmp");
 	int boxw = menup ? menup->width : 256;
 	int boxh = menup ? menup->height : 256;
