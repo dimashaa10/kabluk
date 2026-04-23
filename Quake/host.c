@@ -1732,7 +1732,7 @@ void Host_Init (void)
 	if (cls.state != ca_dedicated)
 	{
 		Cbuf_AddText ("cl_warncmd 0\n");
-		Cbuf_InsertText ("exec quake.rc\n");
+		Cbuf_InsertText ("exec kabluk.rc\n");
 		Cbuf_AddText ("cl_warncmd 1\n");
 	// johnfitz -- in case the vid mode was locked during vid_init, we can unlock it now.
 		// note: two leading newlines because the command buffer swallows one of them.

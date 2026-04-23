@@ -1713,7 +1713,7 @@ void M_DrawLogo (void)
 
 	// Рисуем в центре экрана (пример)
 	int logo_x = (glwidth - p->width) / 2;
-	int logo_y = 256;
+	int logo_y = 16;
 
 	M_DrawPic(logo_x, logo_y, p);
 
@@ -2929,9 +2929,9 @@ void M_Skill_Draw(void)
 
 	p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.bmp", (int)(realtime * 8) % 24 + 1));
 	M_DrawPic((320 - p->width) / 2, -64, p);
-
+	//pixda
 	M_DrawTransPic(16, 4, Draw_CachePic("gfx/qplaque.pcx"));
-	p = Draw_CachePic(m_skill_usecustomtitle ? "gfx/a_skill/askill1.lmp" : "gfx/a_sgl/asgl1.lmp");
+	p = Draw_CachePic(m_skill_usecustomtitle ? (va("gfx/a_skill/askill%i.lmp", (int)(realtime * 2) % 3 + 1))  : "gfx/a_sgl/asgl1.lmp");
 	M_DrawPic((320 - p->width) / 2, 4, p);
 
 	x = 72;
@@ -2944,7 +2944,7 @@ void M_Skill_Draw(void)
 
 	if (m_skill_usegfx)
 	{
-		M_DrawTransPic(x, y, Draw_CachePic("gfx/skillmenu.lmp"));
+		M_DrawTransPic(x, y, Draw_CachePic(va("gfx/skillmenu.lmp", (int)(realtime * 1) % 2 + 1 )));
 		if (m_skill_cursor < 4)
 			M_DrawQuakeCursor(x - 18, y + m_skill_cursor * 20);
 		y += 4 * 20;
@@ -5343,7 +5343,7 @@ void M_Mouse_Draw(void)
 	float r;
 	enum mouse_e i;
 
-	p = Draw_CachePic(va("gfx/a_opt/aopt%i.bmp", (int)(realtime * 2) % 3 + 1));
+	p = Draw_CachePic(va("gfx/a_opt_mouse/aoptmouse%i.png", (int)(realtime * 2) % 3 + 1));
 	M_DrawPic((320 - p->width) / 2, 4, p);
 
 	const char* title = "Mouse Options";
@@ -5944,7 +5944,7 @@ void M_Graphics_Draw(void)
 	float r;
 	int m;
 
-	p = Draw_CachePic(va("gfx/a_opt/aopt%i.bmp", (int)(realtime * 2) % 3 + 1));
+	p = Draw_CachePic(va("gfx/a_opt_gfx/aoptgfx%i.bmp", (int)(realtime * 1) % 2 + 1));
 	M_DrawPic((320 - p->width) / 2, 4, p);
 
 	const char* title = "Graphics Options";
@@ -6574,7 +6574,7 @@ void M_Sound_Draw(void)
 	qpic_t* p;
 	enum sound_e i;
 
-	p = Draw_CachePic(va("gfx/a_opt/aopt%i.bmp", (int)(realtime * 2) % 3 + 1));
+	p = Draw_CachePic(va("gfx/a_opt_snd/aoptsnd%i.png", (int)(realtime * 2) % 3 + 1));
 	M_DrawPic((320 - p->width) / 2, 4, p);
 
 	const char* title = "Sound Options";
@@ -7341,15 +7341,15 @@ static void M_Game_AdjustSliders(int dir)
 
 void M_Game_Draw(void)
 {
-	//qpic_t* p;
+	qpic_t* p;
 	float r;
 	enum game_e i;
 
-	//p = Draw_CachePic("gfx/p_option.lmp");
-	//M_DrawPic((320 - p->width) / 2, 4, p);
+	p = Draw_CachePic(va("gfx/a_opt_game/aoptgame%i.png", (int)(realtime * 2) % 3 + 1));
+	M_DrawPic((320 - p->width) / 2, 4, p);
 
-	const char* title = "Game Options";
-	M_PrintWhite((320 - 8 * strlen(title)) / 2, 4, title);
+	//const char* title = "Game Options";
+	//M_PrintWhite((320 - 8 * strlen(title)) / 2, 4, title);
 
 	for (i = 0; i < GAME_ITEMS; i++)
 	{
@@ -8010,7 +8010,7 @@ void M_HUD_Draw(void)
 	float r, l;
 	const char* value;
 
-	p = Draw_CachePic(va("gfx/a_opt/aopt%i.bmp", (int)(realtime * 2) % 3 + 1));
+	p = Draw_CachePic(va("gfx/a_opt_hud/aopthud%i.png", (int)(realtime * 2) % 3 + 1));
 	M_DrawPic((320 - p->width) / 2, 4, p);
 
 	const char* title = "HUD Options";
@@ -8922,7 +8922,7 @@ void M_Crosshair_Draw(void)
 	float r;
 	enum crosshair_e i;
 
-	p = Draw_CachePic(va("gfx/a_opt/aopt%i.bmp", (int)(realtime * 2) % 3 + 1));
+	p = Draw_CachePic(va("gfx/a_opt_xhair/aoptxhair%i.png", (int)(realtime * 2) % 3 + 1));
 	M_DrawPic((320 - p->width) / 2, 4, p);
 
 	const char* title = "Crosshair Options";
@@ -9356,7 +9356,7 @@ void M_Console_Draw(void)
 	enum console_e i;
 	const char* filter_text;
 
-	p = Draw_CachePic(va("gfx/a_opt/aopt%i.bmp", (int)(realtime * 2) % 3 + 1));
+	p = Draw_CachePic(va("gfx/a_opt_con/aoptcon%i.bmp", (int)(realtime * 4) % 5 + 1));
 	M_DrawPic((320 - p->width) / 2, 4, p);
 
 	const char* title = "Console Options";
@@ -9742,7 +9742,7 @@ static const char* M_Extras_GetItemText(int index) // Add this helper function
 	case EXTRAS_STARTUP:
 		return "Start-up Screen";
 	case EXTRAS_PONG:
-		return "Quake Pong";
+		return "Ping-Pong";
 	case EXTRAS_HINTS:
 		return "Paused Hints";
 	default:

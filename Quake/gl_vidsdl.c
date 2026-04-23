@@ -2925,7 +2925,7 @@ static void VID_MenuDraw (void)
 	p = Draw_CachePic ("gfx/qplaque.pcx");
 	M_DrawTransPic (16, y, p);
 
-	p = Draw_CachePic(va("gfx/a_opt/aopt%i.bmp", (int)(realtime * 2) % 3 + 1));
+	p = Draw_CachePic(va("gfx/a_opt_disp/aoptdisp%i.bmp", (int)(realtime * 2) % 3 + 1));
 	M_DrawPic ( (320-p->width)/2, y, p);
 
 	y += 28;

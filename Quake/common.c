@@ -3743,7 +3743,7 @@ static void COM_Game_f (void)
 		Con_Printf("\"game\" changed to \"%s\"\n", COM_GetGameNames(true));
 
 		VID_Lock ();
-		Cbuf_AddText ("exec quake.rc\n");
+		Cbuf_AddText ("exec kabluk.rc\n");
 		Cbuf_AddText ("vid_unlock\n");
 	}
 	else //Diplay the current gamedir
