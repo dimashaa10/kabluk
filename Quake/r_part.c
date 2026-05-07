@@ -189,6 +189,9 @@ void R_InitParticles (void)
 	Cvar_RegisterVariable (&r_quadparticles); //johnfitz
 
 	R_InitParticleTextures (); //johnfitz
+	
+	// Initialize optimized particle system with VBO/UBO
+	R_InitParticleSystem ();
 }
 
 /*
@@ -272,6 +275,12 @@ void R_ClearParticles (void)
 	for (i=0 ;i<r_numparticles ; i++)
 		particles[i].next = &particles[i+1];
 	particles[r_numparticles-1].next = NULL;
+	
+	// Reset particle VBO
+	if (particle_vbo.initialized)
+	{
+		g_particle_vbo_count = 0;
+	}
 }
 
 /*

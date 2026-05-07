@@ -229,6 +229,30 @@ extern PFNGLUNMAPBUFFERARBPROC	GL_UnmapBufferFunc;
 extern	qboolean	gl_vbo_able;
 //ericw
 
+// OpenGL 3.3+ Core Profile support
+extern PFNGLGENVERTEXARRAYSPROC GL_GenVertexArraysFunc;
+extern PFNGLDELETEVERTEXARRAYSPROC GL_DeleteVertexArraysFunc;
+extern PFNGLBINDVERTEXARRAYPROC GL_BindVertexArrayFunc;
+extern PFNGLBINDBUFFERRANGEPROC GL_BindBufferRangeFunc;
+extern qboolean gl_core_profile_able;
+extern qboolean gl_ubo_able;
+extern GLint gl_max_uniform_block_bindings;
+
+// Particle VBO system
+#define MAX_PARTICLE_VBO_VERTICES 65536
+typedef struct {
+	GLuint vbo;
+	GLuint vao;
+	int vertex_count;
+	int max_vertices;
+	qboolean initialized;
+} particle_vbo_t;
+
+extern particle_vbo_t particle_vbo;
+extern GLuint g_particle_texture_array;
+extern qboolean gl_texture_array_able;
+extern GLint gl_max_array_texture_layers;
+
 extern gltexture_t* underwatertexture; // woods #caustics
 extern gltexture_t* shelltexture; // woods #powershell
 
@@ -265,6 +289,17 @@ typedef void (APIENTRYP QS_PFNGLUNIFORM4FPROC) (GLint location, GLfloat v0, GLfl
 typedef void (APIENTRYP QS_PFNGLUNIFORM4FVPROC) (GLint location, GLsizei count, const GLfloat *value);
 typedef void (APIENTRYP QS_PFNGLUNIFORM1IVPROC) (GLint location, GLsizei count, const GLint* value); // woods #caustics
 typedef void (APIENTRYP QS_PFNGENERATEMIPMAP) (GLenum type);
+
+// OpenGL 3.3+ Core Profile function types
+typedef void (APIENTRYP PFNGLGENVERTEXARRAYSPROC) (GLsizei n, GLuint *arrays);
+typedef void (APIENTRYP PFNGLDELETEVERTEXARRAYSPROC) (GLsizei n, const GLuint *arrays);
+typedef void (APIENTRYP PFNGLBINDVERTEXARRAYPROC) (GLuint array);
+typedef void (APIENTRYP PFNGLBINDBUFFERRANGEPROC) (GLenum target, GLuint index, GLuint buffer, GLintptr offset, GLsizeiptr size);
+typedef void (APIENTRYP PFNGLUNIFORMBLOCKBINDINGPROC) (GLuint program, GLuint uniformBlockIndex, GLuint uniformBlockBinding);
+typedef void (APIENTRYP PFNGLGETUNIFORMINDICESPROC) (GLuint program, GLsizei uniformCount, const GLchar *const*uniformNames, GLuint *uniformIndices);
+typedef void (APIENTRYP PFNGLGETACTIVEUNIFORMBLOCKIVPROC) (GLuint program, GLuint uniformBlockIndex, GLenum pname, GLint *params);
+typedef void (APIENTRYP PFNGLGETINTEGERVPROC) (GLenum pname, GLint *data);
+typedef void (APIENTRYP PFNGLTEXIMAGE3DPROC) (GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLsizei depth, GLint border, GLenum format, GLenum type, const void *pixels);
 
 extern QS_PFNGLCREATESHADERPROC GL_CreateShaderFunc;
 extern QS_PFNGLDELETESHADERPROC GL_DeleteShaderFunc;
@@ -306,6 +341,16 @@ extern PFNGLFRAMEBUFFERRENDERBUFFERPROC GL_FramebufferRenderbufferFunc;
 extern PFNGLDELETERENDERBUFFERSPROC GL_DeleteRenderbuffersFunc;
 
 extern PFNGLBLENDFUNCSEPARATEPROC GL_BlendFuncSeparateFunc; // woods #fxaa
+
+// OpenGL 3.3+ Core Profile function pointers
+extern PFNGLGENVERTEXARRAYSPROC GL_GenVertexArraysFunc;
+extern PFNGLDELETEVERTEXARRAYSPROC GL_DeleteVertexArraysFunc;
+extern PFNGLBINDVERTEXARRAYPROC GL_BindVertexArrayFunc;
+extern PFNGLBINDBUFFERRANGEPROC GL_BindBufferRangeFunc;
+extern PFNGLUNIFORMBLOCKBINDINGPROC GL_UniformBlockBindingFunc;
+extern PFNGLGETUNIFORMINDICESPROC GL_GetUniformIndicesFunc;
+extern PFNGLGETACTIVEUNIFORMBLOCKIVPROC GL_GetActiveUniformBlockivFunc;
+extern PFNGLTEXIMAGE3DPROC GL_TexImage3DFunc;
 
 extern	qboolean	gl_glsl_able;
 extern	qboolean	gl_glsl_gamma_able;
