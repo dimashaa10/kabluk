@@ -177,11 +177,11 @@ void VBO_Batch_Flush2D(void)
     GL_EnableVertexAttribArrayFunc(1); // texcoord
     GL_EnableVertexAttribArrayFunc(2); // color
     
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(batchvertex_t), 
+    GL_VertexAttribPointerFunc(0, 3, GL_FLOAT, GL_FALSE, sizeof(batchvertex_t), 
                          (void*)offsetof(batchvertex_t, x));
-    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, sizeof(batchvertex_t),
+    GL_VertexAttribPointerFunc(1, 2, GL_FLOAT, GL_FALSE, sizeof(batchvertex_t),
                          (void*)offsetof(batchvertex_t, s));
-    glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, sizeof(batchvertex_t),
+    GL_VertexAttribPointerFunc(2, 4, GL_FLOAT, GL_FALSE, sizeof(batchvertex_t),
                          (void*)offsetof(batchvertex_t, r));
     
     // Draw
