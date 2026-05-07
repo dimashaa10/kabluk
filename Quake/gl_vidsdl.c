@@ -1597,6 +1597,10 @@ static void GL_Init (void)
 	GLWorld_CreateShaders ();
 	GL_ClearBufferBindings ();
 	
+	// Initialize VBO batching system
+	if (gl_vbo_able)
+		VBO_Batch_Init ();
+
 	if (gl_fbo_able && gl_glsl_able) // woods #fxaa
 		FXAA_Init();
 }
@@ -1638,6 +1642,7 @@ void	VID_Shutdown (void)
 		R_MotionBlur_DeleteTexture (); // woods #motionblur
 		VID_Gamma_Shutdown (); //johnfitz
 		FXAA_Shutdown(); // woods #fxaa
+		VBO_Batch_Shutdown(); // Cleanup VBO batching system
 #if defined(USE_SDL2)
 		SDL_GL_DeleteContext(gl_context);
 		gl_context = NULL;

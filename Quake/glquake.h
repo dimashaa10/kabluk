@@ -529,4 +529,21 @@ void R_MotionBlur_DeleteTexture (void); // woods #motionblur
 
 float GL_WaterAlphaForSurface (msurface_t *fa);
 
+// VBO Batching System
+void VBO_Batch_Init(void);
+void VBO_Batch_Shutdown(void);
+void VBO_Batch_Flush2D(void);
+void VBO_Batch_Begin2D(gltexture_t *texture);
+void VBO_Batch_AddQuad2D(float x1, float y1, float x2, float y2, 
+                         float s1, float t1, float s2, float t2);
+void VBO_Batch_SetColor2D(float r, float g, float b, float a);
+void VBO_Batch_End2D(void);
+void VBO_Batch_InitBrush(int max_batches);
+void VBO_Batch_ShutdownBrush(void);
+qboolean VBO_Batch_AddBrushSurface(gltexture_t *texture, int lightmap,
+                                   float *verts, int num_verts,
+                                   qboolean has_alpha);
+void VBO_Batch_DrawBrush(qmodel_t *model, entity_t *ent);
+void VBO_Batch_GetStats(int *verts_2d, int *batches_brush);
+
 #endif	/* GLQUAKE_H */
