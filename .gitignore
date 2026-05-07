@@ -13,6 +13,8 @@ node_modules/
 venv/
 .venv/
 __pycache__/
+.mypy_cache/
+.pytest_cache/
 dist/
 build/
 target/
@@ -61,4 +63,8 @@ htmlcov/
 *.Z
 *.lz
 *.lzo
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+*.tar.zst
 ```
