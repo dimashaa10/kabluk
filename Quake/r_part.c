@@ -207,6 +207,9 @@ vec3_t	avelocity = {23, 7, 3};
 float	partstep = 0.01;
 float	timescale = 0.01;
 
+// Particle VBO system externs
+extern int g_particle_vbo_count;
+
 void R_EntityParticles (entity_t *ent)
 {
 	int		i;

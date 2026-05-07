@@ -89,7 +89,7 @@ qboolean R_InitParticleVBO(void)
 		return false;
 
 	// Generate VBO
-	glGenBuffers(1, &particle_vbo.vbo);
+	GL_GenBuffersFunc(1, &particle_vbo.vbo);
 	if (!particle_vbo.vbo)
 		return false;
 
@@ -166,7 +166,7 @@ qboolean R_InitParticleUBO(void)
 		return false;
 
 	// Create UBO
-	glGenBuffers(1, &g_particle_ubo);
+	GL_GenBuffersFunc(1, &g_particle_ubo);
 	if (!g_particle_ubo)
 		return false;
 
@@ -278,10 +278,10 @@ qboolean R_CreateParticleShader(void)
 	g_particle_tex_location = GL_GetUniformLocationFunc(g_particle_program, "ParticleTexture");
 
 	// Setup UBO binding
-	GLuint ubo_index = glGetUniformBlockIndex(g_particle_program, "ParticleUBO");
+	GLuint ubo_index = GL_GetUniformBlockIndexFunc(g_particle_program, "ParticleUBO");
 	if (ubo_index != GL_INVALID_INDEX)
 	{
-		glUniformBlockBinding(g_particle_program, ubo_index, 0);
+		GL_UniformBlockBindingFunc(g_particle_program, ubo_index, 0);
 		GL_BindBufferRangeFunc(GL_UNIFORM_BUFFER, 0, g_particle_ubo, 0, sizeof(particle_ubo_t));
 	}
 
@@ -522,11 +522,11 @@ void R_CheckParticleExtensions(void)
 	{
 		// UBO support (OpenGL 3.0+ or ARB_uniform_buffer_object)
 		gl_ubo_able = gl_core_profile_able || 
-			Q_strstr(gl_extensions, "GL_ARB_uniform_buffer_object") != NULL;
+			strstr(gl_extensions, "GL_ARB_uniform_buffer_object") != NULL;
 		
 		// Texture array support (OpenGL 3.0+ or EXT_texture_array)
 		gl_texture_array_able = (major >= 3) ||
-			Q_strstr(gl_extensions, "GL_EXT_texture_array") != NULL;
+			strstr(gl_extensions, "GL_EXT_texture_array") != NULL;
 	}
 	
 	// Query limits
@@ -541,7 +541,7 @@ void R_CheckParticleExtensions(void)
 	}
 	
 	// Load function pointers
-	if (gl_core_profile_able || Q_strstr(gl_extensions, "ARB_vertex_array_object"))
+	if (gl_core_profile_able || strstr(gl_extensions, "ARB_vertex_array_object"))
 	{
 		GL_GenVertexArraysFunc = (PFNGLGENVERTEXARRAYSPROC)SDL_GL_GetProcAddress("glGenVertexArrays");
 		GL_DeleteVertexArraysFunc = (PFNGLDELETEVERTEXARRAYSPROC)SDL_GL_GetProcAddress("glDeleteVertexArrays");
@@ -584,7 +584,7 @@ void R_InitParticleSystem(void)
 	// Initialize VBO
 	if (!R_InitParticleVBO())
 	{
-		Con_Warn("Failed to initialize particle VBO, using legacy rendering\n");
+		Con_Warning("Failed to initialize particle VBO, using legacy rendering\n");
 		return;
 	}
 	
@@ -593,7 +593,7 @@ void R_InitParticleSystem(void)
 	{
 		if (!R_InitParticleVAO())
 		{
-			Con_Warn("Failed to initialize particle VAO\n");
+			Con_Warning("Failed to initialize particle VAO\n");
 		}
 	}
 	
@@ -602,7 +602,7 @@ void R_InitParticleSystem(void)
 	{
 		if (!R_InitParticleUBO())
 		{
-			Con_Warn("Failed to initialize particle UBO\n");
+			Con_Warning("Failed to initialize particle UBO\n");
 		}
 	}
 	
@@ -611,7 +611,7 @@ void R_InitParticleSystem(void)
 	{
 		if (!R_InitParticleTextureArray())
 		{
-			Con_Warn("Failed to initialize particle texture array\n");
+			Con_Warning("Failed to initialize particle texture array\n");
 		}
 	}
 	
@@ -620,7 +620,7 @@ void R_InitParticleSystem(void)
 	{
 		if (!R_CreateParticleShader())
 		{
-			Con_Warn("Failed to create particle shader\n");
+			Con_Warning("Failed to create particle shader\n");
 		}
 	}
 	
