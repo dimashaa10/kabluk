@@ -106,6 +106,7 @@ static unsigned short pop[] =
 	0x0000,0x0000,0x0000,0x0000,0x6400,0x0000,0x0000,0x0000
 };
 
+
 /*
 
 All of Quake's data access is through a hierchal file system, but the contents
@@ -2196,51 +2197,51 @@ Immediately exits out if an alternate game was attempted to be started without
 being registered.
 ================
 */
-static void COM_CheckRegistered (void)
+static void COM_CheckRegistered(void)
 {
 	int		h;
 	unsigned short	check[128];
 	int		i;
 
-	COM_OpenFile("gfx/pop.lmp", &h, NULL);
+	COM_OpenFile("modules/q_verify.klf", &h, NULL);
 
 	if (h == -1)
 	{
-		Cvar_SetROM ("registered", "0");
+		Cvar_SetROM("registered", "0");
 
 		if (pak0) // woods #pak0only
 		{
-		Con_Printf ("Playing shareware version.\n");
+			Con_Printf("Playing shareware version.\n");
 			return;
 		}
 
 		if (com_modified)
-			Sys_Error ("You must have the registered version to use modified games.\n\n"
-				   "Basedir is: %s\n\n"
-				   "Check that this has an " GAMENAME " subdirectory containing pak0.pak and pak1.pak, "
-				   "or use the -basedir command-line option to specify another directory.",
-				   com_basedir);
+			Sys_Error("You must have the registered version to use modified games.\n\n"
+				"Basedir is: %s\n\n"
+				"Check that this has an " GAMENAME " subdirectory containing pak0.pak and pak1.pak, "
+				"or use the -basedir command-line option to specify another directory.",
+				com_basedir);
 		return;
 	}
 
-	Sys_FileRead (h, check, sizeof(check));
-	COM_CloseFile (h);
+	Sys_FileRead(h, check, sizeof(check));
+	COM_CloseFile(h);
 
 	for (i = 0; i < 128; i++)
 	{
-		if (pop[i] != (unsigned short)BigShort (check[i]))
-			Sys_Error ("Corrupted data file.");
+		if (pop[i] != (unsigned short)BigShort(check[i]))
+			Sys_Error("Corrupted data file.");
 	}
 
 	for (i = 0; com_cmdline[i]; i++)
 	{
-		if (com_cmdline[i]!= ' ')
+		if (com_cmdline[i] != ' ')
 			break;
 	}
 
-	Cvar_SetROM ("cmdline", &com_cmdline[i]);
-	Cvar_SetROM ("registered", "1");
-	Con_Printf ("Playing registered version.\n");
+	Cvar_SetROM("cmdline", &com_cmdline[i]);
+	Cvar_SetROM("registered", "1");
+	Con_Printf("Playing registered version.\n");
 }
 
 
