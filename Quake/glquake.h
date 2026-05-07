@@ -218,6 +218,10 @@ extern GLint		gl_max_texture_units; //ericw
 extern	float		gl_max_anisotropy;
 extern	qboolean	gl_anisotropy_able;
 
+// UBO support
+#define GL_MAX_UNIFORM_BLOCK_BINDINGS		0x8A2F
+#define GL_MAX_ARRAY_TEXTURE_LAYERS		0x88FF
+
 //ericw -- VBO
 extern PFNGLBINDBUFFERARBPROC  GL_BindBufferFunc;
 extern PFNGLBUFFERDATAARBPROC  GL_BufferDataFunc;
@@ -252,6 +256,8 @@ extern particle_vbo_t particle_vbo;
 extern GLuint g_particle_texture_array;
 extern qboolean gl_texture_array_able;
 extern GLint gl_max_array_texture_layers;
+extern gltexture_t *particletexture, *particletexture1, *particletexture2, *particletexture3, *particletexture4;
+extern int g_particle_vbo_count;
 
 extern gltexture_t* underwatertexture; // woods #caustics
 extern gltexture_t* shelltexture; // woods #powershell
