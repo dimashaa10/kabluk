@@ -360,8 +360,8 @@ typedef struct
 #include "location.h"      // rook / woods #pqteam
 #include "iplog.h"		// JPG 1.05 - ip address logging // woods #iplog
 
-#include "cjson.h"
-#include "cjson_utils.h"
+#include "cJSON.h"
+#include "cJSON_Utils.h"
 
 //=============================================================================
 

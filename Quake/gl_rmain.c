@@ -191,13 +191,13 @@ static void GLSLGamma_CreateShaders (void)
 	const GLchar *vertSource = \
 		"#version 330 core\n"
 		"\n"
-		"in vec4 gl_Vertex;\n"
-		"in vec2 gl_MultiTexCoord0;\n"
+		"in vec4 VertexPosition;\n"
+		"in vec2 VertexTexCoord;\n"
 		"out vec2 TexCoord;\n"
 		"\n"
 		"void main(void) {\n"
-		"\tgl_Position = vec4(gl_Vertex.xy, 0.0, 1.0);\n"
-		"\tTexCoord = gl_MultiTexCoord0;\n"
+		"\tgl_Position = vec4(VertexPosition.xy, 0.0, 1.0);\n"
+		"\tTexCoord = VertexTexCoord;\n"
 		"}\n";
 
 	const GLchar *fragSource = \
@@ -216,10 +216,16 @@ static void GLSLGamma_CreateShaders (void)
 		"\tFragColor = vec4(pow(frag.rgb, vec3(GammaValue)), 1.0);\n"
 		"}\n";
 
+	glsl_attrib_binding_t bindings[2];
+	bindings[0].attrib = 0;
+	bindings[0].name = "VertexPosition";
+	bindings[1].attrib = 1;
+	bindings[1].name = "VertexTexCoord";
+
 	if (!gl_glsl_gamma_able)
 		return;
 
-	r_gamma_program = GL_CreateProgram (vertSource, fragSource, 0, NULL);
+	r_gamma_program = GL_CreateProgram (vertSource, fragSource, 2, bindings);
 
 // get uniform locations
 	gammaLoc = GL_GetUniformLocation (&r_gamma_program, "GammaValue");
