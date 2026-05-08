@@ -652,7 +652,7 @@ static void GLWater_CreateShaders (void)
 	//    `gl_ModelViewProjectionMatrix * vec4(Vert, 1.0);`. Work around with
 	//    making Vert a vec4. (https://sourceforge.net/p/quakespasm/bugs/39/)
 	const GLchar *vertSource = \
-		"#version 110\n"
+		"#version 330 core\n"
 		"%s"
 		"\n"
 		"attribute vec4 Vert;\n"
@@ -676,7 +676,7 @@ static void GLWater_CreateShaders (void)
 		"}\n";
 
 	const GLchar *fragSource = \
-		"#version 110\n"
+		"#version 330 core\n"
 		"%s"
 		"\n"
 		"uniform sampler2D Tex;\n"
@@ -707,9 +707,9 @@ static void GLWater_CreateShaders (void)
         "#define M_PI 3.14159\n"
 		"#define TIMEBIAS (((WarpTime*20.0)*M_PI*2.0)/128.0)\n"
 		"	ntc += 0.125 + sin(tc_tex.ts*M_PI + TIMEBIAS)*0.125;\n"
-		"	vec4 result = texture2D(Tex, ntc.st);\n"
+		"	vec4 result = texture(Tex, ntc.st);\n"
 "#ifdef LIT\n"
-		"	result *= texture2D(LMTex, tc_lm.xy);\n"
+		"	result *= texture(LMTex, tc_lm.xy);\n"
 		"	result.rgb *= LightScale;\n"
 "#endif\n"
 		"	result.a *= Alpha;\n"
@@ -717,11 +717,11 @@ static void GLWater_CreateShaders (void)
 		"	float fog = exp(-gl_Fog.density * gl_Fog.density * FogFragCoord * FogFragCoord);\n"
 		"	fog = clamp(fog, 0.0, 1.0);\n"
 		"	result.rgb = mix(gl_Fog.color.rgb, result.rgb, fog);\n"
-		"	gl_FragColor = result;\n"
+		"	FragColor = result;\n"
 		"}\n";
 
 	const GLchar *vertSource_sky =
-		"#version 110\n"
+		"#version 330 core\n"
 		"\n"
 		"uniform vec3 EyePos;\n"
 		"\n"
@@ -738,7 +738,7 @@ static void GLWater_CreateShaders (void)
 			"FogFragCoord = gl_Position.w;\n"
 		"}\n";
 	const GLchar *fragSource_sky =
-		"#version 110\n"
+		"#version 330 core\n"
 		"\n"
 		"uniform sampler2D Tex;\n"
 		"uniform sampler2D CloudTex;\n"
@@ -753,9 +753,9 @@ static void GLWater_CreateShaders (void)
 			"dir.z *= 3.0;\n"
 			"dir.xy *= 2.953125/length(dir);\n"
 			"tccoord = (dir.xy + WarpTime*0.0625);\n"
-			"vec3 sky = vec3(texture2D(Tex, tccoord));\n"
+			"vec3 sky = vec3(texture(Tex, tccoord));\n"
 			"tccoord = (dir.xy + WarpTime*0.125);\n"
-			"vec4 clouds = texture2D(CloudTex, tccoord);\n"
+			"vec4 clouds = texture(CloudTex, tccoord);\n"
 			"clouds.a *= Alpha;\n"
 			"sky = (sky.rgb*(1.0-clouds.a)) + (clouds.a*clouds.rgb);\n"
 
@@ -768,11 +768,11 @@ static void GLWater_CreateShaders (void)
 			"sky.rgb = mix(gl_Fog.color.rgb, sky.rgb, fog);\n"
 #endif
 
-			"gl_FragColor = vec4(sky, 1.0);\n"
+			"FragColor = vec4(sky, 1.0);\n"
 		"}\n";
 
 	const GLchar *vertSource_fastsky =
-		"#version 110\n"
+		"#version 330 core\n"
 		"attribute vec4 Vert;\n"
 		"varying float FogFragCoord;\n"
 		"void main()\n"
@@ -781,7 +781,7 @@ static void GLWater_CreateShaders (void)
 			"FogFragCoord = gl_Position.w;\n"
 		"}\n";
 	const GLchar *fragSource_fastsky =
-		"#version 110\n"
+		"#version 330 core\n"
 		"\n"
 		"uniform float Alpha, FogAlpha;\n"
 		"uniform vec3 SkyColour;\n"
@@ -798,7 +798,7 @@ static void GLWater_CreateShaders (void)
 			"fog = clamp(fog, 0.0, 1.0) * FogAlpha + (1.0-FogAlpha);\n"
 			"sky.rgb = mix(gl_Fog.color.rgb, sky.rgb, fog);\n"
 #endif
-			"gl_FragColor = vec4(sky, 1.0);\n"
+			"FragColor = vec4(sky, 1.0);\n"
 		"}\n";
 
 	size_t i;
@@ -1053,7 +1053,7 @@ void GLWorld_CreateShaders (void)
 	//    `gl_ModelViewProjectionMatrix * vec4(Vert, 1.0);`. Work around with
 	//    making Vert a vec4. (https://sourceforge.net/p/quakespasm/bugs/39/)
 	const GLchar *vertSource = \
-		"#version 110\n"
+		"#version 330 core\n"
 		"\n"
 		"attribute vec4 Vert;\n"
 		"attribute vec2 TexCoords;\n"
@@ -1072,7 +1072,7 @@ void GLWorld_CreateShaders (void)
 		"}\n";
 	
 	const GLchar *fragSource = \
-		"#version 110\n"
+		"#version 330 core\n"
 		"\n"
 		"#define M_PI 3.14159\n"
 		"\n"
@@ -1094,8 +1094,8 @@ void GLWorld_CreateShaders (void)
 		"\n"
 		"void main()\n"
 		"{\n"
-		"	vec4 result = texture2D(Tex, tc_tex.xy);\n"
-		"	vec4 lightmapColor = texture2D(LMTex, tc_lm.xy); // Sample lightmap early\n"
+		"	vec4 result = texture(Tex, tc_tex.xy);\n"
+		"	vec4 lightmapColor = texture(LMTex, tc_lm.xy); // Sample lightmap early\n"
 		"	if (UseAlphaTest && (result.a < 0.666))\n"
 		"		discard;\n"
 		"\n"
@@ -1104,7 +1104,7 @@ void GLWorld_CreateShaders (void)
 		"	if (UseOverbright)\n"
 		"		result.rgb *= 2.0;\n"
 		"	if (UseFullbrightTex)\n"
-		"		result += texture2D(FullbrightTex, tc_tex.xy);\n"
+		"		result += texture(FullbrightTex, tc_tex.xy);\n"
 		"\n"
 		"	if (UseCausticsTex)\n"
 		"	{\n"
@@ -1126,10 +1126,10 @@ void GLWorld_CreateShaders (void)
 		"		);\n"
 		"       vec2 offsetR = vec2(aberrationAmount, 0.0);\n"
 		"       vec2 offsetB = vec2(-aberrationAmount, 0.0);\n"
-		"       float causticsR = texture2D(CausticsTex, causticsCoord + offsetR).r;\n"
-		"       float causticsG = texture2D(CausticsTex, causticsCoord).g;\n"
-		"       float causticsB = texture2D(CausticsTex, causticsCoord + offsetB).b;\n"
-		"       float causticsA = texture2D(CausticsTex, causticsCoord).a;\n"
+		"       float causticsR = texture(CausticsTex, causticsCoord + offsetR).r;\n"
+		"       float causticsG = texture(CausticsTex, causticsCoord).g;\n"
+		"       float causticsB = texture(CausticsTex, causticsCoord + offsetB).b;\n"
+		"       float causticsA = texture(CausticsTex, causticsCoord).a;\n"
 		"		vec4 caustics = vec4(causticsR, causticsG, causticsB, causticsA);\n"
 		"\n"
 		"       // --- Second Layer ----------------------------------------------------- \n"
@@ -1137,7 +1137,7 @@ void GLWorld_CreateShaders (void)
 		"           (tc_tex.x + sin(0.395 * (causticsSpeed * ClTime - tc_tex.y))) * -0.093,\n"
 		"           (tc_tex.y + sin(0.475 * (causticsSpeed * ClTime - tc_tex.x))) * -0.093\n"
 		"       );\n"
-		"       vec3 c2 = texture2D(CausticsTex, causticsCoord2).rgb;\n"
+		"       vec3 c2 = texture(CausticsTex, causticsCoord2).rgb;\n"
 		"       vec3 causticsRGB = max(caustics.rgb, c2);\n"
 		"\n"
 		"       // --- Blend using Light Factor --- \n"
@@ -1151,7 +1151,7 @@ void GLWorld_CreateShaders (void)
 		"	fog = clamp(fog, 0.0, 1.0);\n"
 		"	result = mix(gl_Fog.color, result, fog);\n"
 		"	result.a = Alpha;\n" // FIXME: This will make almost transparent things cut holes though heavy fog
-		"	gl_FragColor = result;\n"
+		"	FragColor = result;\n"
 		"}\n";
 
 	if (!gl_glsl_alias_able)

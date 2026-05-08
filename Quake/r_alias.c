@@ -196,12 +196,12 @@ void GLAlias_CreateShaders (void)
 	};
 
 	const GLchar *vertSource = \
-		"#version 110\n"
+		"#version 330 core\n"
 		"%s"
 		"\n"
 		"uniform float ClTime;\n" // woods #powershell
-		"varying vec2 ShellCoord;\n" // woods #powershell
-		"varying vec2 ShellCoord2;\n" // woods #powershell
+		"out vec2 ShellCoord;\n" // woods #powershell
+		"out vec2 ShellCoord2;\n" // woods #powershell
 		"\n"
 		"uniform int shellMode;\n"      // 0=normal, 1=outline, 2=shell
 		"uniform float shellTime;\n"    // Time for animation
@@ -211,23 +211,23 @@ void GLAlias_CreateShaders (void)
 		"uniform vec4 LightColor;\n"
 		"uniform float outlineWidth; // Amount to expand vertices\n" // woods #routline
 		"uniform int isOutlinePass; // Indicates if this is the outline pass\n" // woods #routline
-		"attribute vec4 TexCoords; // only xy are used \n"
-		"attribute vec4 Pose1Vert;\n"
-		"attribute vec3 Pose1Normal;\n"
-		"#ifdef SKELETAL\n"
+		"in vec4 TexCoords; // only xy are used \n"
+		"in vec4 Pose1Vert;\n"
+		"in vec3 Pose1Normal;\n"
+		"#if defined(SKELETAL)\n"
 		"#define BoneWeight Pose2Vert\n"
 		"#define BoneIndex Pose2Normal\n"
-		"attribute vec4 BoneWeight;\n"
-		"attribute vec4 BoneIndex;\n"
-		"attribute vec4 VertColours;\n"
+		"in vec4 BoneWeight;\n"
+		"in vec4 BoneIndex;\n"
+		"in vec4 VertColours;\n"
 		"uniform vec4 BoneTable[MAXBONES*3];\n" //fixme: should probably try to use a UBO or SSBO.
 		"#else\n"
 		"uniform float Blend;\n"
-		"attribute vec4 Pose2Vert;\n"
-		"attribute vec3 Pose2Normal;\n"
+		"in vec4 Pose2Vert;\n"
+		"in vec3 Pose2Normal;\n"
 		"#endif\n"
 		"\n"
-		"varying float FogFragCoord;\n"
+		"out float FogFragCoord;\n"
 		"\n"
 		"float r_avertexnormal_dot(vec3 vertexnormal) // from MH \n"
 		"{\n"
@@ -240,7 +240,7 @@ void GLAlias_CreateShaders (void)
 		"}\n"
 		"void main()\n"
 		"{\n"
-		"	gl_TexCoord[0] = TexCoords;\n"
+		"	TexCoord = TexCoords;\n"
 		"\n"
 		"	vec4 lerpedVert;\n" // woods #routline
 		"	vec3 lerpedNormal;\n" // woods #routline
@@ -258,7 +258,7 @@ void GLAlias_CreateShaders (void)
 		"	t2 *= -140.0 * (0.5 / 64.0);\n"
 		"	ShellCoord2 = vec2(s2, t2);\n"
 		"\n"
-		"#ifdef SKELETAL\n"
+		"#if defined(SKELETAL)\n"
 		"	mat4 wmat;"
 		"	wmat[0]  = BoneTable[0+3*int(BoneIndex.x)] * BoneWeight.x;"
 		"	wmat[0] += BoneTable[0+3*int(BoneIndex.y)] * BoneWeight.y;"
@@ -323,13 +323,13 @@ void GLAlias_CreateShaders (void)
 		"	gl_Position = gl_ModelViewProjectionMatrix * lerpedVert;\n"
 		"	FogFragCoord = gl_Position.w;\n"
 		"	gl_FrontColor = LightColor * vec4(vec3(dot1), 1.0);\n"
-		"#ifdef SKELETAL\n"
+		"#if defined(SKELETAL)\n"
 		"	gl_FrontColor *= VertColours;\n"	//this is basically only useful for vertex alphas.
 		"#endif\n"
 		"}\n";
 
 		const GLchar *fragSource = \
-			"#version 110\n"
+			"#version 330 core\n"
 			"\n"
 			"uniform sampler2D Tex;\n"
 			"uniform sampler2D LowerTex;\n"	//team colour
@@ -349,39 +349,39 @@ void GLAlias_CreateShaders (void)
 			"uniform int isOutlinePass;      // Indicates if this is the outline pass\n" // woods #routline
 			"uniform vec4 outlineColor;       // Color to use for the outline\n" // woods #routline
 			"\n"
-			"varying vec2 ShellCoord;\n" // woods #powershell
-			"varying vec2 ShellCoord2;\n" // woods #powershell
+			"out vec2 ShellCoord;\n" // woods #powershell
+			"out vec2 ShellCoord2;\n" // woods #powershell
 			"\n"
-			"varying float FogFragCoord;\n"
+			"out float FogFragCoord;\n"
 			"\n"
 			"void main()\n"
 			"{\n"
 			"if (isOutlinePass == 1)\n"
 			"    {\n"
 			"        // Render the outline with a solid color\n"
-			"        gl_FragColor = outlineColor;\n"
+			"        FragColor = outlineColor;\n"
 			"        return;\n"
 			"    }\n"
 			"    else if (isOutlinePass == 2)\n" // woods #powershell
 			"	{\n"
 			"        // Create a complex shell effect with animated patterns\n"
-			"        float pattern = sin(gl_TexCoord[0].x * 10.0 + shellTime) * \n"
-			"                       sin(gl_TexCoord[0].y * 10.0 + shellTime) * 0.25 + 0.75;\n"
-			"        gl_FragColor = vec4(outlineColor.rgb * pattern, outlineColor.a);\n"
+			"        float pattern = sin(TexCoord.x * 10.0 + shellTime) * \n"
+			"                       sin(TexCoord.y * 10.0 + shellTime) * 0.25 + 0.75;\n"
+			"        FragColor = vec4(outlineColor.rgb * pattern, outlineColor.a);\n"
 			"        return;\n"
 			"    }\n"
 			"\n"
-			"	vec4 result = texture2D(Tex, gl_TexCoord[0].xy);\n"	//base
+			"	vec4 result = texture(Tex, TexCoord.xy);\n"	//base
 			"\n"
 			"if (UseShellTex)\n" // woods #powershell
 			"{\n"
-			"    vec4 shell1 = texture2D(ShellTex, ShellCoord);\n"
+			"    vec4 shell1 = texture(ShellTex, ShellCoord);\n"
 			"    float brightness1 = shell1.r;\n"
 			"    vec3 coloredShell1 = mix(vec3(1.0), ShellColor, brightness1);\n"
 			"    shell1.rgb *= coloredShell1;\n"
 			"    shell1.a = brightness1 * ShellAlpha;\n"
 			"\n"
-			"    vec4 shell2 = texture2D(ShellTex, ShellCoord2);\n"
+			"    vec4 shell2 = texture(ShellTex, ShellCoord2);\n"
 			"    float brightness2 = shell2.r;\n"
 			"    vec3 coloredShell2 = mix(vec3(1.0), ShellColor, brightness2);\n"
 			"    shell2.rgb *= coloredShell2;\n"
@@ -392,21 +392,21 @@ void GLAlias_CreateShaders (void)
 			"}\n"
 
 			"\n"
-			"	if (ColourTint[0].a != 0.0) result.rgb += texture2D(LowerTex, gl_TexCoord[0].xy).rgb * ColourTint[0].rgb;\n"	//team/lower/trousers
-			"	if (ColourTint[1].a != 0.0) result.rgb += texture2D(UpperTex, gl_TexCoord[0].xy).rgb * ColourTint[1].rgb;\n"	//personal/upper/torso
+			"	if (ColourTint[0].a != 0.0) result.rgb += texture(LowerTex, TexCoord.xy).rgb * ColourTint[0].rgb;\n"	//team/lower/trousers
+			"	if (ColourTint[1].a != 0.0) result.rgb += texture(UpperTex, TexCoord.xy).rgb * ColourTint[1].rgb;\n"	//personal/upper/torso
 			"	if (UseAlphaTest && (result.a < 0.666))\n"
 			"		discard;\n"
-			"	result *= gl_Color;\n"	//vertex lighting results (and colormod).
+			"	result *= VertexColor;\n"	//vertex lighting results (and colormod).
 			"	if (UseOverbright)\n"
 			"		result.rgb *= 2.0;\n"
 			"	if (UseFullbrightTex)\n"
-			"		result += texture2D(FullbrightTex, gl_TexCoord[0].xy) * ColourTint[2];\n" //fullbrights (with glowmod)
+			"		result += texture(FullbrightTex, TexCoord.xy) * ColourTint[2];\n" //fullbrights (with glowmod)
 			"	result = clamp(result, 0.0, 1.0);\n"
 			"	float fog = exp(-gl_Fog.density * gl_Fog.density * FogFragCoord * FogFragCoord);\n"
 			"	fog = clamp(fog, 0.0, 1.0) * gl_Fog.color.a;\n"
 			"	result.rgb = mix(gl_Fog.color.rgb, result.rgb, fog);\n"
 			"	result.a *= gl_Color.a;\n" // FIXME: This will make almost transparent things cut holes though heavy fog
-			"	gl_FragColor = result;\n"
+			"	FragColor = result;\n"
 			"}\n";
 
 	if (!gl_glsl_alias_able)

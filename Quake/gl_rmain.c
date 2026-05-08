@@ -189,24 +189,31 @@ GLSLGamma_CreateShaders
 static void GLSLGamma_CreateShaders (void)
 {
 	const GLchar *vertSource = \
-		"#version 110\n"
+		"#version 330 core\n"
+		"\n"
+		"in vec4 gl_Vertex;\n"
+		"in vec2 gl_MultiTexCoord0;\n"
+		"out vec2 TexCoord;\n"
 		"\n"
 		"void main(void) {\n"
-		"	gl_Position = vec4(gl_Vertex.xy, 0.0, 1.0);\n"
-		"	gl_TexCoord[0] = gl_MultiTexCoord0;\n"
+		"\tgl_Position = vec4(gl_Vertex.xy, 0.0, 1.0);\n"
+		"\tTexCoord = gl_MultiTexCoord0;\n"
 		"}\n";
 
 	const GLchar *fragSource = \
-		"#version 110\n"
+		"#version 330 core\n"
 		"\n"
 		"uniform sampler2D GammaTexture;\n"
 		"uniform float GammaValue;\n"
 		"uniform float ContrastValue;\n"
 		"\n"
+		"in vec2 TexCoord;\n"
+		"out vec4 FragColor;\n"
+		"\n"
 		"void main(void) {\n"
-		"	  vec4 frag = texture2D(GammaTexture, gl_TexCoord[0].xy);\n"
-		"	  frag.rgb = frag.rgb * ContrastValue;\n"
-		"	  gl_FragColor = vec4(pow(frag.rgb, vec3(GammaValue)), 1.0);\n"
+		"\tvec4 frag = texture(GammaTexture, TexCoord.xy);\n"
+		"\tfrag.rgb = frag.rgb * ContrastValue;\n"
+		"\tFragColor = vec4(pow(frag.rgb, vec3(GammaValue)), 1.0);\n"
 		"}\n";
 
 	if (!gl_glsl_gamma_able)
