@@ -3,7 +3,7 @@
 On Linux, from the repository root:
 
 ```sh
-./tests/run_cigarette_impulse_tests.sh
+./tests/run_gameplay_tests.sh
 ```
 
 Requires a C compiler (GCC or Clang). The runner uses the bundled SDL headers
@@ -46,3 +46,36 @@ These tests exercise frame/state transitions and particle emission decisions,
 not the visual appearance of the model or smoke in-game. Game assets are not
 included. See `Quake/cigarette.h` for the hardcoded settings and the root README
 for behavior and deployment instructions.
+
+
+## Skate regression coverage
+
+`test_skate_server.c` links the real `SV_Skate_f`, `SV_ClientThink`, skate movement,
+board update/cleanup and stat encoding with entity/string/trace/command doubles.
+It covers:
+- Toggle and explicit on/off, duplicate enable, model missing/limits, invalid
+  arguments, disconnected/unspawned/dead players, bad model origin and a full
+  entity pool (without a fatal allocation).
+- Automatic progressive acceleration with no keys, 420 speed limit, gradual
+  turns and lateral momentum, S braking and frame-time independence.
+- Unchanged origin/bounds, real ammo and vertical jump velocity; no air boost.
+- Shared model origin, wheels above flat ground and sloped ground beneath the
+  corners, non-solid board, ownership, follow/yaw and cleanup after death,
+  noclip, deep water, ladder entry and a VM-context change.
+- Cleanup does not free an unrelated entity that reused the board's slot.
+
+`test_skate_client.c` includes the real `r_alias.c` transform helper and links
+real chase/visual helpers, frustum culling and math code. No OpenGL calls are
+executed. Tests cover rider/board alignment (including remote players), render
+height without moving prediction origins, no accumulated/double height, frustum
+bounds, preserving ordinary chase settings, rider-focused camera, wall tracing,
+foreign/malformed stat guards and invalid board-owner metadata.
+
+`run_cigarette_impulse_tests.sh` remains a compatibility wrapper for the full
+suite. Some legacy renderer code has an existing unused local; only that warning
+is suppressed when compiling the renderer-inclusive client test.
+
+These are asset-free logic/transform tests, not a live map or screenshot test.
+Actual `progs.dat`, `player.mdl` and the user's prepared `skate.mdl` are needed to
+verify the final visual fit. The prototype has no tricks, banking or separate
+wheel collision; normal player world collision/gravity still handles motion.

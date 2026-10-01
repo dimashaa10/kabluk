@@ -782,7 +782,7 @@ void R_DrawViewmodelShell(aliasglsl_t* glsl, aliashdr_t* paliashdr, lerpdata_t* 
 		|| gl_powerupshells.value > 1.0f
 		|| e != &cl.viewent
 		|| !(cl.items & (IT_QUAD | IT_INVULNERABILITY))
-		|| chase_active.value)
+		|| Chase_Active())
 	{
 		return;
 	}
@@ -880,12 +880,12 @@ static void R_ApplyPowerupShellEffect(aliasglsl_t* glsl, entity_t* e) // -- wood
 {
 	GL_Uniform1iFunc(glsl->useShellTexLoc, 0);
 
-	if (!r_coloredpowerupglow.value || gl_powerupshells.value <= 0.0f || e != &cl.viewent || chase_active.value)
+	if (!r_coloredpowerupglow.value || gl_powerupshells.value <= 0.0f || e != &cl.viewent || Chase_Active())
 		return;
 
 	if (cl.time <= cl.faceanimtime && cl_damagehue.value)
 	{
-		if (e == &cl.viewent && !chase_active.value)
+		if (e == &cl.viewent && !Chase_Active())
 		{
 			if (r_coloredpowerupglow.value && gl_powerupshells.value <= 1)
 			{
@@ -910,7 +910,7 @@ static void R_ApplyPowerupShellEffect(aliasglsl_t* glsl, entity_t* e) // -- wood
 	}
 	else
 	{
-		if (e == &cl.viewent && !chase_active.value)
+		if (e == &cl.viewent && !Chase_Active())
 		{
 			if (r_coloredpowerupglow.value && gl_powerupshells.value <= 1)
 			{
@@ -1033,7 +1033,7 @@ static void GL_DrawAliasFrame_GLSL (aliasglsl_t *glsl, aliashdr_t *paliashdr, le
 	}
 
 #define MyVectorScale(a,s,b) do{(b)[0]=(s)*(a)[0];(b)[1]=(s)*(a)[1];(b)[2]=(s)*(a)[2];}while(0)
-	if (e->netstate.colormap > 0 && e->netstate.colormap <= cl.maxclients)
+	if (e->netstate.colormap > 0 && e->netstate.colormap <= cl.maxclients && !CL_IsSkateBoard(e))
 	{
 		scoreboard_t* sb = &cl.scores[e->netstate.colormap - 1];
 		byte* pal;
@@ -1711,6 +1711,7 @@ void R_SetupEntityTransform (entity_t *e, lerpdata_t *lerpdata)
 		VectorCopy (e->origin, lerpdata->origin);
 		VectorCopy (e->angles, lerpdata->angles);
 	}
+	lerpdata->origin[2] += CL_EntitySkateLift(e);
 }
 
 /*
@@ -2153,7 +2154,7 @@ void R_DrawAliasModel(entity_t* e)
 						tex.base = t;
 				}
 			}
-			else if (e->netstate.colormap>=1&&e->netstate.colormap<=cl.maxclients)
+			else if (e->netstate.colormap>=1&&e->netstate.colormap<=cl.maxclients && !CL_IsSkateBoard(e))
 			{	//despite being able to handle _shirt+_pants textures in our glsl, we still prefer to generate per-player textures.
 				//1) works with non-glsl.
 				//2) preserves the weird non-linear ranges.
@@ -2472,7 +2473,7 @@ void GL_DrawAliasShadow (entity_t *e)
 	R_SetupEntityTransform (e, &lerpdata);
 	R_LightPoint (e->origin);
 	shade = (((lightcolor[0] + lightcolor[1] + lightcolor[2]) / 3) / 128); // woods (R00k) : fade light based on ambientlight
-	lheight = currententity->origin[2] - lightspot[2];
+	lheight = currententity->origin[2] + CL_EntitySkateLift(currententity) - lightspot[2];
 
 // set up matrix
 	glPushMatrix ();

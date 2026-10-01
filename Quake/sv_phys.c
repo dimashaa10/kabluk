@@ -1350,6 +1350,7 @@ void SV_Physics_Client (edict_t	*ent, int num)
 	pr_global_struct->self = EDICT_TO_PROG(ent);
 	PR_ExecuteProgram (pr_global_struct->PlayerPostThink);
 	SV_CigarettePostThink (&svs.clients[num-1], ent, saved_button0, equip_cigarette);
+	SV_SkateUpdate (&svs.clients[num-1]);
 }
 
 //============================================================================

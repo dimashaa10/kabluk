@@ -12,7 +12,6 @@ client_state_t cl;
 kbutton_t in_attack;
 refdef_t r_refdef;
 cvar_t r_drawviewmodel = {"r_drawviewmodel", "1", CVAR_NONE};
-cvar_t chase_active = {"chase_active", "0", CVAR_NONE};
 cvar_t scr_viewsize = {"viewsize", "100", CVAR_NONE};
 
 static entity_t view;

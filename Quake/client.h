@@ -609,6 +609,13 @@ extern	cvar_t	chase_active;
 
 void Chase_Init (void);
 void TraceLine (vec3_t start, vec3_t end, float pushoff, vec3_t impact);
+qboolean CL_SkateActive (void);
+float CL_SkateLift (void);
+float CL_EntitySkateLift (const entity_t *ent);
+void CL_UpdateSkateVisuals (void);
+qboolean CL_IsSkateBoard (const entity_t *ent);
+qboolean Chase_Active (void);
+
 void Chase_UpdateForClient (void);	//johnfitz
 void Chase_UpdateForDrawing (void);	//johnfitz
 

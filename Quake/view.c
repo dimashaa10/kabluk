@@ -870,7 +870,7 @@ static void V_EmitCigaretteSmoke (entity_t *view)
 
 	if (!view->model || q_strcasecmp(view->model->name, SIGA_MODEL) != 0 ||
 		(in_attack.state & 1) || view->frame == SIGA_IDLE_FRAME || cl.stats[STAT_HEALTH] <= 0 ||
-		!r_drawviewmodel.value || chase_active.value || scr_viewsize.value >= 130)
+		!r_drawviewmodel.value || Chase_Active() || scr_viewsize.value >= 130)
 	{
 		next_smoke_time = 0;
 		return;
@@ -921,10 +921,13 @@ void V_CalcRefdef (void)
 
 // transform the view offset by the model's matrix to get the offset from
 // model origin for the view
-	ent->angles[YAW] = cl.lerpangles[YAW];	// the model should face the view dir // woods to lerp #smoothcam
-	ent->angles[PITCH] = -cl.lerpangles[PITCH];	// the model should face the view dir // woods to lerp #smoothcam
+	if (!CL_SkateActive())
+	{
+		ent->angles[YAW] = cl.lerpangles[YAW];	// the model should face the view dir // woods to lerp #smoothcam
+		ent->angles[PITCH] = -cl.lerpangles[PITCH];	// the model should face the view dir // woods to lerp #smoothcam
+	}
 
-	bob = V_CalcBob ();
+	bob = CL_SkateActive() ? 0 : V_CalcBob ();
 
 // refresh position
 	VectorCopy (ent->origin, r_refdef.vieworg);
@@ -953,6 +956,7 @@ void V_CalcRefdef (void)
 			r_refdef.vieworg[i] += scr_ofsx.value*forward[i] + scr_ofsy.value*right[i] + scr_ofsz.value*up[i];
 
 	V_BoundOffsets ();
+	r_refdef.vieworg[2] += CL_SkateLift();
 
 // set up gun stuff
 
@@ -1041,7 +1045,7 @@ void V_CalcRefdef (void)
 	else
 		oldz = ent->origin[2];
 
-	if (chase_active.value)
+	if (Chase_Active())
 		Chase_UpdateForDrawing (); //johnfitz
 }
 

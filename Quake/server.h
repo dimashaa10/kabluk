@@ -59,6 +59,7 @@ typedef struct
 	char		modelname[64];		// maps/<name>.bsp, for model_precache[0]
 	const char	*model_precache[MAX_MODELS];	// NULL terminated
 	struct qmodel_s	*models[MAX_MODELS];
+	int			skate_modelindex;	// optional precached skateboard
 	const char	*sound_precache[MAX_SOUNDS];	// NULL terminated
 	const char	*lightstyles[MAX_LIGHTSTYLES];
 	server_state_t	state;			// some actions are only valid during load
@@ -243,6 +244,10 @@ typedef struct client_s
 	qboolean		siga_attack_down;	// previous raw attack state (before masking for QC)
 	int				siga_frame;			// current cigarette weaponframe
 	double			siga_next_frame_time;
+	qboolean		skate_active;
+	edict_t			*skate_board;		// transient, non-solid visual entity
+	float			skate_yaw;
+	float			skate_lift;
 } client_t;
 
 
@@ -384,6 +389,13 @@ void SV_CheckDuplicateNames(client_t* client); // woods #dupnames
 
 void SV_ProcessTimerExecution(void); // woods #svtimer
 void SV_CleanupTimer(void); // woods #svtimer
+
+void SV_Skate_f (void);
+void SV_SkateStop (client_t *client);
+void SV_SkateUpdate (client_t *client);
+void SV_SkateMove (client_t *client, edict_t *ent, const usercmd_t *move, double dt);
+int SV_SkateStat (const client_t *client);
+qboolean SV_IsSkateBoard (const edict_t *ent);
 
 void SV_CigarettePreThink (client_t *client, edict_t *ent, float *saved_button0, qboolean *equip_cigarette);
 void SV_CigarettePostThink (client_t *client, edict_t *ent, float saved_button0, qboolean equip_cigarette);

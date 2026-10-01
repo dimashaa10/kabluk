@@ -776,7 +776,7 @@ static qboolean CL_LerpEntity(entity_t *ent, vec3_t org, vec3_t ang, float frac)
 	vec3_t delta;
 	qboolean teleported = false;
 
-	if (ent->netstate.pmovetype && ent-cl.entities==cl.viewentity && qcvm->worldmodel && !cl_nopred.value && cls.signon == SIGNONS)
+	if (!CL_SkateActive() && ent->netstate.pmovetype && ent-cl.entities==cl.viewentity && qcvm->worldmodel && !cl_nopred.value && cls.signon == SIGNONS)
 	{	//note: V_CalcRefdef will copy from cl.entities[viewent] to get its origin, so doing it here is the proper place anyway.
 		static struct
 		{
@@ -1415,7 +1415,7 @@ void CL_RelinkEntities (void)
 		}
 #endif
 
-		if (i == cl.viewentity && !chase_active.value)
+		if (i == cl.viewentity && !Chase_Active())
 			continue;
 
 		if (cl_numvisedicts < cl_maxvisedicts)
@@ -1426,10 +1426,12 @@ void CL_RelinkEntities (void)
 	}
 
 
+	CL_UpdateSkateVisuals();
+
 	// viewmodel. last, for transparency reasons.
 	ent = &cl.viewent;
 	if (r_drawviewmodel.value
-		&& !chase_active.value
+		&& !Chase_Active()
 		&& cl.stats[STAT_HEALTH] > 0
 		/* && !(cl.items & IT_INVISIBILITY)*/ // woods #ringalpha
 		&& ent->model

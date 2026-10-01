@@ -22,11 +22,86 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 // chase.c -- chase camera code
 
 #include "quakedef.h"
+#include "skate.h"
 
 cvar_t	chase_back = {"chase_back", "90", CVAR_ARCHIVE};
 cvar_t	chase_up = {"chase_up", "30", CVAR_ARCHIVE };
 cvar_t	chase_right = {"chase_right", "0", CVAR_ARCHIVE };
 cvar_t	chase_active = {"chase_active", "0", CVAR_NONE};
+
+/* Skate forces chase view without overwriting the user's chase_active cvar. */
+qboolean CL_SkateActive (void)
+{
+	unsigned int state = (unsigned int)cl.stats[STAT_SKATE];
+	return (state & SKATE_STAT_MASK) == SKATE_STAT_MAGIC &&
+		(state & SKATE_HEIGHT_MASK) <= (unsigned int)(SKATE_MAX_LIFT * SKATE_HEIGHT_SCALE);
+}
+
+float CL_SkateLift (void)
+{
+	return CL_SkateActive() ? ((unsigned int)cl.stats[STAT_SKATE] & SKATE_HEIGHT_MASK) / SKATE_HEIGHT_SCALE : 0;
+}
+
+qboolean Chase_Active (void)
+{
+	return chase_active.value != 0 || CL_SkateActive();
+}
+
+float CL_EntitySkateLift (const entity_t *ent)
+{
+	uintptr_t base = (uintptr_t)cl.entities, address = (uintptr_t)ent;
+	if (!base || cl.maxclients <= 0 || cl.num_entities <= 1 || address <= base ||
+		address - base > (size_t)q_min(cl.maxclients, cl.num_entities - 1) * sizeof(*ent) ||
+		(address - base) % sizeof(*ent))
+		return 0;
+	return ent->skate_lift;
+}
+
+qboolean CL_IsSkateBoard (const entity_t *ent)
+{
+	return ent->model && (!q_strcasecmp(ent->model->name, SKATE_MODEL) ||
+		!q_strcasecmp(ent->model->name, SKATE_MODEL_ROOT));
+}
+
+void CL_UpdateSkateVisuals (void)
+{
+	int i, owner;
+	if (!cl.entities)
+		return;
+	for (i = 0; i < cl.num_entities; i++)
+		cl.entities[i].skate_lift = 0;
+	if (CL_SkateActive() && cl.viewentity > 0 && cl.viewentity < cl.num_entities)
+	{
+		cl.entities[cl.viewentity].skate_lift = CL_SkateLift();
+		cl.entities[cl.viewentity].lerpflags &= ~LERP_MOVESTEP;
+	}
+	for (i = 1; i < cl.num_entities; i++)
+	{
+		entity_t *board = &cl.entities[i], *rider;
+		float lift;
+		if (!CL_IsSkateBoard(board) || (board->netstate.eflags & EFLAGS_COLOURMAPPED))
+			continue;
+		owner = board->netstate.colormap;
+		if (owner <= 0 || owner > cl.maxclients || owner >= cl.num_entities || owner == i ||
+			(owner == cl.viewentity && !CL_SkateActive()))
+			continue;
+		rider = &cl.entities[owner];
+		if (!rider->model || fabsf(board->msg_origins[0][0] - rider->msg_origins[0][0]) > SKATE_MAX_LIFT ||
+			fabsf(board->msg_origins[0][1] - rider->msg_origins[0][1]) > SKATE_MAX_LIFT)
+			continue;
+		lift = owner == cl.viewentity ? CL_SkateLift() :
+			CLAMP(0.0f, board->msg_origins[0][2] - rider->msg_origins[0][2], SKATE_MAX_LIFT);
+		rider->skate_lift = lift;
+		rider->lerpflags &= ~LERP_MOVESTEP;
+		// Follow the same interpolated rider, not a separate delayed alias
+		// transform. The exported relative positions of both models stay intact.
+		VectorCopy(rider->origin, board->origin);
+		board->origin[2] += lift;
+		board->angles[PITCH] = board->angles[ROLL] = 0;
+		board->angles[YAW] = rider->angles[YAW];
+		board->lerpflags &= ~LERP_MOVESTEP;
+	}
+}
 
 /*
 ==============
@@ -253,20 +328,27 @@ TODO: stay at least 8 units away from all walls in this leaf
 void Chase_UpdateForDrawing (void)
 {
 	int		i;
-	vec3_t	forward, up, right;
+	vec3_t	forward, up, right, camera_angles;
+	qboolean skating = CL_SkateActive();
+	float back = skating ? SKATE_CAMERA_BACK : chase_back.value;
+	float camera_up = skating ? SKATE_CAMERA_UP : chase_up.value;
+	float camera_right = skating ? 0 : chase_right.value;
 	vec3_t	ideal, crosshair, temp;
 	float	alpha = 1, alphadist = 1;
 	float	absdist;
 
-	AngleVectors (cl.lerpangles, forward, right, up); // woods added lerpangles for #smoothcam
+	VectorCopy(cl.lerpangles, camera_angles);
+	if (skating)
+		camera_angles[PITCH] = CLAMP(-10.0f, camera_angles[PITCH] + SKATE_CAMERA_PITCH, 65.0f);
+	AngleVectors (camera_angles, forward, right, up);
 
 	// calc ideal camera location before checking for walls
 	for (i=0 ; i<3 ; i++)
 		ideal[i] = r_refdef.vieworg[i]
-		- forward[i]*chase_back.value
-		+ right[i]*chase_right.value;
+		- forward[i]*back
+		+ right[i]*camera_right;
 		//+ up[i]*chase_up.value;
-	ideal[2] = r_refdef.vieworg[2] + chase_up.value;
+	ideal[2] = r_refdef.vieworg[2] + camera_up - (skating ? forward[2] * back : 0);
 
 	// make sure camera is not in or behind a wall
 	// TraceLine2(r_refdef.vieworg, ideal, temp); // woods (Qrack) #betterchase - change to 2
@@ -275,12 +357,23 @@ void Chase_UpdateForDrawing (void)
 	TraceLine(r_refdef.vieworg, ideal, NEARCLIP, ideal);
 
 	// find the spot the player is looking at
-	VectorMA (r_refdef.vieworg, 1<<20, forward, temp);
-	TraceLine (r_refdef.vieworg, temp, 0, crosshair);
+	if (skating)
+	{
+		// Frame the complete rider/board rather than looking past the head
+		// at the horizon (which clips the skateboard below the screen).
+		VectorCopy(r_refdef.vieworg, crosshair);
+		crosshair[2] -= SKATE_CAMERA_FOCUS_DROP;
+		VectorCopy(crosshair, temp);
+	}
+	else
+	{
+		VectorMA (r_refdef.vieworg, 1<<20, forward, temp);
+		TraceLine (r_refdef.vieworg, temp, 0, crosshair);
+	}
 
 	if (VectorLength(temp) != 0)
 	{	alphadist = VecLength2(r_refdef.vieworg, ideal); // chase_transparent from Qrack
-		absdist = fabsf(chase_back.value);
+		absdist = fabsf(back);
 		alpha = bound(0, (alphadist / absdist), 1);
 
 

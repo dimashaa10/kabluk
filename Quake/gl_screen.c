@@ -3540,7 +3540,7 @@ void LaserSight (void)
 {
 	if (!cl.viewent.model || cl.viewent.model->name[0] == '\0' || cl.intermission || qeintermission || crxintermission || scr_viewsize.value >= 130 ||
 		(countdown && draw) || (qeintermission && draw) || cl.stats[STAT_HEALTH] <= 0 || 
-		!strcmp(cl.viewent.model->name, "progs/v_axe.mdl") || chase_active.value) //R00k: dont show laserpoint when observer!
+		!strcmp(cl.viewent.model->name, "progs/v_axe.mdl") || Chase_Active()) //R00k: dont show laserpoint when observer!
 	{
 		return;
 	}

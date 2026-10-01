@@ -184,6 +184,18 @@ eval_t *GetEdictFieldValue (edict_t *ent, int field)
 	return NULL;
 }
 
+/* Newly shared player-think hooks must remain inactive in cigarette tests. */
+void PR_SwitchQCVM (qcvm_t *vm) { qcvm = vm; }
+void ED_Free (edict_t *ent) { (void)ent; assert(!"unexpected skateboard cleanup"); }
+void SV_LinkEdict (edict_t *ent, qboolean touch) { (void)ent; (void)touch; assert(!"unexpected skateboard link"); }
+trace_t SV_Move (vec3_t start, vec3_t mins, vec3_t maxs, vec3_t end, int type, edict_t *skip)
+{
+	trace_t trace = {0};
+	(void)start; (void)mins; (void)maxs; (void)end; (void)type; (void)skip;
+	assert(!"unexpected skateboard trace");
+	return trace;
+}
+
 /* Emulate vanilla weaponframe resets and QC input handling, not the fix. */
 qboolean SV_RunThink (edict_t *ent)
 {
@@ -712,6 +724,21 @@ static void TestQueuedMoves (void)
 	}
 }
 
+static void TestSkateInputRouting (void)
+{
+	int mode;
+	for (mode = 1; mode < 4; mode++)
+	{
+		Reset(true, mode);
+		client.skate_active = true;
+		ReadMove(0, 0);
+		assert(!client.usingpmove && qc_calls == 0); // defer to standard server frame
+		client.skate_active = false;
+		ReadMove(0, 0);
+		assert(client.usingpmove && qc_calls > 0); // ordinary prediction resumes
+	}
+}
+
 int main (void)
 {
 	int mode;
@@ -731,6 +758,7 @@ int main (void)
 	}
 	TestHeldInputBetweenPackets();
 	TestQueuedMoves();
+	TestSkateInputRouting();
 	puts("PASS: impulse 9 is cigarette-only; impulse 101 keeps the QC cheat.");
 	puts("PASS: draw to frame 10, hold until release, finish once and return to idle.");
 	puts("PASS: early release, repress, packet gaps, frame bounds, switching and death.");

@@ -62,6 +62,7 @@ typedef struct entity_s
 	double					spawntime;		// woods (iw) #democontrols
 	vec3_t					msg_origins[2];	// last two updates (0 is newest)
 	vec3_t					origin;
+	float					skate_lift;		// render-only player offset; origin remains physical
 	vec3_t					msg_angles[2];	// last two updates (0 is newest)
 	vec3_t					angles;
 	struct qmodel_s			*model;			// NULL = no model

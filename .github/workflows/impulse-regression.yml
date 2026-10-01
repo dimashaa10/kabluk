@@ -1,4 +1,4 @@
-name: Cigarette regression tests
+name: Gameplay regression tests
 
 on:
   push:
@@ -20,5 +20,5 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Check impulse routing, cigarette animation and smoke
-        run: ./tests/run_cigarette_impulse_tests.sh
+      - name: Check cigarette and skate mechanics
+        run: ./tests/run_gameplay_tests.sh

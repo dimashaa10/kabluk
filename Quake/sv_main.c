@@ -24,6 +24,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "quakedef.h"
 #include "cigarette.h"
+#include "skate.h"
 #include "pmove.h"
 
 server_t	sv;
@@ -150,6 +151,8 @@ void SV_CalcStats(client_t *client, int *statsi, float *statsf, const char **sta
 			break;
 		}
 	}
+	statsi[STAT_SKATE] = SV_SkateStat(client);
+	statsf[STAT_SKATE] = 0;
 }
 
 
@@ -1631,6 +1634,7 @@ void SV_Init (void)
 	Cvar_RegisterVariable (&rcon_password);
 
 	Cmd_AddCommand_ClientCommand("pext", SV_Pext_f);
+	Cmd_AddCommand_ClientCommand("skate", SV_Skate_f);
 	Cmd_AddCommand ("sv_protocol", &SV_Protocol_f); //johnfitz
 	Cmd_AddCommand ("sv_settimer", &SV_SetTimer_f);  // woods #svtimer
 
@@ -3113,6 +3117,13 @@ void SV_WriteClientdataToMessage (client_t *client, sizebuf_t *msg)
 	if (bits & SU_WEAPONALPHA)
 		MSG_WriteByte (msg, ent->alpha); //for now, weaponalpha = client entity alpha
 	//johnfitz
+
+	// Repeat the small stock-compatible state in every legacy datagram so
+	// packet loss cannot leave the chase camera stuck on/off. Predinfo uses
+	// the normal acknowledged stat channel from SV_CalcStats instead.
+	MSG_WriteByte(msg, svc_updatestat);
+	MSG_WriteByte(msg, STAT_SKATE);
+	MSG_WriteLong(msg, SV_SkateStat(client));
 }
 
 
@@ -4006,6 +4017,10 @@ void SV_SpawnServer (const char *server)
 	SV_Precache_Model("progs/player.mdl");	//Spike -- SV_CreateBaseline depends on this model.
 	if (COM_FileExists(SIGA_MODEL, NULL))
 		SV_Precache_Model(SIGA_MODEL);
+	if (COM_FileExists(SKATE_MODEL, NULL))
+		sv.skate_modelindex = SV_Precache_Model(SKATE_MODEL);
+	else if (COM_FileExists(SKATE_MODEL_ROOT, NULL))
+		sv.skate_modelindex = SV_Precache_Model(SKATE_MODEL_ROOT);
 
 // all setup is completed, any further precache statements are errors
 	sv.state = ss_active;
