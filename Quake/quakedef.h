@@ -3,6 +3,7 @@ Copyright (C) 1996-2001 Id Software, Inc.
 Copyright (C) 2002-2009 John Fitzgibbons and others
 Copyright (C) 2007-2008 Kristian Duske
 Copyright (C) 2010-2019 QuakeSpasm developers
+Copyright (C) 2025-2026 DimTenCorp
 
 This program is free software; you can redistribute it and/or
 modify it under the terms of the GNU General Public License
@@ -42,13 +43,13 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define	QUAKESPASM_VER_SUFFIX		// optional version suffix string literal like "-beta1"
 #endif
 
-#define QSS_VER	"23-04-26" // eggs
+#define QSS_VER	"02-10-26" // eggs
 
 // kabluk version info
 
 #define QSSM_VER_MAJOR		0
 #define QSSM_VER_MINOR		1
-#define QSSM_VER_PATCH		15
+#define QSSM_VER_PATCH		16
 #ifndef QSSM_VER_SUFFIX
 #define QSSM_VER_SUFFIX		"-lox"	// napishi chto ti lox
 #endif
