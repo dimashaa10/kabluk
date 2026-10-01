@@ -29,10 +29,12 @@ edict_t	*sv_player;
 extern	cvar_t	sv_friction;
 cvar_t	sv_edgefriction = {"edgefriction", "2", CVAR_NONE};
 extern	cvar_t	sv_stopspeed;
-extern	cvar_t	cl_siga_anim_idle;
-extern	cvar_t	cl_siga_anim_start;
-extern	cvar_t	cl_siga_anim_end;
-extern	cvar_t	cl_siga_anim_interval;
+// Server-driven viewmodel animation; retain the existing cl_ names for configs.
+cvar_t	cl_siga_anim_idle = {"cl_siga_anim_idle", "0", CVAR_ARCHIVE};
+cvar_t	cl_siga_anim_start = {"cl_siga_anim_start", "1", CVAR_ARCHIVE};
+cvar_t	cl_siga_anim_hold = {"cl_siga_anim_hold", "10", CVAR_ARCHIVE};
+cvar_t	cl_siga_anim_end = {"cl_siga_anim_end", "0", CVAR_ARCHIVE};
+cvar_t	cl_siga_anim_interval = {"cl_siga_anim_interval", "0.1", CVAR_ARCHIVE};
 
 static	vec3_t		forward, right, up;
 
@@ -496,6 +498,16 @@ entry point can run; impulse 101 is translated to the original QC cheat
 impulse 9 without modifying progs.dat or depending on function names.
 ===================
 */
+static void SV_ResetCigarette (client_t *client)
+{
+	client->siga_active = false;
+	client->siga_smoking = false;
+	client->siga_releasing = false;
+	client->siga_attack_down = false;
+	client->siga_frame = 0;
+	client->siga_next_frame_time = 0;
+}
+
 void SV_CigarettePreThink (client_t *client, edict_t *ent, float *saved_button0, qboolean *equip_cigarette)
 {
 	*saved_button0 = ent->v.button0;
@@ -505,20 +517,12 @@ void SV_CigarettePreThink (client_t *client, edict_t *ent, float *saved_button0,
 	if (ent->v.health <= 0 || ent->v.deadflag)
 	{
 		*equip_cigarette = false;
-		client->siga_active = false;
-		client->siga_smoking = false;
-		client->siga_frame = 0;
-		client->siga_next_frame_time = 0;
+		SV_ResetCigarette(client);
 		return;
 	}
 
 	if (client->siga_active && q_strcasecmp(PR_GetString(ent->v.weaponmodel), "progs/v_siga.mdl") != 0)
-	{
-		client->siga_active = false;
-		client->siga_smoking = false;
-		client->siga_frame = 0;
-		client->siga_next_frame_time = 0;
-	}
+		SV_ResetCigarette(client);
 
 	// Also suppress attack on the selection frame, before QC can fire the old weapon.
 	if (client->siga_active || (*equip_cigarette && COM_FileExists("progs/v_siga.mdl", NULL)))
@@ -531,16 +535,19 @@ void SV_CigarettePreThink (client_t *client, edict_t *ent, float *saved_button0,
 
 void SV_CigarettePostThink (client_t *client, edict_t *ent, float saved_button0, qboolean equip_cigarette)
 {
-	int mod_idx, numframes, idle_frame, start_frame, end_frame;
+	int mod_idx, numframes, idle_frame, start_frame, hold_frame, end_frame;
 	float interval;
 	qmodel_t *mod;
+	qboolean attack_down, attack_pressed;
+
+	// The mask is only for QC execution. Retain held input for server ticks
+	// without a new clc_move, otherwise they look like an accidental release.
+	if (client->siga_active || equip_cigarette)
+		ent->v.button0 = saved_button0;
 
 	if (ent->v.health <= 0 || ent->v.deadflag)
 	{
-		client->siga_active = false;
-		client->siga_smoking = false;
-		client->siga_frame = 0;
-		client->siga_next_frame_time = 0;
+		SV_ResetCigarette(client);
 		return;
 	}
 
@@ -551,10 +558,8 @@ void SV_CigarettePostThink (client_t *client, edict_t *ent, float saved_button0,
 		{
 			ent->v.weaponmodel = PR_SetEngineString("progs/v_siga.mdl");
 			ent->v.currentammo = 0;
+			SV_ResetCigarette(client);
 			client->siga_active = true;
-			client->siga_smoking = false;
-			client->siga_frame = 0;
-			client->siga_next_frame_time = 0;
 		}
 	}
 
@@ -563,10 +568,7 @@ void SV_CigarettePostThink (client_t *client, edict_t *ent, float saved_button0,
 
 	if (q_strcasecmp(PR_GetString(ent->v.weaponmodel), "progs/v_siga.mdl") != 0)
 	{
-		client->siga_active = false;
-		client->siga_smoking = false;
-		client->siga_frame = 0;
-		client->siga_next_frame_time = 0;
+		SV_ResetCigarette(client);
 		return;
 	}
 
@@ -578,17 +580,13 @@ void SV_CigarettePostThink (client_t *client, edict_t *ent, float saved_button0,
 	if (idle_frame < 0 || idle_frame >= numframes)
 		idle_frame = 0;
 
-	start_frame = (int)cl_siga_anim_start.value;
-	if (start_frame < 0)
-		start_frame = 0;
-	if (start_frame >= numframes)
-		start_frame = numframes - 1;
-
+	start_frame = CLAMP(0, (int)cl_siga_anim_start.value, numframes - 1);
 	end_frame = (int)cl_siga_anim_end.value;
 	if (end_frame <= 0 || end_frame >= numframes)
 		end_frame = numframes - 1;
 	if (end_frame < start_frame)
 		end_frame = start_frame;
+	hold_frame = CLAMP(start_frame, (int)cl_siga_anim_hold.value, end_frame);
 
 	interval = cl_siga_anim_interval.value;
 	if (interval < 0.02f)
@@ -596,43 +594,62 @@ void SV_CigarettePostThink (client_t *client, edict_t *ent, float saved_button0,
 	else if (interval > 2.0f)
 		interval = 2.0f;
 
-	if (saved_button0)
+	attack_down = saved_button0 != 0;
+	attack_pressed = attack_down && !client->siga_attack_down;
+	client->siga_attack_down = attack_down;
+
+	if (!client->siga_smoking)
 	{
-		if (!client->siga_smoking)
+		client->siga_frame = idle_frame;
+		if (attack_pressed)
 		{
 			client->siga_smoking = true;
+			client->siga_releasing = false;
 			client->siga_frame = start_frame;
 			client->siga_next_frame_time = qcvm->time + interval;
 		}
-		else if (qcvm->time >= client->siga_next_frame_time)
-		{
-			if (client->siga_frame < start_frame || client->siga_frame >= end_frame)
-				client->siga_frame = start_frame;
-			else
-				client->siga_frame++;
-			client->siga_next_frame_time = qcvm->time + interval;
-		}
 	}
-	else if (client->siga_smoking)
+
+	if (client->siga_smoking)
 	{
+		client->siga_frame = CLAMP(start_frame, client->siga_frame, end_frame);
+		if (!client->siga_releasing && !attack_down)
+		{
+			// Release latches the finish phase, even for a short tap. A new
+			// press must not rewind it or freeze it again at the hold frame.
+			client->siga_releasing = true;
+			client->siga_next_frame_time = qcvm->time;
+			if (client->siga_frame == end_frame)
+				client->siga_next_frame_time += interval;
+		}
+
+		if (!client->siga_releasing && client->siga_frame > hold_frame)
+			client->siga_frame = hold_frame;
+
 		if (qcvm->time >= client->siga_next_frame_time)
 		{
-			if (client->siga_frame >= start_frame && client->siga_frame < end_frame)
+			if (client->siga_releasing)
+			{
+				if (client->siga_frame < end_frame)
+				{
+					client->siga_frame++;
+					client->siga_next_frame_time = qcvm->time + interval;
+				}
+				else
+				{
+					client->siga_smoking = false;
+					client->siga_releasing = false;
+					client->siga_frame = idle_frame;
+					client->siga_next_frame_time = 0;
+				}
+			}
+			else if (client->siga_frame < hold_frame)
 			{
 				client->siga_frame++;
 				client->siga_next_frame_time = qcvm->time + interval;
 			}
-			else
-			{
-				client->siga_smoking = false;
-				client->siga_frame = idle_frame;
-				client->siga_next_frame_time = 0;
-			}
+			// Otherwise keep frame 10 (by default) until attack is released.
 		}
-	}
-	else
-	{
-		client->siga_frame = idle_frame;
 	}
 
 	ent->v.weaponframe = client->siga_frame;

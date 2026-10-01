@@ -1,4 +1,4 @@
-# Server impulse regression tests
+# Cigarette input, animation and smoke regression tests
 
 On Linux, from the repository root:
 
@@ -23,5 +23,19 @@ intentionally retains the original `impulse 9` cheat, so tests verify that:
   equips the viewmodel and drives its animation; weapon impulses 1–8 still work.
 - Standard player-think ordering, engine pmove, `SV_RunClientCommand`, extended
   button packets, queued commands and duplicate prediction packets are covered.
+- Held attack advances to frame 10 and stays there, without looping; release
+  finishes the remaining frames once and returns to idle. An early release also
+  finishes the animation, and a new press cannot rewind the finish phase.
+- Held input survives ordinary physics ticks without a new movement packet.
+- Configurable start/hold/end/idle frames, short models, live frame-range changes,
+  weapon switching and death cannot leave stale phases or out-of-range frames.
 
-These are asset-free regression tests, not an in-game smoke/rendering test.
+`tests/test_cigarette_smoke.c` includes the **real `Quake/view.c`** private smoke
+emitter with camera/particle-backend doubles. It checks that held attack emits
+nothing (including at frame 10), released non-idle frames emit smoke, idle stops
+emission, the interval is respected, and visibility/health/config gates and the
+classic particle fallback still work. No production test-only API is needed.
+
+These tests exercise frame/state transitions and particle emission decisions,
+not the visual appearance of the model or smoke in-game. Game assets are not
+included. See the root README for animation settings and deployment instructions.

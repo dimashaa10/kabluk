@@ -1,6 +1,6 @@
 #!/bin/sh
-# Native, asset-free regression test. Needs only a C compiler and the headers
-# already checked into this repository; does not link SDL or build the engine.
+# Native, asset-free input/animation/smoke regression tests. Need only a C
+# compiler and bundled headers; do not link SDL or build the full engine.
 set -eu
 
 repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -35,3 +35,11 @@ cc=${CC:-cc}
     "$repo/tests/test_cigarette_impulse.c" "$work/sv_user.o" \
     ${LDFLAGS:-} -Wl,--gc-sections -lm -o "$work/test_cigarette_impulse"
 "$work/test_cigarette_impulse"
+
+# Test the real private view.c emitter without making it a public engine API.
+"$cc" ${CFLAGS:-} -std=gnu11 -Wall -Wno-missing-field-initializers -DUSE_SDL2 \
+    -I"$repo/Quake" -I"$repo/Windows/SDL2/include" -I"$work" \
+    -ffunction-sections -fdata-sections \
+    "$repo/tests/test_cigarette_smoke.c" \
+    ${LDFLAGS:-} -Wl,--gc-sections -lm -o "$work/test_cigarette_smoke"
+"$work/test_cigarette_smoke"

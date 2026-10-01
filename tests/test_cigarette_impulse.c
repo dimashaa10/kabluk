@@ -17,10 +17,6 @@ client_t *host_client;
 qcvm_t *qcvm;
 globalvars_t *pr_global_struct;
 cvar_t deathmatch = {"deathmatch", "0", CVAR_NONE};
-cvar_t cl_siga_anim_idle = {"cl_siga_anim_idle", "0", CVAR_NONE};
-cvar_t cl_siga_anim_start = {"cl_siga_anim_start", "1", CVAR_NONE};
-cvar_t cl_siga_anim_end = {"cl_siga_anim_end", "0", CVAR_NONE};
-cvar_t cl_siga_anim_interval = {"cl_siga_anim_interval", "0.1", CVAR_NONE};
 
 static client_t client;
 static edict_t edicts[2];
@@ -250,10 +246,11 @@ static void Reset (qboolean model_available, int mode)
 	client.edict->v.weaponmodel = SHOTGUN_MODEL;
 	client.edict->v.ammo_shells = client.edict->v.currentammo = 25;
 	have_model = model_available;
-	cigarette_model.numframes = 5;
+	cigarette_model.numframes = 20;
 	deathmatch.value = 0;
 	cl_siga_anim_idle.value = 0;
 	cl_siga_anim_start.value = 1;
+	cl_siga_anim_hold.value = 10;
 	cl_siga_anim_end.value = 0;
 	cl_siga_anim_interval.value = 0.1f;
 	cheat_calls = shots = qc_calls = wire_sequence = 0;
@@ -372,22 +369,29 @@ static void TestAttackAndSwitch (int mode)
 		assert(input_buttons == 2);
 	CheckNoCheat();
 	assert(shots == 0);
-	assert(client.siga_smoking);
+	assert(client.siga_smoking && !client.siga_releasing);
+	assert(client.edict->v.button0 == 1); // keep held input between packets
 	assert(client.edict->v.weaponframe == 1);
 	qcvm->time += 0.11;
 	Move(0, 1);
 	assert(shots == 0);
 	assert(client.edict->v.weaponframe == 2);
 	qcvm->time += 0.11;
-	Move(0, 0);
+	Move(0, 0); // early release must finish the full animation, without a hold
+	assert(client.siga_releasing);
 	assert(client.edict->v.weaponframe == 3);
-	for (i = 0; i < 2; i++)
+	for (i = 4; i < cigarette_model.numframes; i++)
 	{
 		qcvm->time += 0.11;
 		Move(0, 0);
+		assert(client.siga_smoking && client.siga_releasing);
+		assert(client.edict->v.weaponframe == i);
 	}
-	assert(!client.siga_smoking);
+	qcvm->time += 0.11;
+	Move(0, 0);
+	assert(!client.siga_smoking && !client.siga_releasing);
 	assert(client.edict->v.weaponframe == 0);
+	assert(shots == 0);
 
 	/* Ordinary weapon impulses must still reach QC and leave cigarette mode. */
 	for (i = 1; i <= 8; i++)
@@ -401,6 +405,231 @@ static void TestAttackAndSwitch (int mode)
 	Move(9, 0);
 	Move(101, 0);
 	assert(cheat_calls == 1 && !client.siga_active);
+}
+
+static void TestHoldAndRelease (int mode)
+{
+	int frame, i;
+	Reset(true, mode);
+	Move(9, 1);
+	assert(client.edict->v.weaponframe == 1);
+	qcvm->time += 0.01;
+	Move(0, 1);
+	assert(client.edict->v.weaponframe == 1); // respect the frame interval
+	for (frame = 2; frame <= 10; frame++)
+	{
+		qcvm->time += 0.11;
+		Move(0, 1);
+		assert(client.siga_smoking && !client.siga_releasing);
+		assert(client.edict->v.weaponframe == frame);
+	}
+	for (i = 0; i < 30; i++)
+	{
+		qcvm->time += 1;
+		Move(0, 1);
+		assert(client.siga_smoking && !client.siga_releasing);
+		assert(client.edict->v.weaponframe == 10); // never loop while held
+	}
+
+	Move(0, 0);
+	assert(client.siga_releasing);
+	assert(client.edict->v.weaponframe == 11); // promptly resume on release
+	for (frame = 12; frame < cigarette_model.numframes; frame++)
+	{
+		qcvm->time += 0.11;
+		Move(0, 0);
+		assert(client.edict->v.weaponframe == frame);
+	}
+	qcvm->time += 0.11;
+	Move(0, 0);
+	assert(!client.siga_smoking && !client.siga_releasing);
+	assert(client.edict->v.weaponframe == 0);
+	assert(shots == 0);
+	CheckNoCheat();
+
+	Move(0, 1);
+	assert(client.siga_smoking && !client.siga_releasing);
+	assert(client.edict->v.weaponframe == 1); // another distinct press can smoke
+}
+
+static void TestRepressDuringRelease (int mode)
+{
+	int frame;
+	Reset(true, mode);
+	Move(9, 1);
+	Move(0, 0); // release a short tap at frame 1
+	assert(client.siga_releasing && client.edict->v.weaponframe == 2);
+	for (frame = 3; frame < cigarette_model.numframes; frame++)
+	{
+		qcvm->time += 0.11;
+		Move(0, 1);
+		assert(client.siga_releasing);
+		assert(client.edict->v.weaponframe == frame); // new press cannot rewind
+	}
+	qcvm->time += 0.11;
+	Move(0, 1);
+	assert(!client.siga_smoking && !client.siga_releasing);
+	assert(client.edict->v.weaponframe == 0);
+	qcvm->time += 1;
+	Move(0, 1);
+	assert(client.edict->v.weaponframe == 0); // require a fresh press after idle
+	Move(0, 0);
+	Move(0, 1);
+	assert(client.edict->v.weaponframe == 1);
+	assert(shots == 0);
+	CheckNoCheat();
+}
+
+static void TestHeldInputBetweenPackets (void)
+{
+	int frame, i;
+	Reset(true, 0);
+	Move(9, 1);
+	for (frame = 2; frame <= 10; frame++)
+	{
+		qcvm->time += 0.11;
+		StandardThink(); // no new packet: attack must remain held
+		assert(client.edict->v.button0 == 1);
+		assert(client.siga_smoking && !client.siga_releasing);
+		assert(client.edict->v.weaponframe == frame);
+	}
+	for (i = 0; i < 20; i++)
+	{
+		qcvm->time += 0.11;
+		StandardThink();
+		assert(!client.siga_releasing);
+		assert(client.edict->v.weaponframe == 10);
+	}
+	Move(0, 0);
+	assert(client.siga_releasing && client.edict->v.weaponframe == 11);
+	qcvm->time += 0.11;
+	StandardThink();
+	assert(client.edict->v.weaponframe == 12);
+	assert(shots == 0);
+	CheckNoCheat();
+}
+
+static void TestFrameBounds (int mode)
+{
+	int frame, i;
+	/* A custom frame range must still use the draw/hold/finish phases. */
+	Reset(true, mode);
+	cl_siga_anim_idle.value = 1;
+	cl_siga_anim_start.value = 2;
+	cl_siga_anim_hold.value = 6;
+	cl_siga_anim_end.value = 12;
+	cl_siga_anim_interval.value = 0.05f;
+	Move(9, 0);
+	assert(client.edict->v.weaponframe == 1);
+	Move(0, 1);
+	assert(client.edict->v.weaponframe == 2);
+	for (frame = 3; frame <= 6; frame++)
+	{
+		qcvm->time += 0.06;
+		Move(0, 1);
+		assert(client.edict->v.weaponframe == frame);
+	}
+	qcvm->time += 1;
+	Move(0, 1);
+	assert(client.edict->v.weaponframe == 6);
+	Move(0, 0);
+	assert(client.edict->v.weaponframe == 7);
+	for (frame = 8; frame <= 12; frame++)
+	{
+		qcvm->time += 0.06;
+		Move(0, 0);
+		assert(client.edict->v.weaponframe == frame);
+	}
+	qcvm->time += 0.06;
+	Move(0, 0);
+	assert(client.edict->v.weaponframe == 1);
+	assert(!client.siga_smoking && !client.siga_releasing);
+
+	/* Clamp the default hold frame to a short model, without out-of-range frames. */
+	Reset(true, mode);
+	cigarette_model.numframes = 5;
+	Move(9, 1);
+	for (i = 0; i < 20; i++)
+	{
+		qcvm->time += 0.11;
+		Move(0, 1);
+		assert(client.edict->v.weaponframe >= 1 && client.edict->v.weaponframe <= 4);
+		assert(!client.siga_releasing);
+	}
+	assert(client.edict->v.weaponframe == 4);
+	Move(0, 0);
+	assert(client.siga_releasing && client.edict->v.weaponframe == 4);
+	qcvm->time += 0.11;
+	Move(0, 0);
+	assert(!client.siga_smoking && client.edict->v.weaponframe == 0);
+
+	Reset(true, mode);
+	cigarette_model.numframes = 1;
+	cl_siga_anim_idle.value = 100;
+	cl_siga_anim_start.value = 100;
+	cl_siga_anim_hold.value = -10;
+	cl_siga_anim_end.value = 100;
+	Move(9, 1);
+	assert(client.edict->v.weaponframe == 0);
+	qcvm->time += 1;
+	Move(0, 1);
+	assert(!client.siga_releasing && client.edict->v.weaponframe == 0);
+	Move(0, 0);
+	assert(client.siga_releasing && client.edict->v.weaponframe == 0);
+	qcvm->time += 0.11;
+	Move(0, 0);
+	assert(!client.siga_smoking && client.edict->v.weaponframe == 0);
+
+	/* A hold lower than the start is clamped up; live changes stay in range. */
+	Reset(true, mode);
+	cl_siga_anim_start.value = 5;
+	cl_siga_anim_hold.value = -1;
+	Move(9, 1);
+	qcvm->time += 1;
+	Move(0, 1);
+	assert(client.edict->v.weaponframe == 5);
+	cl_siga_anim_start.value = 1;
+	cl_siga_anim_hold.value = 3;
+	Move(0, 1);
+	assert(client.edict->v.weaponframe == 3);
+	Move(0, 0);
+	assert(client.siga_releasing && client.edict->v.weaponframe == 4);
+	assert(shots == 0);
+	CheckNoCheat();
+}
+
+static void TestAnimationReset (int mode)
+{
+	int releasing;
+	for (releasing = 0; releasing < 2; releasing++)
+	{
+		Reset(true, mode);
+		Move(9, 1);
+		if (releasing)
+			Move(0, 0);
+		assert(client.siga_smoking);
+		Move(2, 0);
+		assert(!client.siga_active && !client.siga_smoking);
+		assert(!client.siga_releasing && !client.siga_attack_down);
+		assert(client.siga_next_frame_time == 0);
+		Move(9, 0);
+		assert(client.siga_active && client.edict->v.weaponframe == 0);
+
+		Move(0, 1);
+		if (releasing)
+			Move(0, 0);
+		client.edict->v.health = 0;
+		client.edict->v.deadflag = 1;
+		Move(0, 0);
+		assert(!client.siga_active && !client.siga_smoking);
+		assert(!client.siga_releasing && !client.siga_attack_down);
+		assert(client.siga_next_frame_time == 0);
+		client.edict->v.health = 100;
+		client.edict->v.deadflag = 0;
+		Move(0, 0);
+		assert(!client.siga_active);
+		CheckNoCheat();
+	}
 }
 
 static void TestDeadPlayer (int mode)
@@ -463,10 +692,17 @@ int main (void)
 		TestCheat101(mode, true);
 		TestCheat101(mode, false);
 		TestAttackAndSwitch(mode);
+		TestHoldAndRelease(mode);
+		TestRepressDuringRelease(mode);
+		TestFrameBounds(mode);
+		TestAnimationReset(mode);
 		TestDeadPlayer(mode);
 	}
+	TestHeldInputBetweenPackets();
 	TestQueuedMoves();
 	puts("PASS: impulse 9 is cigarette-only; impulse 101 keeps the QC cheat.");
-	puts("PASS: missing model, prediction, attack, weapon switching, deathmatch and dead players.");
+	puts("PASS: draw to frame 10, hold until release, finish once and return to idle.");
+	puts("PASS: early release, repress, packet gaps, frame bounds, switching and death.");
+	puts("PASS: missing model, prediction, deathmatch, queued and duplicate commands.");
 	return 0;
 }

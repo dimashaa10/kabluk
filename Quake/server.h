@@ -239,6 +239,8 @@ typedef struct client_s
 	qboolean		siga_pending;		// impulse 9 consumed at input, equip on next player think
 	qboolean		siga_active;		// engine-managed progs/v_siga.mdl viewmodel active
 	qboolean		siga_smoking;		// cigarette animation active
+	qboolean		siga_releasing;		// finish the animation after attack is released
+	qboolean		siga_attack_down;	// previous raw attack state (before masking for QC)
 	int				siga_frame;			// current cigarette weaponframe
 	double			siga_next_frame_time;
 } client_t;
@@ -382,6 +384,12 @@ void SV_CheckDuplicateNames(client_t* client); // woods #dupnames
 
 void SV_ProcessTimerExecution(void); // woods #svtimer
 void SV_CleanupTimer(void); // woods #svtimer
+
+extern cvar_t cl_siga_anim_idle;
+extern cvar_t cl_siga_anim_start;
+extern cvar_t cl_siga_anim_hold;
+extern cvar_t cl_siga_anim_end;
+extern cvar_t cl_siga_anim_interval;
 
 void SV_CigarettePreThink (client_t *client, edict_t *ent, float *saved_button0, qboolean *equip_cigarette);
 void SV_CigarettePostThink (client_t *client, edict_t *ent, float saved_button0, qboolean equip_cigarette);

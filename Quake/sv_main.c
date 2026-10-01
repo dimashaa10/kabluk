@@ -1607,6 +1607,12 @@ void SV_Init (void)
 	Cvar_RegisterVariable (&sv_bunnyhopqw); // woods #qwbunnyhop
 	Cvar_RegisterVariable (&sv_fullpitch); // woods
 
+	// Animation is authoritative on the server, including dedicated servers.
+	Cvar_RegisterVariable (&cl_siga_anim_idle);
+	Cvar_RegisterVariable (&cl_siga_anim_start);
+	Cvar_RegisterVariable (&cl_siga_anim_hold);
+	Cvar_RegisterVariable (&cl_siga_anim_end);
+	Cvar_RegisterVariable (&cl_siga_anim_interval);
 
 	Cvar_RegisterVariable (&sv_sound_watersplash); //spike
 	Cvar_RegisterVariable (&sv_sound_land); //spike
