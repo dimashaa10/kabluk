@@ -71,6 +71,14 @@ cvar_t	gl_cshiftpercent_dead = {"gl_cshiftpercent_dead", "0", CVAR_ARCHIVE}; // 
 
 cvar_t	r_viewmodel_quake = {"r_viewmodel_quake", "0", CVAR_ARCHIVE};
 
+// Client-side presentation for the v_siga.mdl viewmodel. Offsets are in world
+// units relative to the camera: forward, screen-right, and screen-up.
+cvar_t	cl_siga_smoke = {"cl_siga_smoke", "1", CVAR_ARCHIVE};
+cvar_t	cl_siga_smoke_forward = {"cl_siga_smoke_forward", "16", CVAR_ARCHIVE};
+cvar_t	cl_siga_smoke_right = {"cl_siga_smoke_right", "8", CVAR_ARCHIVE};
+cvar_t	cl_siga_smoke_up = {"cl_siga_smoke_up", "-7", CVAR_ARCHIVE};
+cvar_t	cl_siga_smoke_interval = {"cl_siga_smoke_interval", "0.12", CVAR_ARCHIVE};
+
 float	v_dmg_time, v_dmg_roll, v_dmg_pitch;
 
 extern	int			in_forward, in_forward2, in_back;
@@ -855,6 +863,54 @@ void V_CalcIntermissionRefdef (void)
 
 /*
 ==================
+V_EmitCigaretteSmoke
+
+The viewmodel is server-selected like every other weapon, but its smoke is a
+local presentation effect. A server-side QuakeC implementation is still needed
+for weapon selection and the weaponframe animation.
+==================
+*/
+static void V_EmitCigaretteSmoke (entity_t *view)
+{
+	static double next_smoke_time;
+	vec3_t forward, right, up, smokeorg, smoke_dir = {0, 0, 1};
+	float interval;
+
+	if (!cl_siga_smoke.value || !view->model ||
+		q_strcasecmp(view->model->name, "progs/v_siga.mdl") != 0 ||
+		!(in_attack.state & 1) || cl.stats[STAT_HEALTH] <= 0 ||
+		!r_drawviewmodel.value || chase_active.value || scr_viewsize.value >= 130)
+	{
+		next_smoke_time = 0;
+		return;
+	}
+
+	interval = cl_siga_smoke_interval.value;
+	if (interval < 0.05f)
+		interval = 0.05f;
+	else if (interval > 2.0f)
+		interval = 2.0f;
+
+	if (next_smoke_time > cl.time)
+		return;
+
+	AngleVectors(r_refdef.viewangles, forward, right, up);
+	VectorCopy(r_refdef.vieworg, smokeorg);
+	VectorMA(smokeorg, cl_siga_smoke_forward.value, forward, smokeorg);
+	VectorMA(smokeorg, cl_siga_smoke_right.value, right, smokeorg);
+	VectorMA(smokeorg, cl_siga_smoke_up.value, up, smokeorg);
+
+	next_smoke_time = cl.time + interval;
+
+	// The namespaced particle loads particles/qssm.cfg even when another
+	// particle profile is selected. Keep a small classic fallback for mods
+	// which intentionally remove the QSS-M particle pack.
+	if (PScript_RunParticleEffectTypeString(smokeorg, smoke_dir, 1, "qssm.cigarette_smoke"))
+		R_RunParticleEffect(smokeorg, smoke_dir, 7, 2);
+}
+
+/*
+==================
 V_CalcRefdef
 ==================
 */
@@ -949,6 +1005,10 @@ void V_CalcRefdef (void)
 	view->model = cl.model_precache[cl.stats[STAT_WEAPON]];
 	view->frame = cl.stats[STAT_WEAPONFRAME];
 	view->netstate = nullentitystate;
+
+	// Let the server-provided weaponframe continue to drive the model's
+	// animation; the client only adds the cigarette's held-attack smoke.
+	V_EmitCigaretteSmoke(view);
 
 //johnfitz -- v_gunkick
 	if (v_gunkick.value == 1) //original quake kick
@@ -1102,5 +1162,11 @@ void V_Init (void)
 	Cvar_RegisterVariable (&v_gunkick); //johnfitz
 
 	Cvar_RegisterVariable (&r_viewmodel_quake); //MarkV
+
+	Cvar_RegisterVariable (&cl_siga_smoke);
+	Cvar_RegisterVariable (&cl_siga_smoke_forward);
+	Cvar_RegisterVariable (&cl_siga_smoke_right);
+	Cvar_RegisterVariable (&cl_siga_smoke_up);
+	Cvar_RegisterVariable (&cl_siga_smoke_interval);
 }
 

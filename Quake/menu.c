@@ -4663,6 +4663,7 @@ const char *quakebindnames[][2] = // woods use iw quake bind names
 	{"impulse 6",		"Grudnichkomyot"},
 	{"impulse 7",		"Rocket Launcher"},
 	{"impulse 8",		"Thunderbolt"},
+	{"impulse 9",		"Cigarette"},
 	{"impulse 225",		"Laser Cannon"},
 	{"impulse 226",		"Mjolnir"},
 };
