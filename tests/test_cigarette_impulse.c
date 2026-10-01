@@ -26,7 +26,7 @@ static union {
 	float words[256];
 } globals;
 static float input_impulse, input_buttons;
-static qboolean have_model;
+static qboolean have_model, refresh_currentammo;
 static int cheat_calls, shots, qc_calls;
 static int wire_sequence;
 static byte packet[64];
@@ -216,10 +216,21 @@ void PR_ExecuteProgram (func_t function)
 			ent->v.items = (int)ent->v.items | IT_ROCKET_LAUNCHER;
 			ent->v.ammo_rockets = 100;
 			ent->v.weaponmodel = ROCKET_MODEL;
+			ent->v.weapon = IT_ROCKET_LAUNCHER;
+			ent->v.currentammo = ent->v.ammo_rockets;
 		}
 		else if (ent->v.impulse >= 1 && ent->v.impulse <= 8)
+		{
 			ent->v.weaponmodel = SHOTGUN_MODEL;
+			ent->v.weapon = IT_SHOTGUN;
+			ent->v.currentammo = ent->v.ammo_shells;
+		}
 		ent->v.impulse = 0;
+		// Emulate W_SetCurrentAmmo after a pickup/refresh, independently of
+		// the engine fix. It reads the real QC weapon's ammunition pool.
+		if (refresh_currentammo)
+			ent->v.currentammo = (ent->v.weapon == IT_ROCKET_LAUNCHER)
+				? ent->v.ammo_rockets : ent->v.ammo_shells;
 		if (ent->v.button0 && ent->v.health > 0 && !ent->v.deadflag)
 			shots++;
 	}
@@ -244,15 +255,12 @@ static void Reset (qboolean model_available, int mode)
 	client.edict->v.health = 100;
 	client.edict->v.items = IT_AXE | IT_SHOTGUN;
 	client.edict->v.weaponmodel = SHOTGUN_MODEL;
+	client.edict->v.weapon = IT_SHOTGUN;
 	client.edict->v.ammo_shells = client.edict->v.currentammo = 25;
 	have_model = model_available;
+	refresh_currentammo = false;
 	cigarette_model.numframes = 20;
 	deathmatch.value = 0;
-	cl_siga_anim_idle.value = 0;
-	cl_siga_anim_start.value = 1;
-	cl_siga_anim_hold.value = 10;
-	cl_siga_anim_end.value = 0;
-	cl_siga_anim_interval.value = 0.1f;
 	cheat_calls = shots = qc_calls = wire_sequence = 0;
 	input_impulse = input_buttons = 0;
 	sv.protocol = PROTOCOL_NETQUAKE;
@@ -308,6 +316,8 @@ static void StandardThink (void)
 	SV_RunThink(client.edict);
 	PR_ExecuteProgram(POSTTHINK);
 	SV_CigarettePostThink(host_client, client.edict, saved_button0, equip_cigarette);
+	if (client.siga_active)
+		assert(client.edict->v.currentammo == 1);
 }
 
 static void Move (int impulse, int buttons)
@@ -315,6 +325,8 @@ static void Move (int impulse, int buttons)
 	ReadMove(impulse, buttons);
 	if (!client.usingpmove)
 		StandardThink();
+	if (client.siga_active)
+		assert(client.edict->v.currentammo == 1);
 }
 
 static void CheckNoCheat (void)
@@ -322,7 +334,9 @@ static void CheckNoCheat (void)
 	assert(cheat_calls == 0);
 	assert((int)client.edict->v.items == (IT_AXE | IT_SHOTGUN));
 	assert(client.edict->v.ammo_shells == 25);
+	assert(client.edict->v.ammo_nails == 0);
 	assert(client.edict->v.ammo_rockets == 0);
+	assert(client.edict->v.ammo_cells == 0);
 }
 
 static void TestCigarette (int mode, qboolean model_available)
@@ -337,6 +351,7 @@ static void TestCigarette (int mode, qboolean model_available)
 	CheckNoCheat();
 	assert(client.siga_active == model_available);
 	assert(client.edict->v.weaponmodel == (model_available ? CIGARETTE_MODEL : SHOTGUN_MODEL));
+	assert(client.edict->v.currentammo == (model_available ? 1 : 25));
 	Move(0, 0);
 	CheckNoCheat();
 }
@@ -413,10 +428,13 @@ static void TestHoldAndRelease (int mode)
 	Reset(true, mode);
 	Move(9, 1);
 	assert(client.edict->v.weaponframe == 1);
-	qcvm->time += 0.01;
+	qcvm->time += 0.099;
 	Move(0, 1);
-	assert(client.edict->v.weaponframe == 1); // respect the frame interval
-	for (frame = 2; frame <= 10; frame++)
+	assert(client.edict->v.weaponframe == 1); // fixed 0.1s, not a configurable rate
+	qcvm->time += 0.002;
+	Move(0, 1);
+	assert(client.edict->v.weaponframe == 2);
+	for (frame = 3; frame <= 10; frame++)
 	{
 		qcvm->time += 0.11;
 		Move(0, 1);
@@ -511,91 +529,103 @@ static void TestHeldInputBetweenPackets (void)
 
 static void TestFrameBounds (int mode)
 {
-	int frame, i;
-	/* A custom frame range must still use the draw/hold/finish phases. */
-	Reset(true, mode);
-	cl_siga_anim_idle.value = 1;
-	cl_siga_anim_start.value = 2;
-	cl_siga_anim_hold.value = 6;
-	cl_siga_anim_end.value = 12;
-	cl_siga_anim_interval.value = 0.05f;
-	Move(9, 0);
-	assert(client.edict->v.weaponframe == 1);
-	Move(0, 1);
-	assert(client.edict->v.weaponframe == 2);
-	for (frame = 3; frame <= 6; frame++)
+	static const int model_frames[] = {0, 1, 2, 5, 10, 11, 12, 20};
+	int n, i, frames, start, end, hold, released_frame;
+	for (n = 0; n < (int)(sizeof(model_frames) / sizeof(model_frames[0])); n++)
 	{
-		qcvm->time += 0.06;
+		Reset(true, mode);
+		cigarette_model.numframes = model_frames[n];
+		frames = model_frames[n] > 0 ? model_frames[n] : 1;
+		start = frames > 1 ? 1 : 0;
+		end = frames - 1;
+		hold = end < 10 ? end : 10;
+		Move(9, 0);
+		assert(client.edict->v.weaponframe == 0);
 		Move(0, 1);
-		assert(client.edict->v.weaponframe == frame);
-	}
-	qcvm->time += 1;
-	Move(0, 1);
-	assert(client.edict->v.weaponframe == 6);
-	Move(0, 0);
-	assert(client.edict->v.weaponframe == 7);
-	for (frame = 8; frame <= 12; frame++)
-	{
-		qcvm->time += 0.06;
+		assert(client.edict->v.weaponframe == start);
+		for (i = 0; i < frames + 20; i++)
+		{
+			qcvm->time += 0.11;
+			Move(0, 1);
+			assert(client.edict->v.weaponframe >= start && client.edict->v.weaponframe <= hold);
+			assert(client.siga_smoking && !client.siga_releasing);
+		}
+		assert(client.edict->v.weaponframe == hold);
 		Move(0, 0);
-		assert(client.edict->v.weaponframe == frame);
+		released_frame = hold < end ? hold + 1 : end;
+		assert(client.siga_releasing && client.edict->v.weaponframe == released_frame);
+		for (i = 0; i < frames + 2; i++)
+		{
+			qcvm->time += 0.11;
+			Move(0, 0);
+			assert(client.edict->v.weaponframe >= 0 && client.edict->v.weaponframe <= end);
+		}
+		assert(!client.siga_smoking && !client.siga_releasing);
+		assert(client.edict->v.weaponframe == 0);
+		assert(shots == 0);
+		CheckNoCheat();
 	}
-	qcvm->time += 0.06;
-	Move(0, 0);
-	assert(client.edict->v.weaponframe == 1);
-	assert(!client.siga_smoking && !client.siga_releasing);
+}
 
-	/* Clamp the default hold frame to a short model, without out-of-range frames. */
+static void TestCosmeticAmmo (int mode)
+{
+	int cycle, i;
 	Reset(true, mode);
-	cigarette_model.numframes = 5;
-	Move(9, 1);
-	for (i = 0; i < 20; i++)
+	refresh_currentammo = true;
+	Move(9, 0);
+	assert(client.edict->v.currentammo == 1);
+
+	// QC ammo refreshes must not replace the cosmetic 1 with real shells.
+	client.edict->v.currentammo = 0;
+	Move(0, 0);
+	assert(client.edict->v.currentammo == 1);
+	for (cycle = 0; cycle < 4; cycle++)
 	{
-		qcvm->time += 0.11;
 		Move(0, 1);
-		assert(client.edict->v.weaponframe >= 1 && client.edict->v.weaponframe <= 4);
-		assert(!client.siga_releasing);
+		for (i = 0; i < 20; i++)
+		{
+			qcvm->time += 0.11;
+			Move(0, 1);
+			assert(client.edict->v.currentammo == 1);
+			CheckNoCheat();
+		}
+		assert(client.edict->v.weaponframe == 10);
+		Move(0, 0);
+		for (i = 0; i < cigarette_model.numframes; i++)
+		{
+			qcvm->time += 0.11;
+			Move(0, 0);
+			assert(client.edict->v.currentammo == 1);
+			CheckNoCheat();
+		}
+		assert(!client.siga_smoking && client.edict->v.weaponframe == 0);
 	}
-	assert(client.edict->v.weaponframe == 4);
-	Move(0, 0);
-	assert(client.siga_releasing && client.edict->v.weaponframe == 4);
-	qcvm->time += 0.11;
-	Move(0, 0);
-	assert(!client.siga_smoking && client.edict->v.weaponframe == 0);
-
-	Reset(true, mode);
-	cigarette_model.numframes = 1;
-	cl_siga_anim_idle.value = 100;
-	cl_siga_anim_start.value = 100;
-	cl_siga_anim_hold.value = -10;
-	cl_siga_anim_end.value = 100;
-	Move(9, 1);
-	assert(client.edict->v.weaponframe == 0);
-	qcvm->time += 1;
-	Move(0, 1);
-	assert(!client.siga_releasing && client.edict->v.weaponframe == 0);
-	Move(0, 0);
-	assert(client.siga_releasing && client.edict->v.weaponframe == 0);
-	qcvm->time += 0.11;
-	Move(0, 0);
-	assert(!client.siga_smoking && client.edict->v.weaponframe == 0);
-
-	/* A hold lower than the start is clamped up; live changes stay in range. */
-	Reset(true, mode);
-	cl_siga_anim_start.value = 5;
-	cl_siga_anim_hold.value = -1;
-	Move(9, 1);
-	qcvm->time += 1;
-	Move(0, 1);
-	assert(client.edict->v.weaponframe == 5);
-	cl_siga_anim_start.value = 1;
-	cl_siga_anim_hold.value = 3;
-	Move(0, 1);
-	assert(client.edict->v.weaponframe == 3);
-	Move(0, 0);
-	assert(client.siga_releasing && client.edict->v.weaponframe == 4);
 	assert(shots == 0);
+
+	// Switching must restore the QC weapon's HUD ammo, not leave it at 1.
+	Move(2, 0);
+	assert(!client.siga_active && client.edict->v.currentammo == 25);
 	CheckNoCheat();
+	Move(9, 0);
+	assert(client.edict->v.currentammo == 1);
+	Move(101, 0);
+	assert(!client.siga_active && client.edict->v.currentammo == 100);
+	assert(cheat_calls == 1);
+
+	// The cosmetic round does not grant or consume real ammo, even when empty.
+	Reset(true, mode);
+	refresh_currentammo = true;
+	client.edict->v.ammo_shells = client.edict->v.currentammo = 0;
+	Move(9, 1);
+	Move(0, 0);
+	qcvm->time += 0.11;
+	Move(0, 0);
+	assert(client.edict->v.currentammo == 1);
+	assert(client.edict->v.ammo_shells == 0 && client.edict->v.ammo_nails == 0);
+	assert(client.edict->v.ammo_rockets == 0 && client.edict->v.ammo_cells == 0);
+	assert(shots == 0 && cheat_calls == 0);
+	Move(2, 0);
+	assert(!client.siga_active && client.edict->v.currentammo == 0);
 }
 
 static void TestAnimationReset (int mode)
@@ -695,6 +725,7 @@ int main (void)
 		TestHoldAndRelease(mode);
 		TestRepressDuringRelease(mode);
 		TestFrameBounds(mode);
+		TestCosmeticAmmo(mode);
 		TestAnimationReset(mode);
 		TestDeadPlayer(mode);
 	}
@@ -703,6 +734,7 @@ int main (void)
 	puts("PASS: impulse 9 is cigarette-only; impulse 101 keeps the QC cheat.");
 	puts("PASS: draw to frame 10, hold until release, finish once and return to idle.");
 	puts("PASS: early release, repress, packet gaps, frame bounds, switching and death.");
+	puts("PASS: cosmetic ammo stays at 1; real weapon ammo is unchanged and restored on switch.");
 	puts("PASS: missing model, prediction, deathmatch, queued and duplicate commands.");
 	return 0;
 }

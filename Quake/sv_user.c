@@ -22,6 +22,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 // sv_user.c -- server code for moving users
 
 #include "quakedef.h"
+#include "cigarette.h"
 #include "pmove.h"
 
 edict_t	*sv_player;
@@ -29,12 +30,6 @@ edict_t	*sv_player;
 extern	cvar_t	sv_friction;
 cvar_t	sv_edgefriction = {"edgefriction", "2", CVAR_NONE};
 extern	cvar_t	sv_stopspeed;
-// Server-driven viewmodel animation; retain the existing cl_ names for configs.
-cvar_t	cl_siga_anim_idle = {"cl_siga_anim_idle", "0", CVAR_ARCHIVE};
-cvar_t	cl_siga_anim_start = {"cl_siga_anim_start", "1", CVAR_ARCHIVE};
-cvar_t	cl_siga_anim_hold = {"cl_siga_anim_hold", "10", CVAR_ARCHIVE};
-cvar_t	cl_siga_anim_end = {"cl_siga_anim_end", "0", CVAR_ARCHIVE};
-cvar_t	cl_siga_anim_interval = {"cl_siga_anim_interval", "0.1", CVAR_ARCHIVE};
 
 static	vec3_t		forward, right, up;
 
@@ -504,7 +499,7 @@ static void SV_ResetCigarette (client_t *client)
 	client->siga_smoking = false;
 	client->siga_releasing = false;
 	client->siga_attack_down = false;
-	client->siga_frame = 0;
+	client->siga_frame = SIGA_IDLE_FRAME;
 	client->siga_next_frame_time = 0;
 }
 
@@ -521,11 +516,11 @@ void SV_CigarettePreThink (client_t *client, edict_t *ent, float *saved_button0,
 		return;
 	}
 
-	if (client->siga_active && q_strcasecmp(PR_GetString(ent->v.weaponmodel), "progs/v_siga.mdl") != 0)
+	if (client->siga_active && q_strcasecmp(PR_GetString(ent->v.weaponmodel), SIGA_MODEL) != 0)
 		SV_ResetCigarette(client);
 
 	// Also suppress attack on the selection frame, before QC can fire the old weapon.
-	if (client->siga_active || (*equip_cigarette && COM_FileExists("progs/v_siga.mdl", NULL)))
+	if (client->siga_active || (*equip_cigarette && COM_FileExists(SIGA_MODEL, NULL)))
 	{
 		ent->v.button0 = 0;
 		if (qcvm->extglobals.input_buttons)
@@ -535,8 +530,8 @@ void SV_CigarettePreThink (client_t *client, edict_t *ent, float *saved_button0,
 
 void SV_CigarettePostThink (client_t *client, edict_t *ent, float saved_button0, qboolean equip_cigarette)
 {
-	int mod_idx, numframes, idle_frame, start_frame, hold_frame, end_frame;
-	float interval;
+	int mod_idx, numframes, start_frame, hold_frame, end_frame;
+	const double interval = SIGA_FRAME_INTERVAL;
 	qmodel_t *mod;
 	qboolean attack_down, attack_pressed;
 
@@ -551,13 +546,12 @@ void SV_CigarettePostThink (client_t *client, edict_t *ent, float saved_button0,
 		return;
 	}
 
-	if (equip_cigarette && COM_FileExists("progs/v_siga.mdl", NULL))
+	if (equip_cigarette && COM_FileExists(SIGA_MODEL, NULL))
 	{
-		mod_idx = SV_Precache_Model("progs/v_siga.mdl");
+		mod_idx = SV_Precache_Model(SIGA_MODEL);
 		if (mod_idx > 0)
 		{
-			ent->v.weaponmodel = PR_SetEngineString("progs/v_siga.mdl");
-			ent->v.currentammo = 0;
+			ent->v.weaponmodel = PR_SetEngineString(SIGA_MODEL);
 			SV_ResetCigarette(client);
 			client->siga_active = true;
 		}
@@ -566,33 +560,19 @@ void SV_CigarettePostThink (client_t *client, edict_t *ent, float saved_button0,
 	if (!client->siga_active)
 		return;
 
-	if (q_strcasecmp(PR_GetString(ent->v.weaponmodel), "progs/v_siga.mdl") != 0)
+	if (q_strcasecmp(PR_GetString(ent->v.weaponmodel), SIGA_MODEL) != 0)
 	{
 		SV_ResetCigarette(client);
 		return;
 	}
 
-	mod_idx = SV_ModelIndex("progs/v_siga.mdl");
+	mod_idx = SV_ModelIndex(SIGA_MODEL);
 	mod = (mod_idx > 0 && mod_idx < MAX_MODELS) ? sv.models[mod_idx] : NULL;
 	numframes = (mod && mod->numframes > 0) ? mod->numframes : 1;
 
-	idle_frame = (int)cl_siga_anim_idle.value;
-	if (idle_frame < 0 || idle_frame >= numframes)
-		idle_frame = 0;
-
-	start_frame = CLAMP(0, (int)cl_siga_anim_start.value, numframes - 1);
-	end_frame = (int)cl_siga_anim_end.value;
-	if (end_frame <= 0 || end_frame >= numframes)
-		end_frame = numframes - 1;
-	if (end_frame < start_frame)
-		end_frame = start_frame;
-	hold_frame = CLAMP(start_frame, (int)cl_siga_anim_hold.value, end_frame);
-
-	interval = cl_siga_anim_interval.value;
-	if (interval < 0.02f)
-		interval = 0.02f;
-	else if (interval > 2.0f)
-		interval = 2.0f;
+	start_frame = CLAMP(0, SIGA_START_FRAME, numframes - 1);
+	end_frame = numframes - 1;
+	hold_frame = CLAMP(start_frame, SIGA_HOLD_FRAME, end_frame);
 
 	attack_down = saved_button0 != 0;
 	attack_pressed = attack_down && !client->siga_attack_down;
@@ -600,7 +580,7 @@ void SV_CigarettePostThink (client_t *client, edict_t *ent, float saved_button0,
 
 	if (!client->siga_smoking)
 	{
-		client->siga_frame = idle_frame;
+		client->siga_frame = SIGA_IDLE_FRAME;
 		if (attack_pressed)
 		{
 			client->siga_smoking = true;
@@ -639,7 +619,7 @@ void SV_CigarettePostThink (client_t *client, edict_t *ent, float saved_button0,
 				{
 					client->siga_smoking = false;
 					client->siga_releasing = false;
-					client->siga_frame = idle_frame;
+					client->siga_frame = SIGA_IDLE_FRAME;
 					client->siga_next_frame_time = 0;
 				}
 			}
@@ -648,11 +628,14 @@ void SV_CigarettePostThink (client_t *client, edict_t *ent, float saved_button0,
 				client->siga_frame++;
 				client->siga_next_frame_time = qcvm->time + interval;
 			}
-			// Otherwise keep frame 10 (by default) until attack is released.
+			// Otherwise keep the fixed hold frame until attack is released.
 		}
 	}
 
 	ent->v.weaponframe = client->siga_frame;
+	// Cosmetic HUD ammo only: never touch shells/nails/rockets/cells.
+	// Reassert after QC so pickups or ammo refreshes cannot change the 1.
+	ent->v.currentammo = SIGA_AMMO;
 }
 
 

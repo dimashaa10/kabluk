@@ -23,6 +23,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 // sv_main.c -- server main program
 
 #include "quakedef.h"
+#include "cigarette.h"
 #include "pmove.h"
 
 server_t	sv;
@@ -1606,13 +1607,6 @@ void SV_Init (void)
 	Cvar_RegisterVariable (&sv_nqplayerphysics);	//spike
 	Cvar_RegisterVariable (&sv_bunnyhopqw); // woods #qwbunnyhop
 	Cvar_RegisterVariable (&sv_fullpitch); // woods
-
-	// Animation is authoritative on the server, including dedicated servers.
-	Cvar_RegisterVariable (&cl_siga_anim_idle);
-	Cvar_RegisterVariable (&cl_siga_anim_start);
-	Cvar_RegisterVariable (&cl_siga_anim_hold);
-	Cvar_RegisterVariable (&cl_siga_anim_end);
-	Cvar_RegisterVariable (&cl_siga_anim_interval);
 
 	Cvar_RegisterVariable (&sv_sound_watersplash); //spike
 	Cvar_RegisterVariable (&sv_sound_land); //spike
@@ -4010,8 +4004,8 @@ void SV_SpawnServer (const char *server)
 	sv.active = true;
 
 	SV_Precache_Model("progs/player.mdl");	//Spike -- SV_CreateBaseline depends on this model.
-	if (COM_FileExists("progs/v_siga.mdl", NULL))
-		SV_Precache_Model("progs/v_siga.mdl");
+	if (COM_FileExists(SIGA_MODEL, NULL))
+		SV_Precache_Model(SIGA_MODEL);
 
 // all setup is completed, any further precache statements are errors
 	sv.state = ss_active;

@@ -14,11 +14,10 @@ refdef_t r_refdef;
 cvar_t r_drawviewmodel = {"r_drawviewmodel", "1", CVAR_NONE};
 cvar_t chase_active = {"chase_active", "0", CVAR_NONE};
 cvar_t scr_viewsize = {"viewsize", "100", CVAR_NONE};
-cvar_t cl_siga_anim_idle = {"cl_siga_anim_idle", "0", CVAR_NONE};
 
 static entity_t view;
 static qmodel_t model;
-static int smoke_calls, fallback_calls;
+static int smoke_calls, fallback_calls, smoke_particles, fallback_particles;
 static qboolean missing_effect;
 
 int q_strcasecmp (const char *a, const char *b)
@@ -45,10 +44,11 @@ void AngleVectors (vec3_t angles, vec3_t forward, vec3_t right, vec3_t up)
 int PScript_RunParticleEffectTypeString (vec3_t org, vec3_t dir, float count, const char *name)
 {
 	assert(!strcmp(name, "qssm.cigarette_smoke"));
-	assert(count == 1);
+	assert(count == 8);
 	assert(org[0] == 16 && org[1] == -8 && org[2] == -7);
 	assert(dir[0] == 0 && dir[1] == 0 && dir[2] == 1);
 	smoke_calls++;
+	smoke_particles += (int)count;
 	return missing_effect;
 }
 
@@ -56,8 +56,9 @@ void R_RunParticleEffect (vec3_t org, vec3_t dir, int color, int count)
 {
 	(void)org;
 	(void)dir;
-	assert(missing_effect && color == 7 && count == 2);
+	assert(missing_effect && color == 7 && count == 16);
 	fallback_calls++;
+	fallback_particles += count;
 }
 
 static void Reset (void)
@@ -74,16 +75,10 @@ static void Reset (void)
 	view.model = &model;
 	cl.stats[STAT_HEALTH] = 100;
 	cl.time = 10;
-	cl_siga_smoke.value = 1;
-	cl_siga_smoke_forward.value = 16;
-	cl_siga_smoke_right.value = 8;
-	cl_siga_smoke_up.value = -7;
-	cl_siga_smoke_interval.value = 0.12f;
-	cl_siga_anim_idle.value = 0;
 	r_drawviewmodel.value = 1;
 	chase_active.value = 0;
 	scr_viewsize.value = 100;
-	smoke_calls = fallback_calls = 0;
+	smoke_calls = fallback_calls = smoke_particles = fallback_particles = 0;
 	missing_effect = false;
 }
 
@@ -125,9 +120,9 @@ static void TestReleaseOnly (void)
 	Emit(1, true, 0);
 	Emit(2, false, 0.01);
 	assert(smoke_calls == 1);
-	Emit(3, false, 0.05);
+	Emit(3, false, 0.01);
 	assert(smoke_calls == 1); // emission interval still applies
-	Emit(3, false, 0.1);
+	Emit(3, false, 0.04);
 	assert(smoke_calls == 2);
 	Emit(4, true, 0.2);
 	assert(smoke_calls == 2); // another hold must never emit new particles
@@ -139,9 +134,6 @@ static void TestGatesAndFallback (void)
 {
 	Reset();
 	view.frame = 11;
-	cl_siga_smoke.value = 0;
-	V_EmitCigaretteSmoke(&view);
-	cl_siga_smoke.value = 1;
 	view.model = NULL;
 	V_EmitCigaretteSmoke(&view);
 	view.model = &model;
@@ -169,30 +161,58 @@ static void TestGatesAndFallback (void)
 	assert(smoke_calls == 1 && fallback_calls == 1);
 }
 
-static void TestIdleBounds (void)
+static void TestFixedIdle (void)
 {
 	Reset();
-	cl_siga_anim_idle.value = 3;
-	Emit(3, false, 0);
+	Emit(0, false, 0);
 	assert(smoke_calls == 0);
-	Emit(4, false, 0);
+	Emit(1, false, 0);
 	assert(smoke_calls == 1);
+	Emit(0, false, 0.2);
+	assert(smoke_calls == 1);
+	model.numframes = 1;
+	Emit(0, false, 0.2);
+	assert(smoke_calls == 1);
+}
 
-	/* Invalid idle values must agree with the server's fallback to frame 0. */
-	cl_siga_anim_idle.value = 999;
-	Emit(0, false, 0.2);
+static void TestDenseSmoke (void)
+{
+	int i;
+	Reset();
+	Emit(11, false, 0);
+	assert(smoke_calls == 1 && smoke_particles == 8);
+	Emit(12, false, 0.039);
 	assert(smoke_calls == 1);
-	cl_siga_anim_idle.value = -1;
-	Emit(0, false, 0.2);
-	assert(smoke_calls == 1);
+	Emit(12, false, 0.002);
+	assert(smoke_calls == 2 && smoke_particles == 16);
+
+	// Pin the hardcoded rate: roughly 25 bursts/second, not the old 8.
+	Reset();
+	Emit(11, false, 0);
+	for (i = 0; i < 1000; i++)
+		Emit(11, false, 0.001);
+	assert(smoke_calls >= 24 && smoke_calls <= 26);
+	assert(smoke_particles == smoke_calls * 8);
+	assert(fallback_particles == 0);
+
+	Reset();
+	missing_effect = true;
+	Emit(11, false, 0);
+	assert(fallback_calls == 1 && fallback_particles == 16);
+	for (i = 0; i < 1000; i++)
+		Emit(11, false, 0.001);
+	assert(fallback_calls >= 24 && fallback_calls <= 26);
+	assert(fallback_particles == fallback_calls * 16);
 }
 
 int main (void)
 {
 	TestReleaseOnly();
 	TestGatesAndFallback();
-	TestIdleBounds();
+	TestFixedIdle();
+	TestDenseSmoke();
 	puts("PASS: no cigarette smoke on held attack; smoke follows release until idle.");
-	puts("PASS: smoke interval, early release, visibility/health gates and particle fallback.");
+	puts("PASS: fixed smoke settings, 8-particle bursts every 0.04s, dense classic fallback.");
+	puts("PASS: early release, fixed idle frame and visibility/health gates.");
 	return 0;
 }

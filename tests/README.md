@@ -27,15 +27,22 @@ intentionally retains the original `impulse 9` cheat, so tests verify that:
   finishes the remaining frames once and returns to idle. An early release also
   finishes the animation, and a new press cannot rewind the finish phase.
 - Held input survives ordinary physics ticks without a new movement packet.
-- Configurable start/hold/end/idle frames, short models, live frame-range changes,
-  weapon switching and death cannot leave stale phases or out-of-range frames.
+- Fixed idle/start/hold frames (0/1/10), end at the last real model frame and
+  0.1s timing still work for short/single-frame models; switching and death
+  cannot leave stale phases or out-of-range frames.
+- Cosmetic `currentammo` is always 1 while equipped, including after repeated
+  smoking cycles and QC ammo refreshes. Real ammo pools are unchanged, empty
+  pools remain empty, and ordinary weapons show their actual ammo on switching.
 
 `tests/test_cigarette_smoke.c` includes the **real `Quake/view.c`** private smoke
 emitter with camera/particle-backend doubles. It checks that held attack emits
 nothing (including at frame 10), released non-idle frames emit smoke, idle stops
-emission, the interval is respected, and visibility/health/config gates and the
-classic particle fallback still work. No production test-only API is needed.
+emission, the fixed 0.04s interval is respected, and visibility/health gates
+still work. Bursts contain 8 particles (16 in the classic fallback), with a
+rate near 25 bursts/second at high frame rates. No production test-only API
+is needed.
 
 These tests exercise frame/state transitions and particle emission decisions,
 not the visual appearance of the model or smoke in-game. Game assets are not
-included. See the root README for animation settings and deployment instructions.
+included. See `Quake/cigarette.h` for the hardcoded settings and the root README
+for behavior and deployment instructions.

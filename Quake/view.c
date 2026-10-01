@@ -22,6 +22,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 // view.c -- player eye positioning
 
 #include "quakedef.h"
+#include "cigarette.h"
 
 extern qboolean	premul_hud;
 /*
@@ -70,15 +71,6 @@ cvar_t	gl_cshiftpercent_powerup = {"gl_cshiftpercent_powerup", "100", CVAR_ARCHI
 cvar_t	gl_cshiftpercent_dead = {"gl_cshiftpercent_dead", "0", CVAR_ARCHIVE}; // woods #cdead
 
 cvar_t	r_viewmodel_quake = {"r_viewmodel_quake", "0", CVAR_ARCHIVE};
-
-// Client-side smoke settings for the v_siga.mdl viewmodel.
-// Animation settings live on the server in sv_user.c.
-// Offsets are in world units relative to the camera: forward, screen-right, and screen-up.
-cvar_t	cl_siga_smoke = {"cl_siga_smoke", "1", CVAR_ARCHIVE};
-cvar_t	cl_siga_smoke_forward = {"cl_siga_smoke_forward", "16", CVAR_ARCHIVE};
-cvar_t	cl_siga_smoke_right = {"cl_siga_smoke_right", "8", CVAR_ARCHIVE};
-cvar_t	cl_siga_smoke_up = {"cl_siga_smoke_up", "-7", CVAR_ARCHIVE};
-cvar_t	cl_siga_smoke_interval = {"cl_siga_smoke_interval", "0.12", CVAR_ARCHIVE};
 
 float	v_dmg_time, v_dmg_roll, v_dmg_pitch;
 
@@ -875,43 +867,32 @@ static void V_EmitCigaretteSmoke (entity_t *view)
 {
 	static double next_smoke_time;
 	vec3_t forward, right, up, smokeorg, smoke_dir = {0, 0, 1};
-	float interval;
-	int idle_frame = (int)cl_siga_anim_idle.value;
 
-	if (idle_frame < 0 || (view->model && idle_frame >= view->model->numframes))
-		idle_frame = 0;
-
-	if (!cl_siga_smoke.value || !view->model ||
-		q_strcasecmp(view->model->name, "progs/v_siga.mdl") != 0 ||
-		(in_attack.state & 1) || view->frame == idle_frame || cl.stats[STAT_HEALTH] <= 0 ||
+	if (!view->model || q_strcasecmp(view->model->name, SIGA_MODEL) != 0 ||
+		(in_attack.state & 1) || view->frame == SIGA_IDLE_FRAME || cl.stats[STAT_HEALTH] <= 0 ||
 		!r_drawviewmodel.value || chase_active.value || scr_viewsize.value >= 130)
 	{
 		next_smoke_time = 0;
 		return;
 	}
 
-	interval = cl_siga_smoke_interval.value;
-	if (interval < 0.05f)
-		interval = 0.05f;
-	else if (interval > 2.0f)
-		interval = 2.0f;
-
 	if (next_smoke_time > cl.time)
 		return;
 
 	AngleVectors(r_refdef.viewangles, forward, right, up);
 	VectorCopy(r_refdef.vieworg, smokeorg);
-	VectorMA(smokeorg, cl_siga_smoke_forward.value, forward, smokeorg);
-	VectorMA(smokeorg, cl_siga_smoke_right.value, right, smokeorg);
-	VectorMA(smokeorg, cl_siga_smoke_up.value, up, smokeorg);
+	VectorMA(smokeorg, SIGA_SMOKE_FORWARD, forward, smokeorg);
+	VectorMA(smokeorg, SIGA_SMOKE_RIGHT, right, smokeorg);
+	VectorMA(smokeorg, SIGA_SMOKE_UP, up, smokeorg);
 
-	next_smoke_time = cl.time + interval;
+	next_smoke_time = cl.time + SIGA_SMOKE_INTERVAL;
 
+	// Eight particles per burst, three times as often as the old thin smoke.
 	// The namespaced particle loads particles/qssm.cfg even when another
-	// particle profile is selected. Keep a small classic fallback for mods
-	// which intentionally remove the QSS-M particle pack.
-	if (PScript_RunParticleEffectTypeString(smokeorg, smoke_dir, 1, "qssm.cigarette_smoke"))
-		R_RunParticleEffect(smokeorg, smoke_dir, 7, 2);
+	// particle profile is selected. Keep a matching dense classic fallback
+	// for mods which intentionally remove the QSS-M particle pack.
+	if (PScript_RunParticleEffectTypeString(smokeorg, smoke_dir, SIGA_SMOKE_COUNT, SIGA_SMOKE_EFFECT))
+		R_RunParticleEffect(smokeorg, smoke_dir, SIGA_SMOKE_COLOR, SIGA_SMOKE_CLASSIC_COUNT);
 }
 
 /*
@@ -1167,11 +1148,5 @@ void V_Init (void)
 	Cvar_RegisterVariable (&v_gunkick); //johnfitz
 
 	Cvar_RegisterVariable (&r_viewmodel_quake); //MarkV
-
-	Cvar_RegisterVariable (&cl_siga_smoke);
-	Cvar_RegisterVariable (&cl_siga_smoke_forward);
-	Cvar_RegisterVariable (&cl_siga_smoke_right);
-	Cvar_RegisterVariable (&cl_siga_smoke_up);
-	Cvar_RegisterVariable (&cl_siga_smoke_interval);
 }
 
