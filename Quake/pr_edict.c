@@ -1194,8 +1194,6 @@ void PR_ClearProgs(qcvm_t *vm)
 	free(qcvm->edicts); // ericw -- sv.edicts switched to use malloc()
 	if (qcvm->fielddefs != (ddef_t *)((byte *)qcvm->progs + qcvm->progs->ofs_fielddefs))
 		free(qcvm->fielddefs);
-	if (qcvm->globals != (float *)((byte *)qcvm->progs + qcvm->progs->ofs_globals))
-		free(qcvm->globals);
 	free(qcvm->progs);	// spike -- pr_progs switched to use malloc (so menuqc doesn't end up stuck on the early hunk nor wiped on every map change)
 	memset(qcvm, 0, sizeof(*qcvm));
 
@@ -1284,110 +1282,6 @@ static void PR_MergeEngineFieldDefs (void)
 			}
 		}
 		qcvm->progs->entityfields = maxofs;
-	}
-}
-
-/*
-===============
-PR_PatchCheatImpulse
-
-Move the default QuakeC CheatCommand trigger in ImpulseCommands from
-impulse 9 to impulse 101 so key 9 / impulse 9 stays free for the cigarette.
-===============
-*/
-static void PR_PatchCheatImpulse (void)
-{
-	dfunction_t *impulse_fn = ED_FindFunction ("ImpulseCommands");
-	dfunction_t *cheat_fn = ED_FindFunction ("CheatCommand");
-	func_t cheat_fnum;
-	int start, end, i, k;
-
-	if (!impulse_fn || impulse_fn->first_statement <= 0 || !cheat_fn || cheat_fn->first_statement <= 0)
-		return;
-
-	cheat_fnum = (func_t)(cheat_fn - qcvm->functions);
-	start = impulse_fn->first_statement;
-	end = qcvm->progs->numstatements;
-	for (i = 0; i < qcvm->progs->numfunctions; i++)
-	{
-		if (qcvm->functions[i].first_statement > start && qcvm->functions[i].first_statement < end)
-			end = qcvm->functions[i].first_statement;
-	}
-
-	for (i = start; i < end; i++)
-	{
-		unsigned short call_ofs;
-		if (qcvm->statements[i].op != OP_CALL0)
-			continue;
-		call_ofs = (unsigned short)qcvm->statements[i].a;
-		if (call_ofs >= (unsigned int)qcvm->progs->numglobals)
-			continue;
-		if (G_FUNCTION(call_ofs) != cheat_fnum)
-			continue;
-
-		for (k = i - 1; k >= start && k >= i - 6; k--)
-		{
-			unsigned short oa, ob, target_ofs = 0;
-			int m;
-			qboolean shared = false;
-
-			if (qcvm->statements[k].op != OP_EQ_F && qcvm->statements[k].op != OP_NE_F)
-				continue;
-
-			oa = (unsigned short)qcvm->statements[k].a;
-			ob = (unsigned short)qcvm->statements[k].b;
-			if (oa < (unsigned int)qcvm->progs->numglobals && qcvm->globals[oa] == 9.0f)
-				target_ofs = oa;
-			else if (ob < (unsigned int)qcvm->progs->numglobals && qcvm->globals[ob] == 9.0f)
-				target_ofs = ob;
-			else
-				continue;
-
-			for (m = 0; m < qcvm->progs->numstatements; m++)
-			{
-				if (m == k)
-					continue;
-				if ((unsigned short)qcvm->statements[m].a == target_ofs ||
-					(unsigned short)qcvm->statements[m].b == target_ofs ||
-					(unsigned short)qcvm->statements[m].c == target_ofs)
-				{
-					shared = true;
-					break;
-				}
-			}
-
-			for (m = 0; !shared && m < qcvm->progs->numglobaldefs; m++)
-			{
-				const char *gname;
-				if (qcvm->globaldefs[m].ofs != target_ofs)
-					continue;
-				gname = PR_GetString (qcvm->globaldefs[m].s_name);
-				if (gname[0] && strcmp (gname, "IMMEDIATE") != 0)
-					shared = true;
-			}
-
-			if (!shared)
-			{
-				qcvm->globals[target_ofs] = 101.0f;
-			}
-			else if (qcvm->progs->numglobals < 65535)
-			{
-				float *oldglobals = qcvm->globals;
-				unsigned short new_ofs = (unsigned short)qcvm->progs->numglobals;
-				qcvm->globals = (float *)malloc ((qcvm->progs->numglobals + 1) * sizeof (float));
-				memcpy (qcvm->globals, oldglobals, qcvm->progs->numglobals * sizeof (float));
-				if (oldglobals != (float *)((byte *)qcvm->progs + qcvm->progs->ofs_globals))
-					free (oldglobals);
-				qcvm->globals[new_ofs] = 101.0f;
-				qcvm->progs->numglobals++;
-				pr_global_struct = (globalvars_t *)qcvm->globals;
-				if (oa == target_ofs)
-					qcvm->statements[k].a = (short)new_ofs;
-				else
-					qcvm->statements[k].b = (short)new_ofs;
-			}
-			break;
-		}
 	}
 }
 
@@ -1523,7 +1417,6 @@ qboolean PR_LoadProgs (const char *filename, qboolean fatal, unsigned int needcr
 
 	//spike: detect extended fields from progs
 	PR_MergeEngineFieldDefs();
-	PR_PatchCheatImpulse();
 #define QCEXTFIELD(n,t) qcvm->extfields.n = ED_FindFieldOffset(#n);
 	QCEXTFIELDS_ALL
 	QCEXTFIELDS_GAME

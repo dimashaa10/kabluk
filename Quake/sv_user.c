@@ -491,16 +491,20 @@ SV_CigarettePreThink / SV_CigarettePostThink
 
 Engine-side support for equipping progs/v_siga.mdl on impulse 9 without
 firing a combat shot on +attack, and driving its smoking weaponframe
-animation when QuakeC does not handle impulse 9 natively.
+animation. Impulse 9 is consumed in SV_ReadClientMove before any QuakeC
+entry point can run; impulse 101 is translated to the original QC cheat
+impulse 9 without modifying progs.dat or depending on function names.
 ===================
 */
-void SV_CigarettePreThink (client_t *client, edict_t *ent, float *saved_button0, int *saved_impulse)
+void SV_CigarettePreThink (client_t *client, edict_t *ent, float *saved_button0, qboolean *equip_cigarette)
 {
 	*saved_button0 = ent->v.button0;
-	*saved_impulse = (int)ent->v.impulse;
+	*equip_cigarette = client->siga_pending;
+	client->siga_pending = false;
 
 	if (ent->v.health <= 0 || ent->v.deadflag)
 	{
+		*equip_cigarette = false;
 		client->siga_active = false;
 		client->siga_smoking = false;
 		client->siga_frame = 0;
@@ -516,7 +520,8 @@ void SV_CigarettePreThink (client_t *client, edict_t *ent, float *saved_button0,
 		client->siga_next_frame_time = 0;
 	}
 
-	if (client->siga_active)
+	// Also suppress attack on the selection frame, before QC can fire the old weapon.
+	if (client->siga_active || (*equip_cigarette && COM_FileExists("progs/v_siga.mdl", NULL)))
 	{
 		ent->v.button0 = 0;
 		if (qcvm->extglobals.input_buttons)
@@ -524,7 +529,7 @@ void SV_CigarettePreThink (client_t *client, edict_t *ent, float *saved_button0,
 	}
 }
 
-void SV_CigarettePostThink (client_t *client, edict_t *ent, float saved_button0, int saved_impulse)
+void SV_CigarettePostThink (client_t *client, edict_t *ent, float saved_button0, qboolean equip_cigarette)
 {
 	int mod_idx, numframes, idle_frame, start_frame, end_frame;
 	float interval;
@@ -539,27 +544,17 @@ void SV_CigarettePostThink (client_t *client, edict_t *ent, float saved_button0,
 		return;
 	}
 
-	if (saved_impulse == 9 && (int)ent->v.impulse == 0)
+	if (equip_cigarette && COM_FileExists("progs/v_siga.mdl", NULL))
 	{
-		if (q_strcasecmp(PR_GetString(ent->v.weaponmodel), "progs/v_siga.mdl") != 0)
+		mod_idx = SV_Precache_Model("progs/v_siga.mdl");
+		if (mod_idx > 0)
 		{
-			if (COM_FileExists("progs/v_siga.mdl", NULL))
-			{
-				mod_idx = SV_Precache_Model("progs/v_siga.mdl");
-				if (mod_idx > 0)
-				{
-					idle_frame = (int)cl_siga_anim_idle.value;
-					if (idle_frame < 0)
-						idle_frame = 0;
-					ent->v.weaponmodel = PR_SetEngineString("progs/v_siga.mdl");
-					ent->v.weaponframe = idle_frame;
-					ent->v.currentammo = 0;
-					client->siga_active = true;
-					client->siga_smoking = false;
-					client->siga_frame = idle_frame;
-					client->siga_next_frame_time = 0;
-				}
-			}
+			ent->v.weaponmodel = PR_SetEngineString("progs/v_siga.mdl");
+			ent->v.currentammo = 0;
+			client->siga_active = true;
+			client->siga_smoking = false;
+			client->siga_frame = 0;
+			client->siga_next_frame_time = 0;
 		}
 	}
 
@@ -764,7 +759,17 @@ void SV_ReadClientMove (usercmd_t *move)
 		val->_float = (buttonbits & 0x80)>>7;
 
 	if (newimpulse)
+	{
+		// Reserve the *incoming* impulse 9 for the cigarette. Never expose it to
+		// QuakeC, even if the model is missing or the player is dead. Keep the
+		// request separate from self.impulse so the cheat cannot run first.
+		host_client->siga_pending = (newimpulse == 9);
+		if (newimpulse == 9)
+			newimpulse = 0;
+		else if (newimpulse == 101)
+			newimpulse = 9; // unchanged QC handles the cheat and its restrictions
 		host_client->edict->v.impulse = newimpulse;
+	}
 
 	eval = GetEdictFieldValue(host_client->edict, qcvm->extfields.movement);
 	if (eval)
@@ -814,9 +819,9 @@ void SV_ReadClientMove (usercmd_t *move)
 			*qcvm->extglobals.input_cursor_entitynumber = curs_entity;
 
 		float saved_button0;
-		int saved_impulse;
+		qboolean equip_cigarette;
 
-		SV_CigarettePreThink(host_client, host_client->edict, &saved_button0, &saved_impulse);
+		SV_CigarettePreThink(host_client, host_client->edict, &saved_button0, &equip_cigarette);
 		VectorCopy(host_client->edict->v.velocity, savedvel);
 		pr_global_struct->self = EDICT_TO_PROG(host_client->edict);
 		PR_ExecuteProgram(pr_global_struct->PlayerPreThink);
@@ -846,7 +851,7 @@ void SV_ReadClientMove (usercmd_t *move)
 
 		pr_global_struct->self = EDICT_TO_PROG(host_client->edict);
 		PR_ExecuteProgram(pr_global_struct->PlayerPostThink);
-		SV_CigarettePostThink(host_client, host_client->edict, saved_button0, saved_impulse);
+		SV_CigarettePostThink(host_client, host_client->edict, saved_button0, equip_cigarette);
 	}
 }
 
