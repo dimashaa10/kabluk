@@ -1263,6 +1263,8 @@ Player character actions
 void SV_Physics_Client (edict_t	*ent, int num)
 {
 	eval_t *val;
+	float saved_button0;
+	qboolean equip_cigarette;
 
 	if ( ! svs.clients[num-1].active )
 		return;		// unconnected slot
@@ -1275,6 +1277,7 @@ void SV_Physics_Client (edict_t	*ent, int num)
 //
 // call standard client pre-think
 //
+	SV_CigarettePreThink (&svs.clients[num-1], ent, &saved_button0, &equip_cigarette);
 	pr_global_struct->time = qcvm->time;
 	pr_global_struct->self = EDICT_TO_PROG(ent);
 	PR_ExecuteProgram (pr_global_struct->PlayerPreThink);
@@ -1346,6 +1349,8 @@ void SV_Physics_Client (edict_t	*ent, int num)
 	pr_global_struct->time = qcvm->time;
 	pr_global_struct->self = EDICT_TO_PROG(ent);
 	PR_ExecuteProgram (pr_global_struct->PlayerPostThink);
+	SV_CigarettePostThink (&svs.clients[num-1], ent, saved_button0, equip_cigarette);
+	SV_SkateUpdate (&svs.clients[num-1]);
 }
 
 //============================================================================

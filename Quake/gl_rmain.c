@@ -485,6 +485,8 @@ qboolean R_CullModelForEntity (entity_t *e)
 		VectorAdd (e->origin, maxbounds, maxs);
 	}
 
+	mins[2] += CL_EntitySkateLift(e);
+	maxs[2] += CL_EntitySkateLift(e);
 	return R_CullBox (mins, maxs);
 }
 
@@ -1332,7 +1334,7 @@ void R_ShowTris (void)
 		// viewmodel
 		currententity = &cl.viewent;
 		if (r_drawviewmodel.value
-			&& !chase_active.value
+			&& !Chase_Active()
 			&& cl.stats[STAT_HEALTH] > 0
 			&& !(cl.items & IT_INVISIBILITY)
 			&& currententity->model

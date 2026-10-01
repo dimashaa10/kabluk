@@ -22,6 +22,8 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 // sv_user.c -- server code for moving users
 
 #include "quakedef.h"
+#include "cigarette.h"
+#include "skate.h"
 #include "pmove.h"
 
 edict_t	*sv_player;
@@ -469,7 +471,10 @@ void SV_ClientThink (void)
 // walk
 //
 	//johnfitz -- alternate noclip
-	if (sv_player->v.movetype == MOVETYPE_NOCLIP && sv_altnoclip.value)
+	if (host_client->skate_active && sv_player->v.movetype == MOVETYPE_WALK &&
+		sv_player->v.waterlevel < 2 && !sv_player->onladder)
+		SV_SkateMove(host_client, sv_player, &cmd, host_frametime);
+	else if (sv_player->v.movetype == MOVETYPE_NOCLIP && sv_altnoclip.value)
 		SV_NoclipMove ();
 	else if ((sv_player->v.waterlevel >= 2||sv_player->onladder) && sv_player->v.movetype != MOVETYPE_NOCLIP)
 		SV_WaterMove ();
@@ -478,6 +483,451 @@ void SV_ClientThink (void)
 	//johnfitz
 
 	SV_UpdateSpeedInfo (); // woods #speedometer
+}
+
+
+/*
+===================
+Skating: server-authoritative horizontal motion and one non-solid board.
+The player's origin/bounds stay untouched; only the visible models are lifted.
+===================
+*/
+qboolean SV_IsSkateBoard (const edict_t *ent)
+{
+	return ent->v.classname && !strcmp(PR_GetString(ent->v.classname), SKATE_CLASSNAME);
+}
+
+static qboolean SV_SkateBoardValid (const client_t *client)
+{
+	uintptr_t base = (uintptr_t)sv.qcvm.edicts;
+	uintptr_t board = (uintptr_t)client->skate_board;
+	size_t bytes = sv.qcvm.num_edicts * sv.qcvm.edict_size;
+
+	if (!base || !sv.qcvm.edict_size || board < base || board - base >= bytes ||
+		(board - base) % sv.qcvm.edict_size)
+		return false;
+	return !client->skate_board->free && SV_IsSkateBoard(client->skate_board) &&
+		client->edict && client->skate_board->v.owner == EDICT_TO_PROG(client->edict);
+}
+
+void SV_SkateStop (client_t *client)
+{
+	if (client->skate_board && sv.qcvm.edicts)
+	{
+		qcvm_t *oldvm = qcvm;
+		if (oldvm != &sv.qcvm)
+		{
+			PR_SwitchQCVM(NULL);
+			PR_SwitchQCVM(&sv.qcvm);
+		}
+		if (SV_SkateBoardValid(client))
+			ED_Free(client->skate_board);
+		if (oldvm != &sv.qcvm)
+		{
+			PR_SwitchQCVM(NULL);
+			PR_SwitchQCVM(oldvm);
+		}
+	}
+	client->skate_active = false;
+	client->skate_board = NULL;
+	client->skate_lift = 0;
+	client->skate_yaw = 0;
+	client->skate_grounded = false;
+	client->skate_flip_active = false;
+	client->skate_flip_start_time = 0;
+}
+
+int SV_SkateStat (const client_t *client)
+{
+	if (!client->skate_active || !(client->skate_lift >= 0 && client->skate_lift <= SKATE_MAX_LIFT))
+		return 0;
+	return (int)(SKATE_STAT_MAGIC | (unsigned int)(client->skate_lift * SKATE_HEIGHT_SCALE + 0.5f));
+}
+
+static qboolean SV_SkateCanRide (const edict_t *ent)
+{
+	return ent && !ent->free && ent->v.health > 0 && !ent->v.deadflag &&
+		ent->v.movetype == MOVETYPE_WALK && ent->v.waterlevel < 2 && !ent->onladder;
+}
+
+static float SV_SkateGroundLift (edict_t *ent, const qmodel_t *model)
+{
+	float lift = q_max(SKATE_GROUND_CLEARANCE,
+		ent->v.mins[2] - model->mins[2] + SKATE_GROUND_CLEARANCE);
+
+	// Keep the entire board above steps/slopes, not just its center. Do not
+	// trace in midair: a passing platform must not pull the board off the feet.
+	if ((int)ent->v.flags & FL_ONGROUND)
+	{
+		vec3_t start, end, fwd, side, up, a = {0, 0, 0};
+		int x, y;
+		a[YAW] = ent->v.angles[YAW];
+		AngleVectors(a, fwd, side, up);
+		for (x = 0; x < 2; x++)
+			for (y = 0; y < 2; y++)
+			{
+				float mx = x ? model->maxs[0] : model->mins[0];
+				float my = y ? model->maxs[1] : model->mins[1];
+				trace_t trace;
+				VectorCopy(ent->v.origin, start);
+				VectorMA(start, mx, fwd, start);
+				VectorMA(start, -my, side, start);
+				VectorCopy(start, end);
+				start[2] += ent->v.maxs[2] + 8;
+				end[2] += ent->v.mins[2] - SKATE_MAX_LIFT;
+				trace = SV_Move(start, vec3_origin, vec3_origin, end, MOVE_NOMONSTERS, ent);
+				if (!trace.startsolid && !trace.allsolid && trace.fraction < 1)
+					lift = q_max(lift, trace.endpos[2] - ent->v.origin[2] - model->mins[2] + SKATE_GROUND_CLEARANCE);
+			}
+	}
+	return CLAMP(SKATE_GROUND_CLEARANCE, lift, SKATE_MAX_LIFT);
+}
+
+static float SV_SkateJumpRoll (client_t *client, const edict_t *ent)
+{
+	qboolean grounded = !!((int)ent->v.flags & FL_ONGROUND);
+	double elapsed;
+
+	if (grounded)
+	{
+		client->skate_flip_active = false;
+		client->skate_flip_start_time = 0;
+	}
+	else if (client->skate_grounded && ent->v.velocity[2] > 0 &&
+		!((int)ent->v.flags & FL_WATERJUMP))
+	{
+		// An upward takeoff, not merely holding jump or falling off an edge.
+		// Normal QuakeC/native jump physics have already run at this point.
+		client->skate_flip_active = true;
+		client->skate_flip_start_time = qcvm->time;
+	}
+	client->skate_grounded = grounded;
+	if (!client->skate_flip_active)
+		return 0;
+
+	elapsed = qcvm->time - client->skate_flip_start_time;
+	if (elapsed < 0 || elapsed >= SKATE_FLIP_DURATION)
+	{
+		// Zero is the same orientation as 360. Stay upright until the next
+		// actual takeoff; landing (including a low ceiling) also resets us.
+		client->skate_flip_active = false;
+		client->skate_flip_start_time = 0;
+		return 0;
+	}
+	return 360.0f * (elapsed / SKATE_FLIP_DURATION);
+}
+
+void SV_SkateUpdate (client_t *client)
+{
+	edict_t *ent = client->edict, *board = client->skate_board;
+	qmodel_t *model;
+	if (!client->skate_active)
+		return;
+	if (!client->active || !client->spawned || !SV_SkateCanRide(ent) || !SV_SkateBoardValid(client) ||
+		sv.skate_modelindex <= 0 || sv.skate_modelindex >= MAX_MODELS || !(model = sv.models[sv.skate_modelindex]))
+	{
+		SV_SkateStop(client);
+		return;
+	}
+
+	// Keep the rider upright; only the board rolls during a jump.
+	// Both still share the prepared model origin and heading on the wire.
+	ent->v.angles[PITCH] = ent->v.angles[ROLL] = 0;
+	ent->v.angles[YAW] = client->skate_yaw;
+	ent->v.frame = SKATE_RIDER_FRAME;
+	client->skate_lift = SV_SkateGroundLift(ent, model);
+	VectorCopy(ent->v.origin, board->v.origin);
+	board->v.origin[2] += client->skate_lift;
+	board->v.angles[PITCH] = 0;
+	board->v.angles[YAW] = client->skate_yaw;
+	board->v.angles[ROLL] = SV_SkateJumpRoll(client, ent);
+	SV_LinkEdict(board, false);
+}
+
+void SV_SkateMove (client_t *client, edict_t *ent, const usercmd_t *move, double dt)
+{
+	vec3_t fwd, side, up, a = {0, 0, 0};
+	float desired, delta, step, forwardspeed, sidespeed, speed;
+	if (!client->skate_active || !SV_SkateCanRide(ent) || dt <= 0)
+		return;
+	dt = q_min(dt, 0.1);
+	desired = ent->v.v_angle[YAW] - CLAMP(-1.0f, move->sidemove / SKATE_INPUT_SCALE, 1.0f) * SKATE_STEER_ANGLE;
+	delta = desired - client->skate_yaw;
+	delta -= 360.0f * floorf((delta + 180.0f) / 360.0f);
+	step = SKATE_TURN_RATE * dt;
+	client->skate_yaw = anglemod(client->skate_yaw + CLAMP(-step, delta, step));
+	ent->v.angles[PITCH] = ent->v.angles[ROLL] = 0;
+	ent->v.angles[YAW] = client->skate_yaw;
+
+	if (!((int)ent->v.flags & FL_ONGROUND) || ((int)ent->v.flags & FL_WATERJUMP))
+		return; // retain airborne momentum; native gravity/jump/collision still run
+
+	a[YAW] = client->skate_yaw;
+	AngleVectors(a, fwd, side, up);
+	forwardspeed = ent->v.velocity[0] * fwd[0] + ent->v.velocity[1] * fwd[1];
+	sidespeed = ent->v.velocity[0] * side[0] + ent->v.velocity[1] * side[1];
+	forwardspeed *= expf(-SKATE_ROLLING_DRAG * dt);
+	sidespeed *= expf(-SKATE_SIDE_TRACTION * dt);
+	if (move->forwardmove < -1)
+	{
+		forwardspeed *= expf(-SKATE_BRAKING * dt);
+		sidespeed *= expf(-SKATE_BRAKING * dt);
+		if (fabsf(forwardspeed) < 2) forwardspeed = 0;
+		if (fabsf(sidespeed) < 2) sidespeed = 0;
+	}
+	else
+		forwardspeed += SKATE_ACCELERATION * (1.0f + 0.3f * CLAMP(0.0f, move->forwardmove / SKATE_INPUT_SCALE, 1.0f)) * dt;
+	ent->v.velocity[0] = fwd[0] * forwardspeed + side[0] * sidespeed;
+	ent->v.velocity[1] = fwd[1] * forwardspeed + side[1] * sidespeed;
+	speed = sqrtf(ent->v.velocity[0] * ent->v.velocity[0] + ent->v.velocity[1] * ent->v.velocity[1]);
+	if (speed > SKATE_MAX_SPEED)
+	{
+		ent->v.velocity[0] *= SKATE_MAX_SPEED / speed;
+		ent->v.velocity[1] *= SKATE_MAX_SPEED / speed;
+	}
+}
+
+void SV_Skate_f (void)
+{
+	edict_t *ent, *board;
+	int i;
+	qboolean enable;
+	qmodel_t *model;
+	if (cmd_source != src_client)
+	{
+		Cmd_ForwardToServer();
+		return;
+	}
+	if (!host_client || !host_client->active || !host_client->spawned)
+		return;
+	if (Cmd_Argc() > 2 || (Cmd_Argc() == 2 && strcmp(Cmd_Argv(1), "0") && strcmp(Cmd_Argv(1), "1")))
+	{
+		SV_ClientPrintf("skate [0|1]: toggle skating, or explicitly disable/enable it\n");
+		return;
+	}
+	enable = Cmd_Argc() == 1 ? !host_client->skate_active : !strcmp(Cmd_Argv(1), "1");
+	if (!enable)
+	{
+		SV_SkateStop(host_client);
+		SV_ClientPrintf("Skate OFF\n");
+		return;
+	}
+	if (host_client->skate_active)
+		return;
+	ent = host_client->edict;
+	if (!SV_SkateCanRide(ent))
+	{
+		SV_ClientPrintf("Skating requires a living, walking player outside deep water.\n");
+		return;
+	}
+	if (sv.skate_modelindex <= 0 || sv.skate_modelindex >= MAX_MODELS ||
+		!(model = sv.models[sv.skate_modelindex]) || model->type != mod_alias)
+	{
+		SV_ClientPrintf("Skate model missing: install progs/skate.mdl (or skate.mdl) and restart the map.\n");
+		return;
+	}
+	if ((unsigned)sv.skate_modelindex >= host_client->limit_models)
+	{
+		SV_ClientPrintf("The skateboard exceeds this client's model limit.\n");
+		return;
+	}
+	if (!(ent->v.mins[2] - model->mins[2] + SKATE_GROUND_CLEARANCE <= SKATE_MAX_LIFT))
+	{
+		SV_ClientPrintf("skate.mdl must use the same origin/scale as the player model.\n");
+		return;
+	}
+	// Avoid a fatal ED_Alloc when a busy map has no reusable entity slots.
+	if (qcvm->num_edicts >= qcvm->max_edicts)
+	{
+		for (i = qcvm->reserved_edicts; i < qcvm->num_edicts; i++)
+		{
+			edict_t *e = EDICT_NUM(i);
+			if (e->free && (e->freetime < 2 || qcvm->time - e->freetime > 0.5))
+				break;
+		}
+		if (i == qcvm->num_edicts)
+		{
+			SV_ClientPrintf("No free entity slot for the skateboard.\n");
+			return;
+		}
+	}
+	board = ED_Alloc();
+	board->v.classname = PR_SetEngineString(SKATE_CLASSNAME);
+	board->v.model = PR_SetEngineString(sv.model_precache[sv.skate_modelindex]);
+	board->v.modelindex = sv.skate_modelindex;
+	board->v.movetype = MOVETYPE_NOCLIP;
+	board->v.solid = SOLID_NOT;
+	board->v.owner = EDICT_TO_PROG(ent);
+	// Stock colormap carries the player slot to all clients, including demos.
+	board->v.colormap = NUM_FOR_EDICT(ent);
+	VectorCopy(model->mins, board->v.mins);
+	VectorCopy(model->maxs, board->v.maxs);
+	VectorSubtract(board->v.maxs, board->v.mins, board->v.size);
+	host_client->skate_board = board;
+	host_client->skate_active = true;
+	host_client->skate_yaw = ent->v.v_angle[YAW];
+	host_client->skate_grounded = !!((int)ent->v.flags & FL_ONGROUND);
+	host_client->skate_flip_active = false;
+	host_client->skate_flip_start_time = 0;
+	host_client->usingpmove = false; // stock client prediction does not know skating
+	SV_SkateUpdate(host_client);
+	SV_ClientPrintf("Skate ON: mouse/A-D steer, S brakes, jump flips the board.\n");
+}
+
+/*
+===================
+SV_CigarettePreThink / SV_CigarettePostThink
+
+Engine-side support for equipping progs/v_siga.mdl on impulse 9 without
+firing a combat shot on +attack, and driving its smoking weaponframe
+animation. Impulse 9 is consumed in SV_ReadClientMove before any QuakeC
+entry point can run; impulse 101 is translated to the original QC cheat
+impulse 9 without modifying progs.dat or depending on function names.
+===================
+*/
+static void SV_ResetCigarette (client_t *client)
+{
+	client->siga_active = false;
+	client->siga_smoking = false;
+	client->siga_releasing = false;
+	client->siga_attack_down = false;
+	client->siga_frame = SIGA_IDLE_FRAME;
+	client->siga_next_frame_time = 0;
+}
+
+void SV_CigarettePreThink (client_t *client, edict_t *ent, float *saved_button0, qboolean *equip_cigarette)
+{
+	*saved_button0 = ent->v.button0;
+	*equip_cigarette = client->siga_pending;
+	client->siga_pending = false;
+
+	if (ent->v.health <= 0 || ent->v.deadflag)
+	{
+		*equip_cigarette = false;
+		SV_ResetCigarette(client);
+		return;
+	}
+
+	if (client->siga_active && q_strcasecmp(PR_GetString(ent->v.weaponmodel), SIGA_MODEL) != 0)
+		SV_ResetCigarette(client);
+
+	// Also suppress attack on the selection frame, before QC can fire the old weapon.
+	if (client->siga_active || (*equip_cigarette && COM_FileExists(SIGA_MODEL, NULL)))
+	{
+		ent->v.button0 = 0;
+		if (qcvm->extglobals.input_buttons)
+			*qcvm->extglobals.input_buttons = (int)*qcvm->extglobals.input_buttons & ~1;
+	}
+}
+
+void SV_CigarettePostThink (client_t *client, edict_t *ent, float saved_button0, qboolean equip_cigarette)
+{
+	int mod_idx, numframes, start_frame, hold_frame, end_frame;
+	const double interval = SIGA_FRAME_INTERVAL;
+	qmodel_t *mod;
+	qboolean attack_down, attack_pressed;
+
+	// The mask is only for QC execution. Retain held input for server ticks
+	// without a new clc_move, otherwise they look like an accidental release.
+	if (client->siga_active || equip_cigarette)
+		ent->v.button0 = saved_button0;
+
+	if (ent->v.health <= 0 || ent->v.deadflag)
+	{
+		SV_ResetCigarette(client);
+		return;
+	}
+
+	if (equip_cigarette && COM_FileExists(SIGA_MODEL, NULL))
+	{
+		mod_idx = SV_Precache_Model(SIGA_MODEL);
+		if (mod_idx > 0)
+		{
+			ent->v.weaponmodel = PR_SetEngineString(SIGA_MODEL);
+			SV_ResetCigarette(client);
+			client->siga_active = true;
+		}
+	}
+
+	if (!client->siga_active)
+		return;
+
+	if (q_strcasecmp(PR_GetString(ent->v.weaponmodel), SIGA_MODEL) != 0)
+	{
+		SV_ResetCigarette(client);
+		return;
+	}
+
+	mod_idx = SV_ModelIndex(SIGA_MODEL);
+	mod = (mod_idx > 0 && mod_idx < MAX_MODELS) ? sv.models[mod_idx] : NULL;
+	numframes = (mod && mod->numframes > 0) ? mod->numframes : 1;
+
+	start_frame = CLAMP(0, SIGA_START_FRAME, numframes - 1);
+	end_frame = numframes - 1;
+	hold_frame = CLAMP(start_frame, SIGA_HOLD_FRAME, end_frame);
+
+	attack_down = saved_button0 != 0;
+	attack_pressed = attack_down && !client->siga_attack_down;
+	client->siga_attack_down = attack_down;
+
+	if (!client->siga_smoking)
+	{
+		client->siga_frame = SIGA_IDLE_FRAME;
+		if (attack_pressed)
+		{
+			client->siga_smoking = true;
+			client->siga_releasing = false;
+			client->siga_frame = start_frame;
+			client->siga_next_frame_time = qcvm->time + interval;
+		}
+	}
+
+	if (client->siga_smoking)
+	{
+		client->siga_frame = CLAMP(start_frame, client->siga_frame, end_frame);
+		if (!client->siga_releasing && !attack_down)
+		{
+			// Release latches the finish phase, even for a short tap. A new
+			// press must not rewind it or freeze it again at the hold frame.
+			client->siga_releasing = true;
+			client->siga_next_frame_time = qcvm->time;
+			if (client->siga_frame == end_frame)
+				client->siga_next_frame_time += interval;
+		}
+
+		if (!client->siga_releasing && client->siga_frame > hold_frame)
+			client->siga_frame = hold_frame;
+
+		if (qcvm->time >= client->siga_next_frame_time)
+		{
+			if (client->siga_releasing)
+			{
+				if (client->siga_frame < end_frame)
+				{
+					client->siga_frame++;
+					client->siga_next_frame_time = qcvm->time + interval;
+				}
+				else
+				{
+					client->siga_smoking = false;
+					client->siga_releasing = false;
+					client->siga_frame = SIGA_IDLE_FRAME;
+					client->siga_next_frame_time = 0;
+				}
+			}
+			else if (client->siga_frame < hold_frame)
+			{
+				client->siga_frame++;
+				client->siga_next_frame_time = qcvm->time + interval;
+			}
+			// Otherwise keep the fixed hold frame until attack is released.
+		}
+	}
+
+	ent->v.weaponframe = client->siga_frame;
+	// Cosmetic HUD ammo only: never touch shells/nails/rockets/cells.
+	// Reassert after QC so pickups or ammo refreshes cannot change the 1.
+	ent->v.currentammo = SIGA_AMMO;
 }
 
 
@@ -601,7 +1051,17 @@ void SV_ReadClientMove (usercmd_t *move)
 		val->_float = (buttonbits & 0x80)>>7;
 
 	if (newimpulse)
+	{
+		// Reserve the *incoming* impulse 9 for the cigarette. Never expose it to
+		// QuakeC, even if the model is missing or the player is dead. Keep the
+		// request separate from self.impulse so the cheat cannot run first.
+		host_client->siga_pending = (newimpulse == 9);
+		if (newimpulse == 9)
+			newimpulse = 0;
+		else if (newimpulse == 101)
+			newimpulse = 9; // unchanged QC handles the cheat and its restrictions
 		host_client->edict->v.impulse = newimpulse;
+	}
 
 	eval = GetEdictFieldValue(host_client->edict, qcvm->extfields.movement);
 	if (eval)
@@ -612,7 +1072,8 @@ void SV_ReadClientMove (usercmd_t *move)
 	}
 
 	//decide if we're going independant or not
-	host_client->usingpmove = !!qcvm->extfuncs.SV_RunClientCommand || (!sv_nqplayerphysics.value && (*sv_nqplayerphysics.string||deathmatch.value));
+	host_client->usingpmove = !host_client->skate_active &&
+		(!!qcvm->extfuncs.SV_RunClientCommand || (!sv_nqplayerphysics.value && (*sv_nqplayerphysics.string||deathmatch.value)));
 
 	//and give them their independance here.
 	if (host_client->usingpmove && host_client->knowntoqc)
@@ -650,6 +1111,10 @@ void SV_ReadClientMove (usercmd_t *move)
 		if (qcvm->extglobals.input_cursor_entitynumber)
 			*qcvm->extglobals.input_cursor_entitynumber = curs_entity;
 
+		float saved_button0;
+		qboolean equip_cigarette;
+
+		SV_CigarettePreThink(host_client, host_client->edict, &saved_button0, &equip_cigarette);
 		VectorCopy(host_client->edict->v.velocity, savedvel);
 		pr_global_struct->self = EDICT_TO_PROG(host_client->edict);
 		PR_ExecuteProgram(pr_global_struct->PlayerPreThink);
@@ -679,6 +1144,8 @@ void SV_ReadClientMove (usercmd_t *move)
 
 		pr_global_struct->self = EDICT_TO_PROG(host_client->edict);
 		PR_ExecuteProgram(pr_global_struct->PlayerPostThink);
+		SV_CigarettePostThink(host_client, host_client->edict, saved_button0, equip_cigarette);
+		SV_SkateUpdate(host_client);
 	}
 }
 
@@ -834,7 +1301,9 @@ qboolean SV_ReadClientMessage (void)
 			s = MSG_ReadString ();
 			if (!q_strncasecmp(s, "spawn", 5)) 
 				SV_CheckDuplicateNames(host_client); // woods #dupnames
-			if (q_strncasecmp(s, "spawn", 5) && q_strncasecmp(s, "begin", 5) && q_strncasecmp(s, "prespawn", 8) && qcvm->extfuncs.SV_ParseClientCommand)
+			if (q_strncasecmp(s, "spawn", 5) && q_strncasecmp(s, "begin", 5) && q_strncasecmp(s, "prespawn", 8) &&
+				!(!q_strncasecmp(s, "skate", 5) && (!s[5] || s[5] == ' ' || s[5] == '\t')) &&
+				qcvm->extfuncs.SV_ParseClientCommand)
 			{	//the spawn/begin/prespawn are because of numerous mods that disobey the rules.
 				//at a minimum, we must be able to join the server, so that we can see any sprints/bprints (because dprint sucks, yes there's proper ways to deal with this, but moders don't always know them).
 				client_t *ohc = host_client;
@@ -920,6 +1389,10 @@ void SV_RunClients (void)
 			continue;
 
 		sv_player = host_client->edict;
+
+		if (host_client->skate_active && (!host_client->spawned ||
+			!SV_SkateCanRide(sv_player) || !SV_SkateBoardValid(host_client)))
+			SV_SkateStop(host_client);
 
 		if (!host_client->spawned)
 		{

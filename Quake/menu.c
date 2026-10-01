@@ -3408,7 +3408,7 @@ void M_Setup_Draw (void)
 			flyme = false;
 	}
 
-	if (!chase_active.value && !cls.demoplayback&& host_initialized && !flyme && cls.state == ca_connected && cl.modtype != 6) // woods #3rdperson
+	if (!Chase_Active() && !cls.demoplayback&& host_initialized && !flyme && cls.state == ca_connected && cl.modtype != 6) // woods #3rdperson
 	{
 		chasewasnotactive = true;
 		Cbuf_AddText("chase_active 1\n");
@@ -3551,7 +3551,7 @@ void M_Setup_Key (int k)
 		{
 			M_AdjustColour(&setup_top, -1);
 			q_strlcpy (lastColorSelected, CL_PLColours_ToString(setup_top), sizeof(lastColorSelected));
-			if (chase_active.value && !cls.demoplayback && host_initialized && !flyme) // woods #3rdperson
+			if (Chase_Active() && !cls.demoplayback && host_initialized && !flyme) // woods #3rdperson
 				if (!CL_PLColours_Equals(setup_top, setup_oldtop) || !CL_PLColours_Equals(setup_bottom, setup_oldbottom))
 				{
 					Cbuf_AddText(va("color %s %s\n", CL_PLColours_ToString(setup_top), CL_PLColours_ToString(setup_bottom)));
@@ -3562,7 +3562,7 @@ void M_Setup_Key (int k)
 		{
 			M_AdjustColour(&setup_bottom, -1);
 			q_strlcpy (lastColorSelected, CL_PLColours_ToString(setup_bottom), sizeof(lastColorSelected));
-			if (chase_active.value && !cls.demoplayback && host_initialized && !flyme) // woods #3rdperson
+			if (Chase_Active() && !cls.demoplayback && host_initialized && !flyme) // woods #3rdperson
 				if (!CL_PLColours_Equals(setup_top, setup_oldtop) || !CL_PLColours_Equals(setup_bottom, setup_oldbottom))
 				{
 					Cbuf_AddText(va("color %s %s\n", CL_PLColours_ToString(setup_top), CL_PLColours_ToString(setup_bottom)));
@@ -3580,7 +3580,7 @@ void M_Setup_Key (int k)
 		{
 			M_AdjustColour(&setup_top, +1);
 			q_strlcpy (lastColorSelected, CL_PLColours_ToString(setup_top), sizeof(lastColorSelected));
-			if (chase_active.value && !cls.demoplayback && host_initialized && !flyme) // woods #3rdperson
+			if (Chase_Active() && !cls.demoplayback && host_initialized && !flyme) // woods #3rdperson
 				if (!CL_PLColours_Equals(setup_top, setup_oldtop) || !CL_PLColours_Equals(setup_bottom, setup_oldbottom))
 				{
 					Cbuf_AddText(va("color %s %s\n", CL_PLColours_ToString(setup_top), CL_PLColours_ToString(setup_bottom)));
@@ -3591,7 +3591,7 @@ void M_Setup_Key (int k)
 		{
 			M_AdjustColour(&setup_bottom, +1);
 			q_strlcpy (lastColorSelected, CL_PLColours_ToString(setup_bottom), sizeof(lastColorSelected));
-			if (chase_active.value && !cls.demoplayback && host_initialized && !flyme) // woods #3rdperson
+			if (Chase_Active() && !cls.demoplayback && host_initialized && !flyme) // woods #3rdperson
 				if (!CL_PLColours_Equals(setup_top, setup_oldtop) || !CL_PLColours_Equals(setup_bottom, setup_oldbottom))
 				{
 					Cbuf_AddText(va("color %s %s\n", CL_PLColours_ToString(setup_top), CL_PLColours_ToString(setup_bottom)));
@@ -4663,6 +4663,7 @@ const char *quakebindnames[][2] = // woods use iw quake bind names
 	{"impulse 6",		"Grudnichkomyot"},
 	{"impulse 7",		"Rocket Launcher"},
 	{"impulse 8",		"Thunderbolt"},
+	{"impulse 9",		"Cigarette"},
 	{"impulse 225",		"Laser Cannon"},
 	{"impulse 226",		"Mjolnir"},
 };

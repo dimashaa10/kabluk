@@ -1,0 +1,24 @@
+name: Gameplay regression tests
+
+on:
+  push:
+    paths:
+      - 'Quake/**'
+      - 'tests/**'
+      - '.github/workflows/impulse-regression.yml'
+  pull_request:
+    paths:
+      - 'Quake/**'
+      - 'tests/**'
+      - '.github/workflows/impulse-regression.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check cigarette and skate mechanics
+        run: ./tests/run_gameplay_tests.sh

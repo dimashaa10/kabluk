@@ -7144,7 +7144,7 @@ static void PF_cs_addentities(void)
 			if (!ent->model)
 				continue;
 
-			if (i == cl.viewentity && !chase_active.value)
+			if (i == cl.viewentity && !Chase_Active())
 				continue;
 
 			if (cl_numvisedicts < cl_maxvisedicts)

@@ -36,6 +36,7 @@ static char default_cfg[] =
 "bind 6 \"impulse 6\"\n"
 "bind 7 \"impulse 7\"\n"
 "bind 8 \"impulse 8\"\n"
+"bind 9 \"impulse 9\"\n"
 
 "bind 0 \"impulse 0\"\n"
 

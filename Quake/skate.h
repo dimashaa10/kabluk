@@ -1,0 +1,35 @@
+/* Engine-side prototype skating. Model vertices use the player's origin;
+ * lift is applied to both visible models, never to the player's collision hull.
+ */
+#ifndef QUAKE_SKATE_H
+#define QUAKE_SKATE_H
+
+#define SKATE_MODEL "progs/skate.mdl"
+#define SKATE_MODEL_ROOT "skate.mdl"
+#define SKATE_CLASSNAME "engine_skateboard"
+#define SKATE_RIDER_FRAME 0	// idle stance: do not run in place on the board
+#define SKATE_FLIP_DURATION 0.5f	// one sideways 360-degree roll per jump
+#define SKATE_MAX_SPEED 420.0f
+#define SKATE_ACCELERATION 240.0f
+#define SKATE_ROLLING_DRAG 0.35f
+#define SKATE_SIDE_TRACTION 1.8f
+#define SKATE_BRAKING 5.0f
+#define SKATE_TURN_RATE 120.0f
+#define SKATE_STEER_ANGLE 35.0f
+#define SKATE_INPUT_SCALE 400.0f
+#define SKATE_CAMERA_BACK 140.0f
+#define SKATE_CAMERA_UP 16.0f
+#define SKATE_CAMERA_PITCH 10.0f
+#define SKATE_CAMERA_FOCUS_DROP 16.0f
+#define SKATE_GROUND_CLEARANCE 1.0f
+#define SKATE_MAX_LIFT 64.0f
+
+/* One stock-compatible stat carries both mode and camera lift (1/256 units).
+ * The signature avoids treating another mod's ordinary stat 19 as skating.
+ */
+#define SKATE_STAT_MAGIC 0x534b0000u
+#define SKATE_STAT_MASK 0xffff0000u
+#define SKATE_HEIGHT_MASK 0xffffu
+#define SKATE_HEIGHT_SCALE 256.0f
+
+#endif /* QUAKE_SKATE_H */

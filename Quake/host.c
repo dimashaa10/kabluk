@@ -905,6 +905,8 @@ void SV_DropClient (qboolean crash)
 	int		i;
 	client_t *client;
 
+	SV_SkateStop(host_client);
+
 	if (!crash)
 	{
 		// send any final messages (don't check for errors)
@@ -1071,6 +1073,9 @@ void Host_ClearMemory (void)
 /* host_hunklevel MUST be set at this point */
 	Hunk_FreeToLowMark (host_hunklevel);
 	cls.signon = 0;
+	// Release transient boards before the VM/entity storage is freed.
+	for (int i = 0; i < svs.maxclients; i++)
+		SV_SkateStop(&svs.clients[i]);
 	PR_ClearProgs(&sv.qcvm);
 	free(sv.static_entities);	//spike -- this is dynamic too, now
 	free(sv.ambientsounds);

@@ -3198,7 +3198,11 @@ static void Host_Savegame_f (void)
 	ED_WriteGlobals (f);
 	for (i = 0; i < qcvm->num_edicts; i++)
 	{
-		ED_Write (f, EDICT_NUM(i));
+		// Skate boards are transient engine visuals; mode resets on load.
+		if (SV_IsSkateBoard(EDICT_NUM(i)))
+			fprintf(f, "{\n}\n");
+		else
+			ED_Write (f, EDICT_NUM(i));
 		fflush (f);
 	}
 
