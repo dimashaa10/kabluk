@@ -1,4 +1,4 @@
-# Cigarette input, animation and smoke regression tests
+# Cigarette and skate gameplay regression tests
 
 On Linux, from the repository root:
 
@@ -59,6 +59,12 @@ It covers:
 - Automatic progressive acceleration with no keys, 420 speed limit, gradual
   turns and lateral momentum, S braking and frame-time independence.
 - Unchanged origin/bounds, real ammo and vertical jump velocity; no air boost.
+- One time-based 360-degree sideways roll per upward takeoff, including
+  quarter turns, descending motion, completion/wrap to upright, repeated
+  updates at the same time, landing/rearm and exiting during a flip.
+- No flip on a held jump without takeoff, falling off a ledge, an airborne
+  velocity change, enabling in midair or a water jump; early landing and
+  mode cleanup clear the animation state.
 - Shared model origin, wheels above flat ground and sloped ground beneath the
   corners, non-solid board, ownership, follow/yaw and cleanup after death,
   noclip, deep water, ladder entry and a VM-context change.
@@ -69,7 +75,11 @@ real chase/visual helpers, frustum culling and math code. No OpenGL calls are
 executed. Tests cover rider/board alignment (including remote players), render
 height without moving prediction origins, no accumulated/double height, frustum
 bounds, preserving ordinary chase settings, rider-focused camera, wall tracing,
-foreign/malformed stat guards and invalid board-owner metadata.
+foreign/malformed stat guards and invalid board-owner metadata. Jump-flip
+tests preserve the received roll and verify the real alias matrix keeps
+the board center fixed beneath the upright rider (local and remote),
+including off-center models, different yaw/scale, repeated updates,
+render culling and restoring the original fit at zero roll.
 
 `run_cigarette_impulse_tests.sh` remains a compatibility wrapper for the full
 suite. Some legacy renderer code has an existing unused local; only that warning
@@ -77,5 +87,6 @@ is suppressed when compiling the renderer-inclusive client test.
 
 These are asset-free logic/transform tests, not a live map or screenshot test.
 Actual `progs.dat`, `player.mdl` and the user's prepared `skate.mdl` are needed to
-verify the final visual fit. The prototype has no tricks, banking or separate
-wheel collision; normal player world collision/gravity still handles motion.
+verify the final visual fit. Apart from the automatic jump kickflip, the
+prototype has no other tricks, banking or separate wheel collision; normal
+player world collision/gravity still handles motion.

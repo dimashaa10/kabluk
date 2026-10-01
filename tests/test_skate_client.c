@@ -40,6 +40,13 @@ static void Reset (void)
 	cl.worldmodel = &world_model;
 	cl.stats[STAT_SKATE] = (int)(SKATE_STAT_MAGIC | 7u * 256u);
 	strcpy(board_model.name, SKATE_MODEL);
+	board_model.mins[0] = -32; board_model.mins[1] = -8; board_model.mins[2] = -30;
+	board_model.maxs[0] = 32; board_model.maxs[1] = 8; board_model.maxs[2] = -24;
+	for (i = 0; i < 3; i++)
+	{
+		board_model.rmins[i] = board_model.ymins[i] = -50;
+		board_model.rmaxs[i] = board_model.ymaxs[i] = 50;
+	}
 	player_model.mins[0] = player_model.mins[1] = -16; player_model.mins[2] = -24;
 	player_model.maxs[0] = player_model.maxs[1] = 16; player_model.maxs[2] = 32;
 	for (i = 1; i <= 2; i++)
@@ -86,6 +93,64 @@ static void TestPresentation (void)
 	assert(transform.origin[2] == 24 && !Chase_Active());
 	assert(R_CullModelForEntity(&entities[1]));
 }
+static void TestJumpFlipPresentation (void)
+{
+	static const float rolls[] = {0, 90, 180, 270, 359, 0};
+	static const float yaws[] = {0, 90, 135};
+	int owner, scale, yaw, roll, i, repeat;
+	for (owner = 1; owner <= 2; owner++)
+		for (scale = 1; scale <= 2; scale++)
+			for (yaw = 0; yaw < 3; yaw++)
+			{
+				entity_t *board, *rider;
+				vec3_t upright_origin, upright_angles = {0, 0, 0};
+				vec4_t pivot, expected, actual;
+				mat4_t matrix;
+				lerpdata_t transform = {0};
+				Reset();
+				board = &entities[3]; rider = &entities[owner];
+				board->netstate.colormap = owner;
+				board->netstate.scale = ENTSCALE_DEFAULT * scale;
+				// Off-center prepared models must rotate around their own bounds,
+				// not the player origin, even at another yaw or network scale.
+				board_model.mins[0] += 5; board_model.maxs[0] += 5;
+				board_model.mins[1] += 3; board_model.maxs[1] += 3;
+				rider->angles[YAW] = upright_angles[YAW] = yaws[yaw];
+				VectorCopy(rider->origin, upright_origin);
+				upright_origin[2] += 7;
+				for (i = 0; i < 3; i++) pivot[i] = (board_model.mins[i] + board_model.maxs[i]) * 0.5f;
+				pivot[3] = 1;
+				R_EntityMatrix(matrix, upright_origin, upright_angles, board->netstate.scale);
+				Matrix4_Transform4(matrix, pivot, expected);
+
+				for (roll = 0; roll < 6; roll++)
+				{
+					board->angles[ROLL] = rolls[roll]; // incoming, already interpolated network roll
+					for (repeat = 0; repeat < 3; repeat++)
+					{
+						CL_UpdateSkateVisuals();
+						R_SetupEntityTransform(board, &transform);
+						assert(transform.angles[ROLL] == rolls[roll]); // never overwrite the flip
+						assert(transform.angles[PITCH] == 0 && transform.angles[YAW] == yaws[yaw]);
+						R_EntityMatrix(matrix, transform.origin, transform.angles, board->netstate.scale);
+						Matrix4_Transform4(matrix, pivot, actual);
+						for (i = 0; i < 3; i++) assert(fabsf(actual[i] - expected[i]) < 0.001f);
+						assert(rider->origin[2] == 24 && CL_EntitySkateLift(rider) == 7);
+						assert(rider->angles[ROLL] == 0 && rider->angles[PITCH] == 0);
+						assert(board->msg_origins[0][2] == 31); // server lift metadata is untouched
+					}
+					for (i = 0; i < 4; i++)
+					{
+						memset(&frustum[i], 0, sizeof(frustum[i]));
+						frustum[i].normal[2] = 1; frustum[i].dist = expected[2];
+					}
+					assert(!R_CullModelForEntity(board)); // the flipping board center stays visible
+					R_SetupEntityTransform(rider, &transform);
+					assert(transform.origin[2] == 31 && transform.angles[ROLL] == 0);
+				}
+				assert(VectorCompare(board->origin, upright_origin)); // lands with the original fit
+			}
+}
 static void TestRemoteAndGuards (void)
 {
 	entity_t temporary = {0};
@@ -129,8 +194,9 @@ static void TestCamera (void)
 }
 int main (void)
 {
-	TestPresentation(); TestRemoteAndGuards(); TestCamera();
+	TestPresentation(); TestJumpFlipPresentation(); TestRemoteAndGuards(); TestCamera();
 	puts("PASS: skate third-person camera, rider/board alignment, real alias transforms and culling.");
+	puts("PASS: local/remote jump roll, stable board-center pivot, yaw/scale and no accumulated offsets.");
 	puts("PASS: remote riders, unchanged prediction origins, camera restore, malformed/foreign-state guards.");
 	return 0;
 }

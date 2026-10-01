@@ -248,6 +248,9 @@ typedef struct client_s
 	edict_t			*skate_board;		// transient, non-solid visual entity
 	float			skate_yaw;
 	float			skate_lift;
+	qboolean		skate_grounded;		// rearm a flip only after touching ground
+	qboolean		skate_flip_active;
+	double			skate_flip_start_time;
 } client_t;
 
 

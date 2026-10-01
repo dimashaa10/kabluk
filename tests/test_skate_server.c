@@ -235,6 +235,104 @@ static void TestMotion (void)
 	Step(0.05);
 	assert(client.edict->v.velocity[0] == 0); // normal walking does not auto drive
 }
+static void TestJumpFlip (void)
+{
+	edict_t *board;
+	double start;
+	float previous = 0, total = 0;
+	int i;
+	Reset(); Command(NULL);
+	board = client.skate_board;
+	assert(client.skate_grounded && !client.skate_flip_active && board->v.angles[ROLL] == 0);
+	client.edict->v.flags = 0; // simulate the actual upward takeoff after QC/physics
+	client.edict->v.button2 = 1;
+	client.edict->v.velocity[2] = 270;
+	SV_SkateUpdate(&client);
+	start = qcvm->time;
+	assert(client.skate_flip_active && !client.skate_grounded);
+	assert(client.skate_flip_start_time == start && board->v.angles[ROLL] == 0);
+
+	for (i = 1; i <= 4; i++)
+	{
+		float delta;
+		qcvm->time = start + SKATE_FLIP_DURATION * i / 4;
+		if (i == 3) client.edict->v.velocity[2] = -135; // keep flipping while descending
+		SV_SkateUpdate(&client);
+		assert(board->v.angles[ROLL] == (i == 4 ? 0 : i * 90));
+		delta = board->v.angles[ROLL] - previous;
+		if (delta < 0) delta += 360;
+		total += delta;
+		previous = board->v.angles[ROLL];
+		assert(client.edict->v.angles[ROLL] == 0 && client.edict->v.angles[PITCH] == 0);
+		assert(board->v.angles[PITCH] == 0 && board->v.angles[YAW] == client.skate_yaw);
+		assert(board->v.origin[2] == 31 && client.skate_lift == 7);
+		assert(client.edict->v.velocity[2] == (i >= 3 ? -135 : 270));
+		CheckPhysical();
+		SV_SkateUpdate(&client); // same timestamp: no frame-dependent extra rotation
+		assert(board->v.angles[ROLL] == previous);
+	}
+	assert(total == 360 && !client.skate_flip_active && traces == 4);
+	qcvm->time += 1;
+	client.edict->v.velocity[2] = 270; // no repeat/double flip until landing
+	SV_SkateUpdate(&client);
+	assert(!client.skate_flip_active && board->v.angles[ROLL] == 0);
+
+	client.edict->v.flags = FL_ONGROUND;
+	SV_SkateUpdate(&client);
+	assert(client.skate_grounded);
+	client.edict->v.flags = 0;
+	SV_SkateUpdate(&client);
+	assert(client.skate_flip_active && client.skate_flip_start_time == qcvm->time);
+	qcvm->time += SKATE_FLIP_DURATION / 4;
+	SV_SkateUpdate(&client);
+	assert(board->v.angles[ROLL] == 90); // next jump gets its own full turn
+	Command("0");
+	assert(!client.skate_flip_active && !client.skate_grounded && client.skate_flip_start_time == 0);
+	Command("1"); // enabling while already airborne must not invent a jump
+	assert(!client.skate_flip_active && client.skate_board->v.angles[ROLL] == 0);
+}
+static void TestJumpFlipGuards (void)
+{
+	int i;
+	Reset(); Command(NULL);
+	client.edict->v.button2 = 1;
+	for (i = 0; i < 5; i++)
+	{
+		qcvm->time += 0.1;
+		SV_SkateUpdate(&client); // jump held, but no actual takeoff
+		assert(!client.skate_flip_active && client.skate_board->v.angles[ROLL] == 0);
+	}
+	client.edict->v.flags = 0;
+	client.edict->v.velocity[2] = -100; // rolling off a ledge is not a jump
+	SV_SkateUpdate(&client);
+	assert(!client.skate_flip_active);
+	client.edict->v.velocity[2] = 270;
+	SV_SkateUpdate(&client);
+	assert(!client.skate_flip_active); // an airborne velocity change is not another takeoff
+
+	Reset(); client.edict->v.flags = 0; client.edict->v.velocity[2] = 270;
+	Command(NULL);
+	qcvm->time += 0.1;
+	SV_SkateUpdate(&client);
+	assert(!client.skate_flip_active && client.skate_board->v.angles[ROLL] == 0);
+
+	Reset(); Command(NULL);
+	client.edict->v.flags = FL_WATERJUMP;
+	client.edict->v.velocity[2] = 270;
+	SV_SkateUpdate(&client);
+	assert(!client.skate_flip_active);
+
+	Reset(); Command(NULL);
+	client.edict->v.flags = 0; client.edict->v.velocity[2] = 270;
+	SV_SkateUpdate(&client);
+	qcvm->time += SKATE_FLIP_DURATION / 4;
+	SV_SkateUpdate(&client);
+	assert(client.skate_board->v.angles[ROLL] == 90);
+	client.edict->v.flags = FL_ONGROUND; // short jump/early landing returns to flat
+	SV_SkateUpdate(&client);
+	assert(!client.skate_flip_active && client.skate_grounded);
+	assert(client.skate_flip_start_time == 0 && client.skate_board->v.angles[ROLL] == 0);
+}
 static void TestSlopeAndCleanup (void)
 {
 	int reason;
@@ -251,12 +349,16 @@ static void TestSlopeAndCleanup (void)
 	for (reason = 0; reason < 4; reason++)
 	{
 		Reset(); Command(NULL);
+		client.edict->v.flags = 0; client.edict->v.velocity[2] = 270;
+		SV_SkateUpdate(&client);
+		assert(client.skate_flip_active);
 		if (reason == 0) client.edict->v.health = 0;
 		if (reason == 1) client.edict->v.movetype = MOVETYPE_NOCLIP;
 		if (reason == 2) client.edict->v.waterlevel = 2;
 		if (reason == 3) client.edict->onladder = true;
 		SV_SkateUpdate(&client);
 		assert(!client.skate_active && frees == 1 && SV_SkateStat(&client) == 0);
+		assert(!client.skate_flip_active && !client.skate_grounded && client.skate_flip_start_time == 0);
 	}
 	Reset(); Command(NULL);
 	client.skate_board->v.classname = 0; // slot was reused by unrelated QC
@@ -281,8 +383,10 @@ static void TestGuards (void)
 }
 int main (void)
 {
-	TestToggleAndPlacement(); TestMotion(); TestSlopeAndCleanup(); TestGuards();
+	TestToggleAndPlacement(); TestMotion(); TestJumpFlip(); TestJumpFlipGuards();
+	TestSlopeAndCleanup(); TestGuards();
 	puts("PASS: skate command, forward acceleration, cap, gradual steering, drift and braking.");
+	puts("PASS: one time-based 360-degree jump flip, upright rider, landing/rearm and takeoff guards.");
 	puts("PASS: board placement/ground clearance, unchanged hull/jump/ammo, lifetime and guards.");
 	return 0;
 }

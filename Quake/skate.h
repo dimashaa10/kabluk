@@ -8,6 +8,7 @@
 #define SKATE_MODEL_ROOT "skate.mdl"
 #define SKATE_CLASSNAME "engine_skateboard"
 #define SKATE_RIDER_FRAME 0	// idle stance: do not run in place on the board
+#define SKATE_FLIP_DURATION 0.5f	// one sideways 360-degree roll per jump
 #define SKATE_MAX_SPEED 420.0f
 #define SKATE_ACCELERATION 240.0f
 #define SKATE_ROLLING_DRAG 0.35f

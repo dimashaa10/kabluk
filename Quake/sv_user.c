@@ -532,6 +532,9 @@ void SV_SkateStop (client_t *client)
 	client->skate_board = NULL;
 	client->skate_lift = 0;
 	client->skate_yaw = 0;
+	client->skate_grounded = false;
+	client->skate_flip_active = false;
+	client->skate_flip_start_time = 0;
 }
 
 int SV_SkateStat (const client_t *client)
@@ -580,6 +583,40 @@ static float SV_SkateGroundLift (edict_t *ent, const qmodel_t *model)
 	return CLAMP(SKATE_GROUND_CLEARANCE, lift, SKATE_MAX_LIFT);
 }
 
+static float SV_SkateJumpRoll (client_t *client, const edict_t *ent)
+{
+	qboolean grounded = !!((int)ent->v.flags & FL_ONGROUND);
+	double elapsed;
+
+	if (grounded)
+	{
+		client->skate_flip_active = false;
+		client->skate_flip_start_time = 0;
+	}
+	else if (client->skate_grounded && ent->v.velocity[2] > 0 &&
+		!((int)ent->v.flags & FL_WATERJUMP))
+	{
+		// An upward takeoff, not merely holding jump or falling off an edge.
+		// Normal QuakeC/native jump physics have already run at this point.
+		client->skate_flip_active = true;
+		client->skate_flip_start_time = qcvm->time;
+	}
+	client->skate_grounded = grounded;
+	if (!client->skate_flip_active)
+		return 0;
+
+	elapsed = qcvm->time - client->skate_flip_start_time;
+	if (elapsed < 0 || elapsed >= SKATE_FLIP_DURATION)
+	{
+		// Zero is the same orientation as 360. Stay upright until the next
+		// actual takeoff; landing (including a low ceiling) also resets us.
+		client->skate_flip_active = false;
+		client->skate_flip_start_time = 0;
+		return 0;
+	}
+	return 360.0f * (elapsed / SKATE_FLIP_DURATION);
+}
+
 void SV_SkateUpdate (client_t *client)
 {
 	edict_t *ent = client->edict, *board = client->skate_board;
@@ -593,15 +630,17 @@ void SV_SkateUpdate (client_t *client)
 		return;
 	}
 
-	// Upright rider and board share the prepared model origin and yaw.
+	// Keep the rider upright; only the board rolls during a jump.
+	// Both still share the prepared model origin and heading on the wire.
 	ent->v.angles[PITCH] = ent->v.angles[ROLL] = 0;
 	ent->v.angles[YAW] = client->skate_yaw;
 	ent->v.frame = SKATE_RIDER_FRAME;
 	client->skate_lift = SV_SkateGroundLift(ent, model);
 	VectorCopy(ent->v.origin, board->v.origin);
 	board->v.origin[2] += client->skate_lift;
-	board->v.angles[PITCH] = board->v.angles[ROLL] = 0;
+	board->v.angles[PITCH] = 0;
 	board->v.angles[YAW] = client->skate_yaw;
+	board->v.angles[ROLL] = SV_SkateJumpRoll(client, ent);
 	SV_LinkEdict(board, false);
 }
 
@@ -727,9 +766,12 @@ void SV_Skate_f (void)
 	host_client->skate_board = board;
 	host_client->skate_active = true;
 	host_client->skate_yaw = ent->v.v_angle[YAW];
+	host_client->skate_grounded = !!((int)ent->v.flags & FL_ONGROUND);
+	host_client->skate_flip_active = false;
+	host_client->skate_flip_start_time = 0;
 	host_client->usingpmove = false; // stock client prediction does not know skating
 	SV_SkateUpdate(host_client);
-	SV_ClientPrintf("Skate ON: mouse/A-D steer, S brakes, jump is unchanged.\n");
+	SV_ClientPrintf("Skate ON: mouse/A-D steer, S brakes, jump flips the board.\n");
 }
 
 /*

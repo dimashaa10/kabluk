@@ -97,8 +97,25 @@ void CL_UpdateSkateVisuals (void)
 		// transform. The exported relative positions of both models stay intact.
 		VectorCopy(rider->origin, board->origin);
 		board->origin[2] += lift;
-		board->angles[PITCH] = board->angles[ROLL] = 0;
+		board->angles[PITCH] = 0;
 		board->angles[YAW] = rider->angles[YAW];
+		// Keep the already network-interpolated roll. The prepared model's
+		// origin is at the rider, not at the board: compensate so a kickflip
+		// rotates about the board's own center instead of orbiting the feet.
+		if (board->angles[ROLL])
+		{
+			float roll = DEG2RAD(board->angles[ROLL]);
+			float yaw = DEG2RAD(board->angles[YAW]);
+			float c = cosf(roll), s = sinf(roll);
+			float y = (board->model->mins[1] + board->model->maxs[1]) * 0.5f;
+			float z = (board->model->mins[2] + board->model->maxs[2]) * 0.5f;
+			float scale = ENTSCALE_DECODE(board->netstate.scale);
+			float side = (y * (1.0f - c) + z * s) * scale;
+			float height = (z * (1.0f - c) - y * s) * scale;
+			board->origin[0] -= sinf(yaw) * side;
+			board->origin[1] += cosf(yaw) * side;
+			board->origin[2] += height;
+		}
 		board->lerpflags &= ~LERP_MOVESTEP;
 	}
 }
