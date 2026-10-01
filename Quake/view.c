@@ -71,13 +71,17 @@ cvar_t	gl_cshiftpercent_dead = {"gl_cshiftpercent_dead", "0", CVAR_ARCHIVE}; // 
 
 cvar_t	r_viewmodel_quake = {"r_viewmodel_quake", "0", CVAR_ARCHIVE};
 
-// Client-side presentation for the v_siga.mdl viewmodel. Offsets are in world
-// units relative to the camera: forward, screen-right, and screen-up.
+// Client-side presentation and animation settings for the v_siga.mdl viewmodel.
+// Offsets are in world units relative to the camera: forward, screen-right, and screen-up.
 cvar_t	cl_siga_smoke = {"cl_siga_smoke", "1", CVAR_ARCHIVE};
 cvar_t	cl_siga_smoke_forward = {"cl_siga_smoke_forward", "16", CVAR_ARCHIVE};
 cvar_t	cl_siga_smoke_right = {"cl_siga_smoke_right", "8", CVAR_ARCHIVE};
 cvar_t	cl_siga_smoke_up = {"cl_siga_smoke_up", "-7", CVAR_ARCHIVE};
 cvar_t	cl_siga_smoke_interval = {"cl_siga_smoke_interval", "0.12", CVAR_ARCHIVE};
+cvar_t	cl_siga_anim_idle = {"cl_siga_anim_idle", "0", CVAR_ARCHIVE};
+cvar_t	cl_siga_anim_start = {"cl_siga_anim_start", "1", CVAR_ARCHIVE};
+cvar_t	cl_siga_anim_end = {"cl_siga_anim_end", "0", CVAR_ARCHIVE};
+cvar_t	cl_siga_anim_interval = {"cl_siga_anim_interval", "0.1", CVAR_ARCHIVE};
 
 float	v_dmg_time, v_dmg_roll, v_dmg_pitch;
 
@@ -875,10 +879,14 @@ static void V_EmitCigaretteSmoke (entity_t *view)
 	static double next_smoke_time;
 	vec3_t forward, right, up, smokeorg, smoke_dir = {0, 0, 1};
 	float interval;
+	int idle_frame = (int)cl_siga_anim_idle.value;
+
+	if (idle_frame < 0)
+		idle_frame = 0;
 
 	if (!cl_siga_smoke.value || !view->model ||
 		q_strcasecmp(view->model->name, "progs/v_siga.mdl") != 0 ||
-		!(in_attack.state & 1) || cl.stats[STAT_HEALTH] <= 0 ||
+		(!(in_attack.state & 1) && view->frame == idle_frame) || cl.stats[STAT_HEALTH] <= 0 ||
 		!r_drawviewmodel.value || chase_active.value || scr_viewsize.value >= 130)
 	{
 		next_smoke_time = 0;
@@ -1168,5 +1176,9 @@ void V_Init (void)
 	Cvar_RegisterVariable (&cl_siga_smoke_right);
 	Cvar_RegisterVariable (&cl_siga_smoke_up);
 	Cvar_RegisterVariable (&cl_siga_smoke_interval);
+	Cvar_RegisterVariable (&cl_siga_anim_idle);
+	Cvar_RegisterVariable (&cl_siga_anim_start);
+	Cvar_RegisterVariable (&cl_siga_anim_end);
+	Cvar_RegisterVariable (&cl_siga_anim_interval);
 }
 

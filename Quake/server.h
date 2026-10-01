@@ -236,6 +236,10 @@ typedef struct client_s
 	qboolean		knowntoqc;			// putclientinserver was called
 	qboolean		csqcactive;			// its prepared to accept csqc entities.
 	int				powerup_warn_flags;	// woods - #resurrect #giveflags for powerup warning sounds
+	qboolean		siga_active;		// engine-managed progs/v_siga.mdl viewmodel active
+	qboolean		siga_smoking;		// cigarette animation active
+	int				siga_frame;			// current cigarette weaponframe
+	double			siga_next_frame_time;
 } client_t;
 
 
@@ -377,6 +381,9 @@ void SV_CheckDuplicateNames(client_t* client); // woods #dupnames
 
 void SV_ProcessTimerExecution(void); // woods #svtimer
 void SV_CleanupTimer(void); // woods #svtimer
+
+void SV_CigarettePreThink (client_t *client, edict_t *ent, float *saved_button0, int *saved_impulse);
+void SV_CigarettePostThink (client_t *client, edict_t *ent, float saved_button0, int saved_impulse);
 
 #endif	/* _QUAKE_SERVER_H */
 

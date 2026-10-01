@@ -4004,6 +4004,8 @@ void SV_SpawnServer (const char *server)
 	sv.active = true;
 
 	SV_Precache_Model("progs/player.mdl");	//Spike -- SV_CreateBaseline depends on this model.
+	if (COM_FileExists("progs/v_siga.mdl", NULL))
+		SV_Precache_Model("progs/v_siga.mdl");
 
 // all setup is completed, any further precache statements are errors
 	sv.state = ss_active;

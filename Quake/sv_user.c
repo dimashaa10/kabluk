@@ -29,6 +29,10 @@ edict_t	*sv_player;
 extern	cvar_t	sv_friction;
 cvar_t	sv_edgefriction = {"edgefriction", "2", CVAR_NONE};
 extern	cvar_t	sv_stopspeed;
+extern	cvar_t	cl_siga_anim_idle;
+extern	cvar_t	cl_siga_anim_start;
+extern	cvar_t	cl_siga_anim_end;
+extern	cvar_t	cl_siga_anim_interval;
 
 static	vec3_t		forward, right, up;
 
@@ -483,6 +487,165 @@ void SV_ClientThink (void)
 
 /*
 ===================
+SV_CigarettePreThink / SV_CigarettePostThink
+
+Engine-side support for equipping progs/v_siga.mdl on impulse 9 without
+firing a combat shot on +attack, and driving its smoking weaponframe
+animation when QuakeC does not handle impulse 9 natively.
+===================
+*/
+void SV_CigarettePreThink (client_t *client, edict_t *ent, float *saved_button0, int *saved_impulse)
+{
+	*saved_button0 = ent->v.button0;
+	*saved_impulse = (int)ent->v.impulse;
+
+	if (ent->v.health <= 0 || ent->v.deadflag)
+	{
+		client->siga_active = false;
+		client->siga_smoking = false;
+		client->siga_frame = 0;
+		client->siga_next_frame_time = 0;
+		return;
+	}
+
+	if (client->siga_active && q_strcasecmp(PR_GetString(ent->v.weaponmodel), "progs/v_siga.mdl") != 0)
+	{
+		client->siga_active = false;
+		client->siga_smoking = false;
+		client->siga_frame = 0;
+		client->siga_next_frame_time = 0;
+	}
+
+	if (client->siga_active)
+	{
+		ent->v.button0 = 0;
+		if (qcvm->extglobals.input_buttons)
+			*qcvm->extglobals.input_buttons = (int)*qcvm->extglobals.input_buttons & ~1;
+	}
+}
+
+void SV_CigarettePostThink (client_t *client, edict_t *ent, float saved_button0, int saved_impulse)
+{
+	int mod_idx, numframes, idle_frame, start_frame, end_frame;
+	float interval;
+	qmodel_t *mod;
+
+	if (ent->v.health <= 0 || ent->v.deadflag)
+	{
+		client->siga_active = false;
+		client->siga_smoking = false;
+		client->siga_frame = 0;
+		client->siga_next_frame_time = 0;
+		return;
+	}
+
+	if (saved_impulse == 9 && (int)ent->v.impulse == 0)
+	{
+		if (q_strcasecmp(PR_GetString(ent->v.weaponmodel), "progs/v_siga.mdl") != 0)
+		{
+			if (COM_FileExists("progs/v_siga.mdl", NULL))
+			{
+				mod_idx = SV_Precache_Model("progs/v_siga.mdl");
+				if (mod_idx > 0)
+				{
+					idle_frame = (int)cl_siga_anim_idle.value;
+					if (idle_frame < 0)
+						idle_frame = 0;
+					ent->v.weaponmodel = PR_SetEngineString("progs/v_siga.mdl");
+					ent->v.weaponframe = idle_frame;
+					ent->v.currentammo = 0;
+					client->siga_active = true;
+					client->siga_smoking = false;
+					client->siga_frame = idle_frame;
+					client->siga_next_frame_time = 0;
+				}
+			}
+		}
+	}
+
+	if (!client->siga_active)
+		return;
+
+	if (q_strcasecmp(PR_GetString(ent->v.weaponmodel), "progs/v_siga.mdl") != 0)
+	{
+		client->siga_active = false;
+		client->siga_smoking = false;
+		client->siga_frame = 0;
+		client->siga_next_frame_time = 0;
+		return;
+	}
+
+	mod_idx = SV_ModelIndex("progs/v_siga.mdl");
+	mod = (mod_idx > 0 && mod_idx < MAX_MODELS) ? sv.models[mod_idx] : NULL;
+	numframes = (mod && mod->numframes > 0) ? mod->numframes : 1;
+
+	idle_frame = (int)cl_siga_anim_idle.value;
+	if (idle_frame < 0 || idle_frame >= numframes)
+		idle_frame = 0;
+
+	start_frame = (int)cl_siga_anim_start.value;
+	if (start_frame < 0)
+		start_frame = 0;
+	if (start_frame >= numframes)
+		start_frame = numframes - 1;
+
+	end_frame = (int)cl_siga_anim_end.value;
+	if (end_frame <= 0 || end_frame >= numframes)
+		end_frame = numframes - 1;
+	if (end_frame < start_frame)
+		end_frame = start_frame;
+
+	interval = cl_siga_anim_interval.value;
+	if (interval < 0.02f)
+		interval = 0.02f;
+	else if (interval > 2.0f)
+		interval = 2.0f;
+
+	if (saved_button0)
+	{
+		if (!client->siga_smoking)
+		{
+			client->siga_smoking = true;
+			client->siga_frame = start_frame;
+			client->siga_next_frame_time = qcvm->time + interval;
+		}
+		else if (qcvm->time >= client->siga_next_frame_time)
+		{
+			if (client->siga_frame < start_frame || client->siga_frame >= end_frame)
+				client->siga_frame = start_frame;
+			else
+				client->siga_frame++;
+			client->siga_next_frame_time = qcvm->time + interval;
+		}
+	}
+	else if (client->siga_smoking)
+	{
+		if (qcvm->time >= client->siga_next_frame_time)
+		{
+			if (client->siga_frame >= start_frame && client->siga_frame < end_frame)
+			{
+				client->siga_frame++;
+				client->siga_next_frame_time = qcvm->time + interval;
+			}
+			else
+			{
+				client->siga_smoking = false;
+				client->siga_frame = idle_frame;
+				client->siga_next_frame_time = 0;
+			}
+		}
+	}
+	else
+	{
+		client->siga_frame = idle_frame;
+	}
+
+	ent->v.weaponframe = client->siga_frame;
+}
+
+
+/*
+===================
 SV_ReadClientMove
 ===================
 */
@@ -650,6 +813,10 @@ void SV_ReadClientMove (usercmd_t *move)
 		if (qcvm->extglobals.input_cursor_entitynumber)
 			*qcvm->extglobals.input_cursor_entitynumber = curs_entity;
 
+		float saved_button0;
+		int saved_impulse;
+
+		SV_CigarettePreThink(host_client, host_client->edict, &saved_button0, &saved_impulse);
 		VectorCopy(host_client->edict->v.velocity, savedvel);
 		pr_global_struct->self = EDICT_TO_PROG(host_client->edict);
 		PR_ExecuteProgram(pr_global_struct->PlayerPreThink);
@@ -679,6 +846,7 @@ void SV_ReadClientMove (usercmd_t *move)
 
 		pr_global_struct->self = EDICT_TO_PROG(host_client->edict);
 		PR_ExecuteProgram(pr_global_struct->PlayerPostThink);
+		SV_CigarettePostThink(host_client, host_client->edict, saved_button0, saved_impulse);
 	}
 }
 
