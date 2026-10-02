@@ -10,9 +10,9 @@
 #define SKATE_RIDER_FRAME 0	// idle stance: do not run in place on the board
 #define SKATE_FLIP_DURATION 0.5f	// one sideways 360-degree roll per jump
 #define SKATE_MAX_SPEED 420.0f
-#define SKATE_ACCELERATION 240.0f
-#define SKATE_ROLLING_DRAG 0.35f
-#define SKATE_SIDE_TRACTION 1.8f
+#define SKATE_ACCELERATION 420.0f
+#define SKATE_ROLLING_DRAG 0.65f
+#define SKATE_SIDE_TRACTION 3.5f
 #define SKATE_BRAKING 5.0f
 #define SKATE_TURN_RATE 120.0f
 #define SKATE_STEER_ANGLE 35.0f

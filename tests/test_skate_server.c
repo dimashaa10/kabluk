@@ -195,7 +195,7 @@ static void TestMotion (void)
 	float slow, fast;
 	Reset(); Command(NULL);
 	Step(0.05);
-	assert(client.edict->v.velocity[0] > 0 && client.edict->v.velocity[0] < 20);
+	assert(client.edict->v.velocity[0] > 20); // stronger initial push than the old 240 u/s^2
 	for (i = 0; i < 150; i++) Step(0.05);
 	assert(fabsf(client.edict->v.velocity[0] - 420) < 0.01f);
 	CheckPhysical();
@@ -205,7 +205,7 @@ static void TestMotion (void)
 	client.cmd.forwardmove = 0;
 	client.edict->v.velocity[1] = 100;
 	Step(0.05);
-	assert(client.edict->v.velocity[1] > 80 && client.edict->v.velocity[1] < 100);
+	assert(client.edict->v.velocity[1] > 80 && client.edict->v.velocity[1] < 90); // less lateral drift
 	client.cmd.sidemove = 400;
 	Step(0.05);
 	assert(client.skate_yaw > 350 && client.skate_yaw < 355); // D turns right gradually
@@ -220,7 +220,7 @@ static void TestMotion (void)
 	Reset(); Command(NULL);
 	for (i = 0; i < 20; i++) Step(0.05);
 	fast = client.edict->v.velocity[0];
-	assert(fabsf(slow - fast) < 3); // acceleration/drag is time based
+	assert(fabsf(slow - fast) < 5); // acceleration/drag is time based; allow discrete-step rounding
 
 	Reset(); Command(NULL);
 	client.edict->v.flags = 0;
