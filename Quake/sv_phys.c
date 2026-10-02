@@ -345,6 +345,10 @@ int SV_FlyMove (edict_t *ent, float time, trace_t *steptrace)
 
 	numbumps = 4;
 
+	// If a grind is already latched, keep the rider on its wall plane before
+	// calculating this frame's swept movement.
+	SV_SkateWallSlideMove(ent);
+
 	blocked = 0;
 	VectorCopy (ent->v.velocity, original_velocity);
 	VectorCopy (ent->v.velocity, primal_velocity);
@@ -404,9 +408,17 @@ int SV_FlyMove (edict_t *ent, float time, trace_t *steptrace)
 		if (ent->free)
 			break;		// removed by the impact function
 
-		// A held skate-slide redirects high-speed wall impacts along the brush face.
-		if (SV_SkateWallSlide(ent, trace.plane.normal, original_velocity))
-			return blocked & ~2; // don't retry this as a step
+		// A held skate-slide latches to brush faces and spends the remaining
+		// frame moving tangentially instead of retrying this collision as a step.
+		if (SV_SkateWallSlide(ent, trace.ent, trace.plane.normal, original_velocity))
+		{
+			blocked &= ~2;
+			time_left -= time_left * trace.fraction;
+			VectorCopy(ent->v.velocity, original_velocity);
+			VectorCopy(ent->v.velocity, primal_velocity);
+			numplanes = 0;
+			continue;
+		}
 
 		// Skate jumps bounce away from high-speed impacts on vertical walls.
 		if (SV_SkateWallBounce(ent, trace.plane.normal, original_velocity))

@@ -510,6 +510,13 @@ static qboolean SV_SkateBoardValid (const client_t *client)
 		client->edict && client->skate_board->v.owner == EDICT_TO_PROG(client->edict);
 }
 
+static void SV_SkateSlideClear (client_t *client)
+{
+	client->skate_sliding = false;
+	VectorClear(client->skate_slide_normal);
+	client->skate_slide_surface = NULL;
+}
+
 void SV_SkateStop (client_t *client)
 {
 	if (client->skate_board && sv.qcvm.edicts)
@@ -535,6 +542,7 @@ void SV_SkateStop (client_t *client)
 	client->skate_grounded = false;
 	client->skate_jump_active = false;
 	client->skate_slide_held = false;
+	SV_SkateSlideClear(client);
 	client->skate_flip_active = false;
 	client->skate_flip_start_time = 0;
 }
@@ -655,19 +663,56 @@ void SV_SkateMove (client_t *client, edict_t *ent, const usercmd_t *move, double
 	if (!client->skate_active || !SV_SkateCanRide(ent) || dt <= 0)
 		return;
 	dt = q_min(dt, 0.1);
-	desired = ent->v.v_angle[YAW] - CLAMP(-1.0f, move->sidemove / SKATE_INPUT_SCALE, 1.0f) * SKATE_STEER_ANGLE;
-	delta = desired - client->skate_yaw;
-	delta -= 360.0f * floorf((delta + 180.0f) / 360.0f);
-	step = SKATE_TURN_RATE * dt;
-	client->skate_yaw = anglemod(client->skate_yaw + CLAMP(-step, delta, step));
+	if (!client->skate_sliding)
+	{
+		desired = ent->v.v_angle[YAW] - CLAMP(-1.0f, move->sidemove / SKATE_INPUT_SCALE, 1.0f) * SKATE_STEER_ANGLE;
+		delta = desired - client->skate_yaw;
+		delta -= 360.0f * floorf((delta + 180.0f) / 360.0f);
+		step = SKATE_TURN_RATE * dt;
+		client->skate_yaw = anglemod(client->skate_yaw + CLAMP(-step, delta, step));
+	}
 	ent->v.angles[PITCH] = ent->v.angles[ROLL] = 0;
 	ent->v.angles[YAW] = client->skate_yaw;
+
+	a[YAW] = client->skate_yaw;
+	AngleVectors(a, fwd, side, up);
+
+	if (client->skate_sliding)
+	{
+		float tx = -client->skate_slide_normal[1];
+		float ty = client->skate_slide_normal[0];
+		float slide_speed = ent->v.velocity[0] * tx + ent->v.velocity[1] * ty;
+		float forward_projection = fwd[0] * tx + fwd[1] * ty;
+
+		// Keep momentum along the wall; ordinary lateral skate friction would
+		// otherwise kill a grind in a few frames. The player can still brake or
+		// add speed when their board points along the face.
+		slide_speed *= expf(-SKATE_ROLLING_DRAG * dt);
+		if (move->forwardmove < -1)
+		{
+			slide_speed *= expf(-SKATE_BRAKING * dt);
+			if (fabsf(slide_speed) < 2)
+				slide_speed = 0;
+		}
+		else
+			slide_speed += SKATE_ACCELERATION *
+				(1.0f + 0.3f * CLAMP(0.0f, move->forwardmove / SKATE_INPUT_SCALE, 1.0f)) *
+				forward_projection * dt;
+
+		slide_speed = CLAMP(-SKATE_MAX_SPEED, slide_speed, SKATE_MAX_SPEED);
+		ent->v.velocity[0] = tx * slide_speed;
+		ent->v.velocity[1] = ty * slide_speed;
+		if (fabsf(slide_speed) > SKATE_SLIDE_DIRECTION_EPSILON)
+		{
+			client->skate_yaw = anglemod(atan2f(ent->v.velocity[1], ent->v.velocity[0]) / M_PI_DIV_180);
+			ent->v.angles[YAW] = client->skate_yaw;
+		}
+		return;
+	}
 
 	if (!((int)ent->v.flags & FL_ONGROUND) || ((int)ent->v.flags & FL_WATERJUMP))
 		return; // retain airborne momentum; native gravity/jump/collision still run
 
-	a[YAW] = client->skate_yaw;
-	AngleVectors(a, fwd, side, up);
 	forwardspeed = ent->v.velocity[0] * fwd[0] + ent->v.velocity[1] * fwd[1];
 	sidespeed = ent->v.velocity[0] * side[0] + ent->v.velocity[1] * side[1];
 	forwardspeed *= expf(-SKATE_ROLLING_DRAG * dt);
@@ -703,27 +748,144 @@ static client_t *SV_SkateClientForEnt (const edict_t *ent)
 	return NULL;
 }
 
-qboolean SV_SkateWallSlide (edict_t *ent, const vec3_t normal, const vec3_t incoming_velocity)
+static qboolean SV_SkateFlatNormal (const vec3_t normal, float *nx, float *ny)
+{
+	float length;
+
+	if (!normal || fabsf(normal[2]) > SKATE_WALL_BOUNCE_MAX_NORMAL_Z)
+		return false;
+	length = sqrtf(normal[0] * normal[0] + normal[1] * normal[1]);
+	if (length < 0.9f)
+		return false;
+	*nx = normal[0] / length;
+	*ny = normal[1] / length;
+	return true;
+}
+
+static qboolean SV_SkateSlideFaceProbe (edict_t *ent, client_t *client,
+	float height, vec3_t hitpoint)
+{
+	vec3_t start, end, point, zero = {0, 0, 0};
+	trace_t trace;
+	float hit_nx, hit_ny;
+
+	VectorCopy(ent->v.origin, point);
+	point[2] += height;
+	VectorMA(point, SKATE_SLIDE_PROBE_DISTANCE, client->skate_slide_normal, start);
+	VectorMA(point, -SKATE_SLIDE_PROBE_DISTANCE, client->skate_slide_normal, end);
+	trace = SV_Move(start, zero, zero, end, MOVE_NOMONSTERS, ent);
+	if (trace.fraction == 1 || trace.startsolid || trace.allsolid ||
+		trace.ent != client->skate_slide_surface ||
+		!SV_SkateFlatNormal(trace.plane.normal, &hit_nx, &hit_ny))
+		return false;
+	if (hit_nx * client->skate_slide_normal[0] +
+		hit_ny * client->skate_slide_normal[1] < SKATE_SLIDE_MIN_NORMAL_DOT)
+		return false;
+	VectorCopy(trace.endpos, hitpoint);
+	return true;
+}
+
+qboolean SV_SkateWallSlideMove (edict_t *ent)
+{
+	client_t *client = SV_SkateClientForEnt(ent);
+	vec3_t point, start, end;
+	float nx, ny, radius, distance, correction, normal_speed;
+	float heights[3];
+	int i;
+	trace_t trace;
+
+	if (!client || !client->skate_sliding)
+		return false;
+	if (!client->active || !client->skate_active || !client->skate_slide_held ||
+		((int)ent->v.flags & FL_WATERJUMP) ||
+		!SV_SkateFlatNormal(client->skate_slide_normal, &nx, &ny))
+	{
+		SV_SkateSlideClear(client);
+		return false;
+	}
+
+	// Probe at the rider's center and near both ends of the hull so the grind
+	// survives small ledges, but releases once this face really runs out.
+	heights[0] = 0.5f * (ent->v.mins[2] + ent->v.maxs[2]);
+	heights[1] = ent->v.mins[2] + SKATE_SLIDE_PROBE_HEIGHT_MARGIN;
+	heights[2] = ent->v.maxs[2] - SKATE_SLIDE_PROBE_HEIGHT_MARGIN;
+	for (i = 0; i < 3; i++)
+		if (SV_SkateSlideFaceProbe(ent, client, heights[i], point))
+			break;
+	if (i == 3)
+	{
+		SV_SkateSlideClear(client);
+		return false;
+	}
+
+	// The brush plane gives us an exact reference. Pull the rider back onto
+	// the face if a collision or rounding error opened a small gap; don't
+	// teleport after a large separation or through an intervening obstacle.
+	radius = -(nx * (nx > 0 ? ent->v.mins[0] : ent->v.maxs[0]) +
+		ny * (ny > 0 ? ent->v.mins[1] : ent->v.maxs[1]));
+	radius = q_max(0.0f, radius);
+	distance = (ent->v.origin[0] - point[0]) * nx +
+		(ent->v.origin[1] - point[1]) * ny;
+	correction = radius + SKATE_SLIDE_SURFACE_GAP - distance;
+	if (fabsf(correction) > SKATE_SLIDE_MAX_ADHESION_DISTANCE)
+	{
+		SV_SkateSlideClear(client);
+		return false;
+	}
+	if (fabsf(correction) > 0.01f)
+	{
+		VectorCopy(ent->v.origin, start);
+		VectorCopy(start, end);
+		end[0] += nx * correction;
+		end[1] += ny * correction;
+		trace = SV_Move(start, ent->v.mins, ent->v.maxs, end, MOVE_NORMAL, ent);
+		if (!trace.startsolid && !trace.allsolid &&
+			(trace.fraction == 1 || trace.ent == client->skate_slide_surface))
+			VectorCopy(trace.endpos, ent->v.origin);
+	}
+
+	// Remove all motion away from or into the latched face. Tangential speed
+	// and gravity remain untouched, so the player rolls along it naturally.
+	normal_speed = ent->v.velocity[0] * nx + ent->v.velocity[1] * ny;
+	ent->v.velocity[0] -= nx * normal_speed;
+	ent->v.velocity[1] -= ny * normal_speed;
+	return true;
+}
+
+qboolean SV_SkateWallSlide (edict_t *ent, edict_t *surface,
+	const vec3_t normal, const vec3_t incoming_velocity)
 {
 	client_t *client = SV_SkateClientForEnt(ent);
 	vec3_t angles = {0, 0, 0}, forward, side, up;
-	float normal_length, nx, ny, tx, ty, speed, normal_speed;
+	float nx, ny, speed, normal_speed;
 	float tangent_speed, side_projection, forward_projection, slide_speed, direction;
 
-	if (!ent || !normal || !incoming_velocity || !client || !client->active ||
-		!client->skate_active || !client->skate_slide_held ||
-		((int)ent->v.flags & FL_WATERJUMP))
+	if (!client || !ent || !normal || !incoming_velocity)
 		return false;
-	if (fabsf(normal[2]) > SKATE_WALL_BOUNCE_MAX_NORMAL_Z)
+	if (client->skate_sliding && (!client->skate_active || !client->skate_slide_held))
+		SV_SkateSlideClear(client);
+	if (!client->active || !client->skate_active || !client->skate_slide_held ||
+		((int)ent->v.flags & FL_WATERJUMP) || !surface ||
+		surface->v.solid != SOLID_BSP || !SV_SkateFlatNormal(normal, &nx, &ny))
 		return false;
 
-	normal_length = sqrtf(normal[0] * normal[0] + normal[1] * normal[1]);
-	if (normal_length < 0.9f)
-		return false;
-	nx = normal[0] / normal_length;
-	ny = normal[1] / normal_length;
-	tx = -ny;
-	ty = nx;
+	if (client->skate_sliding)
+	{
+		// Keep gliding across this face at any speed. A different face or brush
+		// ends the latch instead of unexpectedly wrapping around a corner.
+		if (surface != client->skate_slide_surface ||
+			nx * client->skate_slide_normal[0] + ny * client->skate_slide_normal[1] <
+				SKATE_SLIDE_MIN_NORMAL_DOT)
+		{
+			SV_SkateSlideClear(client);
+			return false;
+		}
+		normal_speed = ent->v.velocity[0] * client->skate_slide_normal[0] +
+			ent->v.velocity[1] * client->skate_slide_normal[1];
+		ent->v.velocity[0] -= client->skate_slide_normal[0] * normal_speed;
+		ent->v.velocity[1] -= client->skate_slide_normal[1] * normal_speed;
+		return true;
+	}
 
 	speed = sqrtf(incoming_velocity[0] * incoming_velocity[0] +
 		incoming_velocity[1] * incoming_velocity[1]);
@@ -732,11 +894,11 @@ qboolean SV_SkateWallSlide (edict_t *ent, const vec3_t normal, const vec3_t inco
 		normal_speed > -SKATE_SLIDE_MIN_IMPACT_SPEED)
 		return false;
 
-	tangent_speed = incoming_velocity[0] * tx + incoming_velocity[1] * ty;
+	tangent_speed = incoming_velocity[0] * (-ny) + incoming_velocity[1] * nx;
 	angles[YAW] = client->skate_yaw;
 	AngleVectors(angles, forward, side, up);
-	side_projection = side[0] * tx + side[1] * ty;
-	forward_projection = forward[0] * tx + forward[1] * ty;
+	side_projection = side[0] * (-ny) + side[1] * nx;
+	forward_projection = forward[0] * (-ny) + forward[1] * nx;
 	if (fabsf(tangent_speed) > SKATE_SLIDE_DIRECTION_EPSILON)
 		direction = tangent_speed > 0 ? 1 : -1;
 	else if (fabsf(client->cmd.sidemove) > 1)
@@ -750,8 +912,15 @@ qboolean SV_SkateWallSlide (edict_t *ent, const vec3_t normal, const vec3_t inco
 
 	slide_speed = q_max(fabsf(tangent_speed), speed * SKATE_SLIDE_SPEED_SCALE);
 	slide_speed = q_min(slide_speed, SKATE_MAX_SPEED);
-	ent->v.velocity[0] = tx * slide_speed * direction;
-	ent->v.velocity[1] = ty * slide_speed * direction;
+	ent->v.velocity[0] = -ny * slide_speed * direction;
+	ent->v.velocity[1] = nx * slide_speed * direction;
+	client->skate_yaw = anglemod(atan2f(ent->v.velocity[1], ent->v.velocity[0]) / M_PI_DIV_180);
+	ent->v.angles[YAW] = client->skate_yaw;
+	client->skate_sliding = true;
+	client->skate_slide_normal[0] = nx;
+	client->skate_slide_normal[1] = ny;
+	client->skate_slide_normal[2] = 0;
+	client->skate_slide_surface = surface;
 	if (client->skate_grounded && incoming_velocity[2] <= 0)
 	{
 		ent->v.velocity[2] = 0;
@@ -819,6 +988,8 @@ void SV_SkateSlide_f (void)
 	if (!client)
 		return;
 	client->skate_slide_held = !client->skate_slide_held;
+	if (!client->skate_slide_held)
+		SV_SkateSlideClear(client);
 	SV_ClientPrintf("Skate slide %s\n", client->skate_slide_held ? "ON" : "OFF");
 }
 
@@ -837,7 +1008,10 @@ void SV_SkateSlideUp_f (void)
 		return;
 	}
 	if (host_client)
+	{
 		host_client->skate_slide_held = false;
+		SV_SkateSlideClear(host_client);
+	}
 }
 
 void SV_Skate_f (void)
@@ -922,6 +1096,7 @@ void SV_Skate_f (void)
 	host_client->skate_grounded = !!((int)ent->v.flags & FL_ONGROUND);
 	host_client->skate_jump_active = false;
 	host_client->skate_slide_held = false;
+	SV_SkateSlideClear(host_client);
 	host_client->skate_flip_active = false;
 	host_client->skate_flip_start_time = 0;
 	host_client->usingpmove = false; // stock client prediction does not know skating
