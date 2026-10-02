@@ -255,6 +255,9 @@ typedef struct client_s
 	vec3_t			skate_slide_normal;
 	edict_t			*skate_slide_surface;
 	float			skate_slide_edge_height;
+	int				skate_anim_state;
+	int				skate_anim_frame;
+	double			skate_anim_next_frame_time;
 	qboolean		skate_flip_active;
 	double			skate_flip_start_time;
 } client_t;

@@ -322,6 +322,93 @@ static void TestMotion (void)
 	Step(0.05);
 	assert(client.edict->v.velocity[0] == 0); // normal walking does not auto drive
 }
+static void TestSkateAnimations (void)
+{
+	int i;
+	Reset(); Command(NULL);
+	assert(client.edict->v.frame == SKATE_ANIM_CRUISE_FIRST); // same loop while standing still
+	client.edict->v.velocity[0] = 10;
+	qcvm->time += 0.01;
+	SV_SkateUpdate(&client);
+	assert(client.edict->v.frame == SKATE_ANIM_ACCEL_FIRST);
+	for (i = 1; i <= 10; i++)
+	{
+		qcvm->time += SKATE_ANIM_FRAME_TIME;
+		SV_SkateUpdate(&client);
+		assert(client.edict->v.frame == SKATE_ANIM_ACCEL_FIRST + (i % 10));
+	}
+
+	client.edict->v.velocity[0] = SKATE_MAX_SPEED;
+	qcvm->time += 0.01;
+	SV_SkateUpdate(&client);
+	assert(client.edict->v.frame == SKATE_ANIM_CRUISE_FIRST);
+	for (i = 1; i <= 11; i++)
+	{
+		qcvm->time += SKATE_ANIM_FRAME_TIME;
+		SV_SkateUpdate(&client);
+		assert(client.edict->v.frame == SKATE_ANIM_CRUISE_FIRST + (i % 11));
+	}
+
+	client.edict->v.button0 = 1;
+	SV_SkateUpdate(&client);
+	assert(client.edict->v.frame == SKATE_ANIM_SHOOT_FIRST);
+	for (i = 1; i <= 4; i++)
+	{
+		qcvm->time += SKATE_ANIM_FRAME_TIME;
+		SV_SkateUpdate(&client);
+		assert(client.edict->v.frame == SKATE_ANIM_SHOOT_FIRST + (i % 4));
+	}
+	client.edict->v.button0 = 0;
+	for (i = 1; i <= 3; i++)
+	{
+		qcvm->time += SKATE_ANIM_FRAME_TIME;
+		SV_SkateUpdate(&client);
+		assert(client.edict->v.frame == SKATE_ANIM_SHOOT_FIRST + (i % 4));
+	}
+	qcvm->time += SKATE_ANIM_FRAME_TIME;
+	SV_SkateUpdate(&client);
+	assert(client.edict->v.frame == SKATE_ANIM_CRUISE_FIRST);
+
+	client.edict->v.flags = 0;
+	client.edict->v.velocity[2] = 270;
+	SV_SkateUpdate(&client);
+	assert(client.edict->v.frame == SKATE_ANIM_JUMP_FIRST);
+	for (i = 1; i <= SKATE_ANIM_JUMP_PEAK - SKATE_ANIM_JUMP_FIRST; i++)
+	{
+		qcvm->time += SKATE_ANIM_FRAME_TIME;
+		SV_SkateUpdate(&client);
+		assert(client.edict->v.frame == SKATE_ANIM_JUMP_FIRST + i);
+	}
+	client.edict->v.velocity[2] = -1;
+	SV_SkateUpdate(&client);
+	assert(client.edict->v.frame == SKATE_ANIM_JUMP_PEAK);
+	for (i = 1; i <= 2; i++)
+	{
+		qcvm->time += SKATE_ANIM_FRAME_TIME;
+		SV_SkateUpdate(&client);
+		assert(client.edict->v.frame == (i == 1 ? SKATE_ANIM_JUMP_FALL_LAST : SKATE_ANIM_JUMP_PEAK));
+	}
+
+	client.edict->v.flags = FL_ONGROUND;
+	client.edict->v.velocity[2] = 0;
+	SV_SkateUpdate(&client);
+	assert(client.edict->v.frame == SKATE_ANIM_JUMP_LAND_FIRST);
+	for (i = 1; i <= SKATE_ANIM_JUMP_LAND_LAST - SKATE_ANIM_JUMP_LAND_FIRST; i++)
+	{
+		qcvm->time += SKATE_ANIM_FRAME_TIME;
+		SV_SkateUpdate(&client);
+		assert(client.edict->v.frame == SKATE_ANIM_JUMP_LAND_FIRST + i);
+	}
+	qcvm->time += SKATE_ANIM_FRAME_TIME;
+	SV_SkateUpdate(&client);
+	assert(client.edict->v.frame == SKATE_ANIM_CRUISE_FIRST);
+
+	client.edict->v.velocity[0] = 0;
+	client.cmd.forwardmove = -400; // standing/braking keeps the ride loop
+	qcvm->time += 0.01;
+	SV_SkateUpdate(&client);
+	assert(client.edict->v.frame == SKATE_ANIM_CRUISE_FIRST);
+}
 static void TestSlideCommand (void)
 {
 	Reset(); Command(NULL);
@@ -604,9 +691,10 @@ static void TestGuards (void)
 }
 int main (void)
 {
-	TestToggleAndPlacement(); TestMotion(); TestSlideCommand(); TestWallSlide(); TestSlideNeedsUpperEdge(); TestWallBounce(); TestJumpFlip(); TestJumpFlipGuards();
+	TestToggleAndPlacement(); TestMotion(); TestSkateAnimations(); TestSlideCommand(); TestWallSlide(); TestSlideNeedsUpperEdge(); TestWallBounce(); TestJumpFlip(); TestJumpFlipGuards();
 	TestSlopeAndCleanup(); TestGuards();
 	puts("PASS: skate command, forward acceleration, cap, gradual steering, drift and braking.");
+	puts("PASS: skate cruise/idle, acceleration, shooting, jump and landing frame sequences.");
 	puts("PASS: held skate slide latches to brush upper edges, then releases at the edge or key-up.");
 	puts("PASS: high-speed jump bounce from vertical walls; speed, glancing-hit, and non-jump guards.");
 	puts("PASS: one time-based 360-degree jump flip, upright rider, landing/rearm and takeoff guards.");

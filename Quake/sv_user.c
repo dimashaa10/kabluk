@@ -510,6 +510,179 @@ static qboolean SV_SkateBoardValid (const client_t *client)
 		client->edict && client->skate_board->v.owner == EDICT_TO_PROG(client->edict);
 }
 
+enum
+{
+	SKATE_ANIM_NONE,
+	SKATE_ANIM_CRUISE,
+	SKATE_ANIM_ACCELERATE,
+	SKATE_ANIM_SHOOT,
+	SKATE_ANIM_JUMP_ASCENT,
+	SKATE_ANIM_JUMP_FALL,
+	SKATE_ANIM_LANDING
+};
+
+static void SV_SkateAnimationReset (client_t *client)
+{
+	client->skate_anim_state = SKATE_ANIM_NONE;
+	client->skate_anim_frame = 0;
+	client->skate_anim_next_frame_time = 0;
+}
+
+static void SV_SkateAnimationBegin (client_t *client, int state, int frame, double now)
+{
+	client->skate_anim_state = state;
+	client->skate_anim_frame = frame;
+	client->skate_anim_next_frame_time = now + SKATE_ANIM_FRAME_TIME;
+}
+
+static int SV_SkateAnimationSteps (client_t *client, double now)
+{
+	int steps;
+	double elapsed;
+
+	if (client->skate_anim_next_frame_time <= 0)
+	{
+		client->skate_anim_next_frame_time = now + SKATE_ANIM_FRAME_TIME;
+		return 0;
+	}
+	elapsed = now - client->skate_anim_next_frame_time;
+	if (elapsed < -0.000001)
+		return 0;
+	steps = (int)(elapsed / SKATE_ANIM_FRAME_TIME) + 1;
+	if (steps < 1)
+		steps = 1;
+	client->skate_anim_next_frame_time += steps * SKATE_ANIM_FRAME_TIME;
+	return steps;
+}
+
+static int SV_SkateAnimationFrame (client_t *client, const edict_t *ent)
+{
+	qboolean grounded = !!((int)ent->v.flags & FL_ONGROUND);
+	qboolean rising = ent->v.velocity[2] > 0;
+	qboolean attack = !!ent->v.button0;
+	float speed = sqrtf(ent->v.velocity[0] * ent->v.velocity[0] +
+		ent->v.velocity[1] * ent->v.velocity[1]);
+	double now = qcvm->time;
+	int state = client->skate_anim_state;
+	int steps, i, target_state, first, last;
+
+	// Airborne poses take priority over firing and locomotion. A jump climbs
+	// through 150-154, cycles 154-155 while falling, then lands on 156-158.
+	if (!grounded || rising)
+	{
+		if (state != SKATE_ANIM_JUMP_ASCENT && state != SKATE_ANIM_JUMP_FALL)
+			SV_SkateAnimationBegin(client,
+				rising ? SKATE_ANIM_JUMP_ASCENT : SKATE_ANIM_JUMP_FALL,
+				rising ? SKATE_ANIM_JUMP_FIRST : SKATE_ANIM_JUMP_PEAK, now);
+		else if (state == SKATE_ANIM_JUMP_FALL && rising)
+			SV_SkateAnimationBegin(client, SKATE_ANIM_JUMP_ASCENT,
+				SKATE_ANIM_JUMP_FIRST, now);
+
+		state = client->skate_anim_state;
+		if (state == SKATE_ANIM_JUMP_ASCENT)
+		{
+			if (!rising)
+				SV_SkateAnimationBegin(client, SKATE_ANIM_JUMP_FALL,
+					SKATE_ANIM_JUMP_PEAK, now);
+			else
+			{
+				steps = SV_SkateAnimationSteps(client, now);
+				client->skate_anim_frame += steps;
+				if (client->skate_anim_frame > SKATE_ANIM_JUMP_PEAK)
+					client->skate_anim_frame = SKATE_ANIM_JUMP_PEAK;
+			}
+		}
+		else if (state == SKATE_ANIM_JUMP_FALL)
+		{
+			steps = SV_SkateAnimationSteps(client, now);
+			if (steps & 1)
+				client->skate_anim_frame = client->skate_anim_frame == SKATE_ANIM_JUMP_PEAK ?
+					SKATE_ANIM_JUMP_FALL_LAST : SKATE_ANIM_JUMP_PEAK;
+		}
+		return client->skate_anim_frame;
+	}
+
+	if (client->skate_anim_state == SKATE_ANIM_JUMP_ASCENT ||
+		client->skate_anim_state == SKATE_ANIM_JUMP_FALL)
+	{
+		SV_SkateAnimationBegin(client, SKATE_ANIM_LANDING,
+			SKATE_ANIM_JUMP_LAND_FIRST, now);
+		return client->skate_anim_frame;
+	}
+
+	if (client->skate_anim_state == SKATE_ANIM_LANDING)
+	{
+		steps = SV_SkateAnimationSteps(client, now);
+		for (i = 0; i < steps; i++)
+		{
+			if (client->skate_anim_frame < SKATE_ANIM_JUMP_LAND_LAST)
+				client->skate_anim_frame++;
+			else
+			{
+				SV_SkateAnimationReset(client);
+				break;
+			}
+		}
+		if (client->skate_anim_state == SKATE_ANIM_LANDING)
+			return client->skate_anim_frame;
+	}
+
+	// A held attack loops the four firing poses. A tap finishes its current
+	// 170-173 cycle before returning to the appropriate riding animation.
+	if (client->skate_anim_state == SKATE_ANIM_SHOOT)
+	{
+		steps = SV_SkateAnimationSteps(client, now);
+		for (i = 0; i < steps; i++)
+		{
+			if (client->skate_anim_frame < SKATE_ANIM_SHOOT_LAST)
+				client->skate_anim_frame++;
+			else if (attack)
+				client->skate_anim_frame = SKATE_ANIM_SHOOT_FIRST;
+			else
+			{
+				SV_SkateAnimationReset(client);
+				break;
+			}
+		}
+		if (client->skate_anim_state == SKATE_ANIM_SHOOT)
+			return client->skate_anim_frame;
+	}
+	if (attack)
+	{
+		SV_SkateAnimationBegin(client, SKATE_ANIM_SHOOT,
+			SKATE_ANIM_SHOOT_FIRST, now);
+		return client->skate_anim_frame;
+	}
+
+	// Acceleration plays while the board is moving below top speed and the
+	// rider is not braking. At rest, while braking or at top speed, use the
+	// same cruising/idle loop (159-169).
+	if (client->cmd.forwardmove >= -1 && speed > SKATE_ANIM_SPEED_EPSILON &&
+		speed < SKATE_MAX_SPEED - SKATE_ANIM_SPEED_EPSILON)
+	{
+		target_state = SKATE_ANIM_ACCELERATE;
+		first = SKATE_ANIM_ACCEL_FIRST;
+		last = SKATE_ANIM_ACCEL_LAST;
+	}
+	else
+	{
+		target_state = SKATE_ANIM_CRUISE;
+		first = SKATE_ANIM_CRUISE_FIRST;
+		last = SKATE_ANIM_CRUISE_LAST;
+	}
+
+	if (client->skate_anim_state != target_state)
+		SV_SkateAnimationBegin(client, target_state, first, now);
+	else
+	{
+		steps = SV_SkateAnimationSteps(client, now);
+		for (i = 0; i < steps; i++)
+			client->skate_anim_frame = client->skate_anim_frame < last ?
+				client->skate_anim_frame + 1 : first;
+	}
+	return client->skate_anim_frame;
+}
+
 static void SV_SkateSlideClear (client_t *client)
 {
 	client->skate_sliding = false;
@@ -544,6 +717,7 @@ void SV_SkateStop (client_t *client)
 	client->skate_jump_active = false;
 	client->skate_slide_held = false;
 	SV_SkateSlideClear(client);
+	SV_SkateAnimationReset(client);
 	client->skate_flip_active = false;
 	client->skate_flip_start_time = 0;
 }
@@ -647,13 +821,13 @@ void SV_SkateUpdate (client_t *client)
 	// Both still share the prepared model origin and heading on the wire.
 	ent->v.angles[PITCH] = ent->v.angles[ROLL] = 0;
 	ent->v.angles[YAW] = client->skate_yaw;
-	ent->v.frame = SKATE_RIDER_FRAME;
+	board->v.angles[ROLL] = SV_SkateJumpRoll(client, ent);
+	ent->v.frame = SV_SkateAnimationFrame(client, ent);
 	client->skate_lift = SV_SkateGroundLift(ent, model);
 	VectorCopy(ent->v.origin, board->v.origin);
 	board->v.origin[2] += client->skate_lift;
 	board->v.angles[PITCH] = 0;
 	board->v.angles[YAW] = client->skate_yaw;
-	board->v.angles[ROLL] = SV_SkateJumpRoll(client, ent);
 	SV_LinkEdict(board, false);
 }
 
@@ -1197,6 +1371,7 @@ void SV_Skate_f (void)
 	host_client->skate_jump_active = false;
 	host_client->skate_slide_held = false;
 	SV_SkateSlideClear(host_client);
+	SV_SkateAnimationReset(host_client);
 	host_client->skate_flip_active = false;
 	host_client->skate_flip_start_time = 0;
 	host_client->usingpmove = false; // stock client prediction does not know skating

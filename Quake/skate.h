@@ -7,7 +7,19 @@
 #define SKATE_MODEL "progs/skate.mdl"
 #define SKATE_MODEL_ROOT "skate.mdl"
 #define SKATE_CLASSNAME "engine_skateboard"
-#define SKATE_RIDER_FRAME 0	// idle stance: do not run in place on the board
+#define SKATE_ANIM_FRAME_TIME 0.1f
+#define SKATE_ANIM_CRUISE_FIRST 159
+#define SKATE_ANIM_CRUISE_LAST 169
+#define SKATE_ANIM_SHOOT_FIRST 170
+#define SKATE_ANIM_SHOOT_LAST 173
+#define SKATE_ANIM_JUMP_FIRST 150
+#define SKATE_ANIM_JUMP_PEAK 154
+#define SKATE_ANIM_JUMP_FALL_LAST 155
+#define SKATE_ANIM_JUMP_LAND_FIRST 156
+#define SKATE_ANIM_JUMP_LAND_LAST 158
+#define SKATE_ANIM_ACCEL_FIRST 174
+#define SKATE_ANIM_ACCEL_LAST 183
+#define SKATE_ANIM_SPEED_EPSILON 1.0f
 #define SKATE_FLIP_DURATION 0.5f	// one sideways 360-degree roll per jump
 #define SKATE_MAX_SPEED 420.0f
 #define SKATE_ACCELERATION 420.0f
