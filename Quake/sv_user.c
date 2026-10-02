@@ -515,6 +515,7 @@ static void SV_SkateSlideClear (client_t *client)
 	client->skate_sliding = false;
 	VectorClear(client->skate_slide_normal);
 	client->skate_slide_surface = NULL;
+	client->skate_slide_edge_height = 0;
 }
 
 void SV_SkateStop (client_t *client)
@@ -762,26 +763,90 @@ static qboolean SV_SkateFlatNormal (const vec3_t normal, float *nx, float *ny)
 	return true;
 }
 
-static qboolean SV_SkateSlideFaceProbe (edict_t *ent, client_t *client,
-	float height, vec3_t hitpoint)
+static qboolean SV_SkateWallFaceProbe (edict_t *ent, edict_t *surface,
+	float nx, float ny, float height, vec3_t hitpoint)
 {
-	vec3_t start, end, point, zero = {0, 0, 0};
+	vec3_t start, end, point, normal = {0, 0, 0}, zero = {0, 0, 0};
 	trace_t trace;
 	float hit_nx, hit_ny;
 
+	normal[0] = nx;
+	normal[1] = ny;
 	VectorCopy(ent->v.origin, point);
 	point[2] += height;
-	VectorMA(point, SKATE_SLIDE_PROBE_DISTANCE, client->skate_slide_normal, start);
-	VectorMA(point, -SKATE_SLIDE_PROBE_DISTANCE, client->skate_slide_normal, end);
+	VectorMA(point, SKATE_SLIDE_PROBE_DISTANCE, normal, start);
+	VectorMA(point, -SKATE_SLIDE_PROBE_DISTANCE, normal, end);
 	trace = SV_Move(start, zero, zero, end, MOVE_NOMONSTERS, ent);
 	if (trace.fraction == 1 || trace.startsolid || trace.allsolid ||
-		trace.ent != client->skate_slide_surface ||
-		!SV_SkateFlatNormal(trace.plane.normal, &hit_nx, &hit_ny))
+		trace.ent != surface || !SV_SkateFlatNormal(trace.plane.normal, &hit_nx, &hit_ny))
 		return false;
-	if (hit_nx * client->skate_slide_normal[0] +
-		hit_ny * client->skate_slide_normal[1] < SKATE_SLIDE_MIN_NORMAL_DOT)
+	if (hit_nx * nx + hit_ny * ny < SKATE_SLIDE_MIN_NORMAL_DOT)
 		return false;
-	VectorCopy(trace.endpos, hitpoint);
+	if (hitpoint)
+		VectorCopy(trace.endpos, hitpoint);
+	return true;
+}
+
+static qboolean SV_SkateSlideFaceProbe (edict_t *ent, client_t *client,
+	float height, vec3_t hitpoint)
+{
+	return SV_SkateWallFaceProbe(ent, client->skate_slide_surface,
+		client->skate_slide_normal[0], client->skate_slide_normal[1], height, hitpoint);
+}
+
+static float SV_SkateWallRadius (const edict_t *ent, float nx, float ny)
+{
+	float radius = -(nx * (nx > 0 ? ent->v.mins[0] : ent->v.maxs[0]) +
+		ny * (ny > 0 ? ent->v.mins[1] : ent->v.maxs[1]));
+	return q_max(0.0f, radius);
+}
+
+static qboolean SV_SkateSlideTopProbe (edict_t *ent, edict_t *surface,
+	float nx, float ny, float inset, float start_z, float end_z, float *top_z)
+{
+	vec3_t start, end, zero = {0, 0, 0};
+	trace_t trace;
+
+	start[0] = end[0] = ent->v.origin[0] - nx * inset;
+	start[1] = end[1] = ent->v.origin[1] - ny * inset;
+	start[2] = start_z;
+	end[2] = end_z;
+	trace = SV_Move(start, zero, zero, end, MOVE_NOMONSTERS, ent);
+	if (trace.fraction == 1 || trace.startsolid || trace.allsolid ||
+		trace.ent != surface || trace.plane.normal[2] < SKATE_SLIDE_EDGE_TOP_NORMAL_Z)
+		return false;
+	*top_z = trace.endpos[2];
+	return true;
+}
+
+static qboolean SV_SkateFindTopEdge (edict_t *ent, edict_t *surface,
+	float nx, float ny, float *edge_height)
+{
+	vec3_t wallpoint;
+	float feet_z = ent->v.origin[2] + ent->v.mins[2];
+	float radius = SV_SkateWallRadius(ent, nx, ny);
+	float inset = radius + SKATE_SLIDE_EDGE_INSET;
+	float height, wall_distance;
+
+	if (!SV_SkateSlideTopProbe(ent, surface, nx, ny, inset,
+		feet_z + SKATE_SLIDE_EDGE_SNAP_UP + SKATE_SLIDE_EDGE_SEARCH_PADDING,
+		feet_z - SKATE_SLIDE_EDGE_SNAP_DOWN - SKATE_SLIDE_EDGE_SEARCH_PADDING,
+		&height) || height < feet_z - SKATE_SLIDE_EDGE_SNAP_DOWN ||
+		height > feet_z + SKATE_SLIDE_EDGE_SNAP_UP + SKATE_SLIDE_EDGE_SEARCH_PADDING)
+		return false;
+
+	// A real upper corner has the same nearby wall face below the cap, but
+	// not above it. This rejects remote faces, floors and points halfway up a wall.
+	if (!SV_SkateWallFaceProbe(ent, surface, nx, ny,
+		height - SKATE_SLIDE_EDGE_SIDE_DEPTH - ent->v.origin[2], wallpoint))
+		return false;
+	wall_distance = (ent->v.origin[0] - wallpoint[0]) * nx +
+		(ent->v.origin[1] - wallpoint[1]) * ny;
+	if (fabsf(wall_distance - radius) > SKATE_SLIDE_MAX_ADHESION_DISTANCE ||
+		SV_SkateWallFaceProbe(ent, surface, nx, ny,
+		height + SKATE_SLIDE_EDGE_SIDE_DEPTH - ent->v.origin[2], NULL))
+		return false;
+	*edge_height = height;
 	return true;
 }
 
@@ -789,9 +854,7 @@ qboolean SV_SkateWallSlideMove (edict_t *ent)
 {
 	client_t *client = SV_SkateClientForEnt(ent);
 	vec3_t point, start, end;
-	float nx, ny, radius, distance, correction, normal_speed;
-	float heights[3];
-	int i;
+	float nx, ny, distance, correction, target_z, top_z, normal_speed;
 	trace_t trace;
 
 	if (!client || !client->skate_sliding)
@@ -804,48 +867,57 @@ qboolean SV_SkateWallSlideMove (edict_t *ent)
 		return false;
 	}
 
-	// Probe at the rider's center and near both ends of the hull so the grind
-	// survives small ledges, but releases once this face really runs out.
-	heights[0] = 0.5f * (ent->v.mins[2] + ent->v.maxs[2]);
-	heights[1] = ent->v.mins[2] + SKATE_SLIDE_PROBE_HEIGHT_MARGIN;
-	heights[2] = ent->v.maxs[2] - SKATE_SLIDE_PROBE_HEIGHT_MARGIN;
-	for (i = 0; i < 3; i++)
-		if (SV_SkateSlideFaceProbe(ent, client, heights[i], point))
-			break;
-	if (i == 3)
+	// The grind is attached to the wall's top corner, not anywhere on its side.
+	// Require both the top cap and the vertical side just below its lip.
+	if (!SV_SkateSlideTopProbe(ent, client->skate_slide_surface, nx, ny,
+		SKATE_SLIDE_EDGE_INSET,
+		client->skate_slide_edge_height + SKATE_SLIDE_EDGE_PROBE_DEPTH,
+		client->skate_slide_edge_height - SKATE_SLIDE_EDGE_PROBE_DEPTH,
+		&top_z) ||
+		fabsf(top_z - client->skate_slide_edge_height) > SKATE_SLIDE_EDGE_HEIGHT_TOLERANCE ||
+		!SV_SkateSlideFaceProbe(ent, client,
+		top_z - SKATE_SLIDE_EDGE_SIDE_DEPTH - ent->v.origin[2], point) ||
+		SV_SkateWallFaceProbe(ent, client->skate_slide_surface, nx, ny,
+		top_z + SKATE_SLIDE_EDGE_SIDE_DEPTH - ent->v.origin[2], NULL))
 	{
 		SV_SkateSlideClear(client);
 		return false;
 	}
+	client->skate_slide_edge_height = top_z;
 
-	// The brush plane gives us an exact reference. Pull the rider back onto
-	// the face if a collision or rounding error opened a small gap; don't
-	// teleport after a large separation or through an intervening obstacle.
-	radius = -(nx * (nx > 0 ? ent->v.mins[0] : ent->v.maxs[0]) +
-		ny * (ny > 0 ? ent->v.mins[1] : ent->v.maxs[1]));
-	radius = q_max(0.0f, radius);
+	// Keep the player's center over the corner and the bottom just above the
+	// top cap. The hull is now above the brush, so this can follow small
+	// vertical/normal corrections without scraping along the side face.
 	distance = (ent->v.origin[0] - point[0]) * nx +
 		(ent->v.origin[1] - point[1]) * ny;
-	correction = radius + SKATE_SLIDE_SURFACE_GAP - distance;
-	if (fabsf(correction) > SKATE_SLIDE_MAX_ADHESION_DISTANCE)
+	correction = SKATE_SLIDE_EDGE_OFFSET - distance;
+	target_z = top_z - ent->v.mins[2] + SKATE_SLIDE_SURFACE_GAP;
+	if (fabsf(correction) > SKATE_SLIDE_MAX_ADHESION_DISTANCE ||
+		fabsf(target_z - ent->v.origin[2]) > SKATE_SLIDE_MAX_ADHESION_DISTANCE)
 	{
 		SV_SkateSlideClear(client);
 		return false;
 	}
-	if (fabsf(correction) > 0.01f)
+	if (fabsf(correction) > 0.01f || fabsf(target_z - ent->v.origin[2]) > 0.01f)
 	{
 		VectorCopy(ent->v.origin, start);
 		VectorCopy(start, end);
 		end[0] += nx * correction;
 		end[1] += ny * correction;
+		end[2] = target_z;
 		trace = SV_Move(start, ent->v.mins, ent->v.maxs, end, MOVE_NORMAL, ent);
-		if (!trace.startsolid && !trace.allsolid &&
-			(trace.fraction == 1 || trace.ent == client->skate_slide_surface))
-			VectorCopy(trace.endpos, ent->v.origin);
+		if (trace.startsolid || trace.allsolid || trace.fraction != 1)
+		{
+			SV_SkateSlideClear(client);
+			return false;
+		}
+		VectorCopy(trace.endpos, ent->v.origin);
 	}
 
-	// Remove all motion away from or into the latched face. Tangential speed
-	// and gravity remain untouched, so the player rolls along it naturally.
+	ent->v.velocity[2] = 0;
+	ent->v.flags = (int)ent->v.flags | FL_ONGROUND;
+	ent->v.groundentity = EDICT_TO_PROG(client->skate_slide_surface);
+	// Keep normal movement parallel to the corner; tangent speed is conserved.
 	normal_speed = ent->v.velocity[0] * nx + ent->v.velocity[1] * ny;
 	ent->v.velocity[0] -= nx * normal_speed;
 	ent->v.velocity[1] -= ny * normal_speed;
@@ -857,8 +929,10 @@ qboolean SV_SkateWallSlide (edict_t *ent, edict_t *surface,
 {
 	client_t *client = SV_SkateClientForEnt(ent);
 	vec3_t angles = {0, 0, 0}, forward, side, up;
-	float nx, ny, speed, normal_speed;
+	vec3_t start, edge_origin, target_origin;
+	float nx, ny, speed, normal_speed, edge_height, radius;
 	float tangent_speed, side_projection, forward_projection, slide_speed, direction;
+	trace_t trace;
 
 	if (!client || !ent || !normal || !incoming_velocity)
 		return false;
@@ -871,8 +945,8 @@ qboolean SV_SkateWallSlide (edict_t *ent, edict_t *surface,
 
 	if (client->skate_sliding)
 	{
-		// Keep gliding across this face at any speed. A different face or brush
-		// ends the latch instead of unexpectedly wrapping around a corner.
+		// Keep the same edge latched through incidental contact at any speed.
+		// A different face or brush ends the grind instead of wrapping a corner.
 		if (surface != client->skate_slide_surface ||
 			nx * client->skate_slide_normal[0] + ny * client->skate_slide_normal[1] <
 				SKATE_SLIDE_MIN_NORMAL_DOT)
@@ -884,6 +958,9 @@ qboolean SV_SkateWallSlide (edict_t *ent, edict_t *surface,
 			ent->v.velocity[1] * client->skate_slide_normal[1];
 		ent->v.velocity[0] -= client->skate_slide_normal[0] * normal_speed;
 		ent->v.velocity[1] -= client->skate_slide_normal[1] * normal_speed;
+		ent->v.velocity[2] = 0;
+		ent->v.flags = (int)ent->v.flags | FL_ONGROUND;
+		ent->v.groundentity = EDICT_TO_PROG(surface);
 		return true;
 	}
 
@@ -893,6 +970,30 @@ qboolean SV_SkateWallSlide (edict_t *ent, edict_t *surface,
 	if (speed < SKATE_SLIDE_MIN_SPEED ||
 		normal_speed > -SKATE_SLIDE_MIN_IMPACT_SPEED)
 		return false;
+	if (!SV_SkateFindTopEdge(ent, surface, nx, ny, &edge_height))
+		return false;
+
+	// First lift clear of the wall, then move the rider's center onto the
+	// upper corner. Doing this in two traces avoids sweeping the hull through
+	// the brush side while climbing to the lip.
+	radius = SV_SkateWallRadius(ent, nx, ny);
+	VectorCopy(ent->v.origin, start);
+	VectorCopy(start, edge_origin);
+	edge_origin[0] += nx * SKATE_SLIDE_SURFACE_GAP;
+	edge_origin[1] += ny * SKATE_SLIDE_SURFACE_GAP;
+	edge_origin[2] = edge_height - ent->v.mins[2] + SKATE_SLIDE_SURFACE_GAP;
+	trace = SV_Move(start, ent->v.mins, ent->v.maxs, edge_origin, MOVE_NORMAL, ent);
+	if (trace.startsolid || trace.allsolid || trace.fraction != 1)
+		return false;
+	VectorCopy(trace.endpos, edge_origin);
+
+	VectorCopy(edge_origin, target_origin);
+	target_origin[0] += nx * (SKATE_SLIDE_EDGE_OFFSET - radius - SKATE_SLIDE_SURFACE_GAP);
+	target_origin[1] += ny * (SKATE_SLIDE_EDGE_OFFSET - radius - SKATE_SLIDE_SURFACE_GAP);
+	trace = SV_Move(edge_origin, ent->v.mins, ent->v.maxs, target_origin, MOVE_NORMAL, ent);
+	if (trace.startsolid || trace.allsolid || trace.fraction != 1)
+		return false;
+	VectorCopy(trace.endpos, ent->v.origin);
 
 	tangent_speed = incoming_velocity[0] * (-ny) + incoming_velocity[1] * nx;
 	angles[YAW] = client->skate_yaw;
@@ -921,11 +1022,10 @@ qboolean SV_SkateWallSlide (edict_t *ent, edict_t *surface,
 	client->skate_slide_normal[1] = ny;
 	client->skate_slide_normal[2] = 0;
 	client->skate_slide_surface = surface;
-	if (client->skate_grounded && incoming_velocity[2] <= 0)
-	{
-		ent->v.velocity[2] = 0;
-		ent->v.flags = (int)ent->v.flags | FL_ONGROUND;
-	}
+	client->skate_slide_edge_height = edge_height;
+	ent->v.velocity[2] = 0;
+	ent->v.flags = (int)ent->v.flags | FL_ONGROUND;
+	ent->v.groundentity = EDICT_TO_PROG(surface);
 	return true;
 }
 
