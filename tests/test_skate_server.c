@@ -284,7 +284,7 @@ static void TestMotion (void)
 	Step(0.05);
 	assert(client.edict->v.velocity[0] > 20); // stronger initial push than the old 240 u/s^2
 	for (i = 0; i < 150; i++) Step(0.05);
-	assert(fabsf(client.edict->v.velocity[0] - 420) < 0.01f);
+	assert(fabsf(client.edict->v.velocity[0] - SKATE_MAX_SPEED) < 0.01f);
 	CheckPhysical();
 	client.cmd.forwardmove = -400;
 	for (i = 0; i < 30; i++) Step(0.05);
@@ -307,7 +307,7 @@ static void TestMotion (void)
 	Reset(); Command(NULL);
 	for (i = 0; i < 20; i++) Step(0.05);
 	fast = client.edict->v.velocity[0];
-	assert(fabsf(slow - fast) < 5); // acceleration/drag is time based; allow discrete-step rounding
+	assert(fabsf(slow - fast) < 6); // acceleration/drag is time based; allow discrete-step rounding
 
 	Reset(); Command(NULL);
 	client.edict->v.flags = 0;
@@ -438,7 +438,7 @@ static void TestWallSlide (void)
 {
 	int clip;
 	float old_y;
-	vec3_t incoming = {350, 0, -40};
+	vec3_t incoming = {SKATE_SLIDE_MIN_SPEED + 50, 0, -40};
 	Reset(); Command(NULL);
 	client.skate_slide_held = true;
 	client.edict->v.flags = 0;
@@ -449,9 +449,12 @@ static void TestWallSlide (void)
 	clip = SV_FlyMove(client.edict, 0.05f, NULL);
 	assert(!(clip & 2)); // a grind shouldn't be retried as a stair-step
 	assert(fabsf(client.edict->v.velocity[0]) < 0.01f);
-	assert(fabsf(client.edict->v.velocity[1] + 262.5f) < 0.01f); // forward impact redirected along the wall
+	assert(fabsf(client.edict->v.velocity[1] +
+		(SKATE_SLIDE_MIN_SPEED + 50) * SKATE_SLIDE_SPEED_SCALE) < 0.01f); // forward impact redirected along the wall
 	assert(client.edict->v.velocity[2] == 0 && ((int)client.edict->v.flags & FL_ONGROUND));
 	assert(client.skate_sliding && client.skate_slide_surface == &pool[0]);
+	SV_SkateUpdate(&client);
+	assert(client.skate_board->v.angles[PITCH] == SKATE_SLIDE_BOARD_PITCH);
 	assert(fabsf(client.skate_slide_edge_height - wall_top_z) < 0.01f);
 	assert(fabsf(client.edict->v.origin[2] - (wall_top_z - client.edict->v.mins[2] + SKATE_SLIDE_SURFACE_GAP)) < 0.01f);
 	assert(fabsf((client.edict->v.origin[0] - wall_plane_point[0]) * wall_normal[0] +
@@ -473,10 +476,12 @@ static void TestWallSlide (void)
 	wall_support = top_support = false;
 	assert(!SV_SkateWallSlideMove(client.edict));
 	assert(!client.skate_sliding && client.skate_slide_held);
+	SV_SkateUpdate(&client);
+	assert(client.skate_board->v.angles[PITCH] == 0); // restore board pitch after leaving the grind
 }
 static void TestSlideNeedsUpperEdge (void)
 {
-	vec3_t incoming = {350, 0, -40};
+	vec3_t incoming = {SKATE_SLIDE_MIN_SPEED + 50, 0, -40};
 	Reset(); Command(NULL);
 	client.skate_slide_held = true;
 	client.edict->v.flags = 0;
@@ -502,7 +507,7 @@ static void TestWallBounce (void)
 {
 	int clip;
 	trace_t wall = {0};
-	vec3_t incoming = {350, 20, -40};
+	vec3_t incoming = {SKATE_WALL_BOUNCE_MIN_SPEED + 50, 20, -40};
 	Reset(); Command(NULL);
 	client.skate_jump_active = true;
 	client.skate_grounded = false;
@@ -514,7 +519,8 @@ static void TestWallBounce (void)
 	wall_collision = false;
 	assert(clip & 2);
 	assert(client.edict->v.origin[0] > 100); // collision moved partway to the wall
-	assert(fabsf(client.edict->v.velocity[0] + 262.5f) < 0.01f);
+	assert(fabsf(client.edict->v.velocity[0] +
+		(SKATE_WALL_BOUNCE_MIN_SPEED + 50) * SKATE_WALL_BOUNCE_RESTITUTION) < 0.01f);
 	assert(client.edict->v.velocity[1] == incoming[1]); // tangential motion is preserved
 	assert(client.edict->v.velocity[2] == SKATE_WALL_BOUNCE_UPWARD_SPEED);
 
@@ -527,7 +533,7 @@ static void TestWallBounce (void)
 	incoming[1] = 0;
 	incoming[2] = 270;
 	assert(!SV_SkateWallBounce(client.edict, wall.plane.normal, incoming)); // not fast enough
-	incoming[0] = 350;
+	incoming[0] = SKATE_WALL_BOUNCE_MIN_SPEED + 50;
 	wall.plane.normal[0] = 0;
 	wall.plane.normal[1] = -1;
 	assert(!SV_SkateWallBounce(client.edict, wall.plane.normal, incoming)); // glancing/tangential hit

@@ -826,7 +826,7 @@ void SV_SkateUpdate (client_t *client)
 	client->skate_lift = SV_SkateGroundLift(ent, model);
 	VectorCopy(ent->v.origin, board->v.origin);
 	board->v.origin[2] += client->skate_lift;
-	board->v.angles[PITCH] = 0;
+	board->v.angles[PITCH] = client->skate_sliding ? SKATE_SLIDE_BOARD_PITCH : 0;
 	board->v.angles[YAW] = client->skate_yaw;
 	SV_LinkEdict(board, false);
 }
