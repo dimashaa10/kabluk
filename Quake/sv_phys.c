@@ -404,6 +404,9 @@ int SV_FlyMove (edict_t *ent, float time, trace_t *steptrace)
 		if (ent->free)
 			break;		// removed by the impact function
 
+		// Skate jumps bounce away from high-speed impacts on vertical walls.
+		if (SV_SkateWallBounce(ent, trace.plane.normal, original_velocity))
+			return blocked;
 
 		time_left -= time_left * trace.fraction;
 

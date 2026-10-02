@@ -533,6 +533,7 @@ void SV_SkateStop (client_t *client)
 	client->skate_lift = 0;
 	client->skate_yaw = 0;
 	client->skate_grounded = false;
+	client->skate_jump_active = false;
 	client->skate_flip_active = false;
 	client->skate_flip_start_time = 0;
 }
@@ -590,6 +591,7 @@ static float SV_SkateJumpRoll (client_t *client, const edict_t *ent)
 
 	if (grounded)
 	{
+		client->skate_jump_active = false;
 		client->skate_flip_active = false;
 		client->skate_flip_start_time = 0;
 	}
@@ -598,6 +600,7 @@ static float SV_SkateJumpRoll (client_t *client, const edict_t *ent)
 	{
 		// An upward takeoff, not merely holding jump or falling off an edge.
 		// Normal QuakeC/native jump physics have already run at this point.
+		client->skate_jump_active = true;
 		client->skate_flip_active = true;
 		client->skate_flip_start_time = qcvm->time;
 	}
@@ -687,6 +690,51 @@ void SV_SkateMove (client_t *client, edict_t *ent, const usercmd_t *move, double
 	}
 }
 
+qboolean SV_SkateWallBounce (edict_t *ent, const vec3_t normal, const vec3_t incoming_velocity)
+{
+	client_t *client = NULL;
+	float speed, normal_speed;
+	int i;
+
+	if (!ent || !normal || !incoming_velocity || !svs.clients || svs.maxclients <= 0)
+		return false;
+
+	for (i = 0; i < svs.maxclients; i++)
+		if (svs.clients[i].edict == ent)
+		{
+			client = &svs.clients[i];
+			break;
+		}
+	if (!client || !client->active || !client->skate_active || client->edict != ent)
+		return false;
+
+	// Only rebound from vertical surfaces during a real jump, not from floors,
+	// ceilings, walking into a wall, or simply falling off an edge.
+	if (((int)ent->v.flags & (FL_ONGROUND | FL_WATERJUMP)) ||
+		!(client->skate_jump_active || (client->skate_grounded && ent->v.velocity[2] > 0)))
+		return false;
+
+	if (fabsf(normal[2]) > SKATE_WALL_BOUNCE_MAX_NORMAL_Z)
+		return false;
+
+	speed = sqrtf(incoming_velocity[0] * incoming_velocity[0] +
+		incoming_velocity[1] * incoming_velocity[1]);
+	normal_speed = incoming_velocity[0] * normal[0] + incoming_velocity[1] * normal[1];
+	if (speed < SKATE_WALL_BOUNCE_MIN_SPEED ||
+		normal_speed > -SKATE_WALL_BOUNCE_MIN_IMPACT_SPEED)
+		return false;
+
+	// Reflect the horizontal impact velocity, losing a little energy. Preserve
+	// some upward kick so a descending rider still pops away from the wall.
+	ent->v.velocity[0] = incoming_velocity[0] -
+		(1.0f + SKATE_WALL_BOUNCE_RESTITUTION) * normal_speed * normal[0];
+	ent->v.velocity[1] = incoming_velocity[1] -
+		(1.0f + SKATE_WALL_BOUNCE_RESTITUTION) * normal_speed * normal[1];
+	if (ent->v.velocity[2] < SKATE_WALL_BOUNCE_UPWARD_SPEED)
+		ent->v.velocity[2] = SKATE_WALL_BOUNCE_UPWARD_SPEED;
+	return true;
+}
+
 void SV_Skate_f (void)
 {
 	edict_t *ent, *board;
@@ -767,6 +815,7 @@ void SV_Skate_f (void)
 	host_client->skate_active = true;
 	host_client->skate_yaw = ent->v.v_angle[YAW];
 	host_client->skate_grounded = !!((int)ent->v.flags & FL_ONGROUND);
+	host_client->skate_jump_active = false;
 	host_client->skate_flip_active = false;
 	host_client->skate_flip_start_time = 0;
 	host_client->usingpmove = false; // stock client prediction does not know skating

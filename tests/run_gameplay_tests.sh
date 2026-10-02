@@ -23,7 +23,7 @@ compile() {
         -I"$repo/Quake" -I"$repo/Windows/SDL2/include" -I"$repo/Windows/zlib/include" \
         -I"$repo/Windows/curl/include" -I"$work" -ffunction-sections -fdata-sections "$@"
 }
-for source in sv_user mathlib chase gl_rmain; do
+for source in sv_user sv_phys mathlib chase gl_rmain; do
     compile -c "$repo/Quake/$source.c" -o "$work/$source.o"
 done
 compile "$repo/tests/test_cigarette_impulse.c" "$work/sv_user.o" "$work/mathlib.o" \
@@ -32,7 +32,7 @@ compile "$repo/tests/test_cigarette_impulse.c" "$work/sv_user.o" "$work/mathlib.
 compile "$repo/tests/test_cigarette_smoke.c" "$work/chase.o" \
     ${LDFLAGS:-} -Wl,--gc-sections -lm -o "$work/cigarette_smoke"
 "$work/cigarette_smoke"
-compile "$repo/tests/test_skate_server.c" "$work/sv_user.o" "$work/mathlib.o" \
+compile "$repo/tests/test_skate_server.c" "$work/sv_user.o" "$work/sv_phys.o" "$work/mathlib.o" \
     ${LDFLAGS:-} -Wl,--gc-sections -lm -o "$work/skate_server"
 "$work/skate_server"
 # The pre-existing renderer has an unused model_matrix local unrelated to these tests.
