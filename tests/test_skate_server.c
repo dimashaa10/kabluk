@@ -265,6 +265,42 @@ static void TestMotion (void)
 	Step(0.05);
 	assert(client.edict->v.velocity[0] == 0); // normal walking does not auto drive
 }
+static void TestSlideCommand (void)
+{
+	Reset(); Command(NULL);
+	SV_SkateSlideDown_f();
+	assert(client.skate_slide_held);
+	SV_SkateSlideUp_f();
+	assert(!client.skate_slide_held);
+	SV_SkateSlide_f();
+	assert(client.skate_slide_held && strstr(printed, "ON"));
+	SV_SkateSlide_f();
+	assert(!client.skate_slide_held && strstr(printed, "OFF"));
+
+	Reset();
+	SV_SkateSlide_f();
+	assert(!client.skate_slide_held && strstr(printed, "Enable skate mode"));
+	cmd_source = src_command;
+	SV_SkateSlide_f();
+	assert(forwarded == 1);
+}
+static void TestWallSlide (void)
+{
+	int clip;
+	vec3_t incoming = {350, 0, -40};
+	Reset(); Command(NULL);
+	client.skate_slide_held = true;
+	client.edict->v.flags = 0;
+	VectorCopy(incoming, client.edict->v.velocity);
+	wall_normal[0] = -1;
+	wall_collision = true;
+	clip = SV_FlyMove(client.edict, 0.05f, NULL);
+	wall_collision = false;
+	assert(!(clip & 2)); // a grind shouldn't be retried as a stair-step
+	assert(fabsf(client.edict->v.velocity[0]) < 0.01f);
+	assert(fabsf(client.edict->v.velocity[1] + 262.5f) < 0.01f); // forward impact redirected along the wall
+	assert(client.edict->v.velocity[2] == 0 && ((int)client.edict->v.flags & FL_ONGROUND));
+}
 static void TestWallBounce (void)
 {
 	int clip;
@@ -458,9 +494,10 @@ static void TestGuards (void)
 }
 int main (void)
 {
-	TestToggleAndPlacement(); TestMotion(); TestWallBounce(); TestJumpFlip(); TestJumpFlipGuards();
+	TestToggleAndPlacement(); TestMotion(); TestSlideCommand(); TestWallSlide(); TestWallBounce(); TestJumpFlip(); TestJumpFlipGuards();
 	TestSlopeAndCleanup(); TestGuards();
 	puts("PASS: skate command, forward acceleration, cap, gradual steering, drift and braking.");
+	puts("PASS: bound/toggled skate-slide command and controlled redirection along brush faces.");
 	puts("PASS: high-speed jump bounce from vertical walls; speed, glancing-hit, and non-jump guards.");
 	puts("PASS: one time-based 360-degree jump flip, upright rider, landing/rearm and takeoff guards.");
 	puts("PASS: board placement/ground clearance, unchanged hull/jump/ammo, lifetime and guards.");

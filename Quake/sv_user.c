@@ -534,6 +534,7 @@ void SV_SkateStop (client_t *client)
 	client->skate_yaw = 0;
 	client->skate_grounded = false;
 	client->skate_jump_active = false;
+	client->skate_slide_held = false;
 	client->skate_flip_active = false;
 	client->skate_flip_start_time = 0;
 }
@@ -690,22 +691,82 @@ void SV_SkateMove (client_t *client, edict_t *ent, const usercmd_t *move, double
 	}
 }
 
-qboolean SV_SkateWallBounce (edict_t *ent, const vec3_t normal, const vec3_t incoming_velocity)
+static client_t *SV_SkateClientForEnt (const edict_t *ent)
 {
-	client_t *client = NULL;
-	float speed, normal_speed;
 	int i;
 
-	if (!ent || !normal || !incoming_velocity || !svs.clients || svs.maxclients <= 0)
-		return false;
-
+	if (!ent || !svs.clients || svs.maxclients <= 0)
+		return NULL;
 	for (i = 0; i < svs.maxclients; i++)
 		if (svs.clients[i].edict == ent)
-		{
-			client = &svs.clients[i];
-			break;
-		}
-	if (!client || !client->active || !client->skate_active || client->edict != ent)
+			return &svs.clients[i];
+	return NULL;
+}
+
+qboolean SV_SkateWallSlide (edict_t *ent, const vec3_t normal, const vec3_t incoming_velocity)
+{
+	client_t *client = SV_SkateClientForEnt(ent);
+	vec3_t angles = {0, 0, 0}, forward, side, up;
+	float normal_length, nx, ny, tx, ty, speed, normal_speed;
+	float tangent_speed, side_projection, forward_projection, slide_speed, direction;
+
+	if (!ent || !normal || !incoming_velocity || !client || !client->active ||
+		!client->skate_active || !client->skate_slide_held ||
+		((int)ent->v.flags & FL_WATERJUMP))
+		return false;
+	if (fabsf(normal[2]) > SKATE_WALL_BOUNCE_MAX_NORMAL_Z)
+		return false;
+
+	normal_length = sqrtf(normal[0] * normal[0] + normal[1] * normal[1]);
+	if (normal_length < 0.9f)
+		return false;
+	nx = normal[0] / normal_length;
+	ny = normal[1] / normal_length;
+	tx = -ny;
+	ty = nx;
+
+	speed = sqrtf(incoming_velocity[0] * incoming_velocity[0] +
+		incoming_velocity[1] * incoming_velocity[1]);
+	normal_speed = incoming_velocity[0] * nx + incoming_velocity[1] * ny;
+	if (speed < SKATE_SLIDE_MIN_SPEED ||
+		normal_speed > -SKATE_SLIDE_MIN_IMPACT_SPEED)
+		return false;
+
+	tangent_speed = incoming_velocity[0] * tx + incoming_velocity[1] * ty;
+	angles[YAW] = client->skate_yaw;
+	AngleVectors(angles, forward, side, up);
+	side_projection = side[0] * tx + side[1] * ty;
+	forward_projection = forward[0] * tx + forward[1] * ty;
+	if (fabsf(tangent_speed) > SKATE_SLIDE_DIRECTION_EPSILON)
+		direction = tangent_speed > 0 ? 1 : -1;
+	else if (fabsf(client->cmd.sidemove) > 1)
+		direction = fabsf(side_projection) > 0.1f ?
+			(client->cmd.sidemove * side_projection > 0 ? 1 : -1) :
+			(client->cmd.sidemove > 0 ? 1 : -1);
+	else if (fabsf(forward_projection) > 0.1f)
+		direction = forward_projection > 0 ? 1 : -1;
+	else
+		direction = side_projection >= 0 ? 1 : -1;
+
+	slide_speed = q_max(fabsf(tangent_speed), speed * SKATE_SLIDE_SPEED_SCALE);
+	slide_speed = q_min(slide_speed, SKATE_MAX_SPEED);
+	ent->v.velocity[0] = tx * slide_speed * direction;
+	ent->v.velocity[1] = ty * slide_speed * direction;
+	if (client->skate_grounded && incoming_velocity[2] <= 0)
+	{
+		ent->v.velocity[2] = 0;
+		ent->v.flags = (int)ent->v.flags | FL_ONGROUND;
+	}
+	return true;
+}
+
+qboolean SV_SkateWallBounce (edict_t *ent, const vec3_t normal, const vec3_t incoming_velocity)
+{
+	client_t *client = SV_SkateClientForEnt(ent);
+	float speed, normal_speed;
+
+	if (!ent || !normal || !incoming_velocity || !client || !client->active ||
+		!client->skate_active || client->edict != ent)
 		return false;
 
 	// Only rebound from vertical surfaces during a real jump, not from floors,
@@ -733,6 +794,50 @@ qboolean SV_SkateWallBounce (edict_t *ent, const vec3_t normal, const vec3_t inc
 	if (ent->v.velocity[2] < SKATE_WALL_BOUNCE_UPWARD_SPEED)
 		ent->v.velocity[2] = SKATE_WALL_BOUNCE_UPWARD_SPEED;
 	return true;
+}
+
+static client_t *SV_SkateSlideCommandClient (qboolean require_skate)
+{
+	if (cmd_source != src_client)
+	{
+		Cmd_ForwardToServer();
+		return NULL;
+	}
+	if (!host_client || !host_client->active || !host_client->spawned)
+		return NULL;
+	if (require_skate && !host_client->skate_active)
+	{
+		SV_ClientPrintf("Enable skate mode first with skate.\n");
+		return NULL;
+	}
+	return host_client;
+}
+
+void SV_SkateSlide_f (void)
+{
+	client_t *client = SV_SkateSlideCommandClient(true);
+	if (!client)
+		return;
+	client->skate_slide_held = !client->skate_slide_held;
+	SV_ClientPrintf("Skate slide %s\n", client->skate_slide_held ? "ON" : "OFF");
+}
+
+void SV_SkateSlideDown_f (void)
+{
+	client_t *client = SV_SkateSlideCommandClient(false);
+	if (client && client->skate_active)
+		client->skate_slide_held = true;
+}
+
+void SV_SkateSlideUp_f (void)
+{
+	if (cmd_source != src_client)
+	{
+		Cmd_ForwardToServer();
+		return;
+	}
+	if (host_client)
+		host_client->skate_slide_held = false;
 }
 
 void SV_Skate_f (void)
@@ -816,6 +921,7 @@ void SV_Skate_f (void)
 	host_client->skate_yaw = ent->v.v_angle[YAW];
 	host_client->skate_grounded = !!((int)ent->v.flags & FL_ONGROUND);
 	host_client->skate_jump_active = false;
+	host_client->skate_slide_held = false;
 	host_client->skate_flip_active = false;
 	host_client->skate_flip_start_time = 0;
 	host_client->usingpmove = false; // stock client prediction does not know skating
@@ -1352,6 +1458,9 @@ qboolean SV_ReadClientMessage (void)
 				SV_CheckDuplicateNames(host_client); // woods #dupnames
 			if (q_strncasecmp(s, "spawn", 5) && q_strncasecmp(s, "begin", 5) && q_strncasecmp(s, "prespawn", 8) &&
 				!(!q_strncasecmp(s, "skate", 5) && (!s[5] || s[5] == ' ' || s[5] == '\t')) &&
+				!(!q_strncasecmp(s, "skate_slide", 11) && (!s[11] || s[11] == ' ' || s[11] == '\t')) &&
+				!(!q_strncasecmp(s, "+skate_slide", 12) && (!s[12] || s[12] == ' ' || s[12] == '\t')) &&
+				!(!q_strncasecmp(s, "-skate_slide", 12) && (!s[12] || s[12] == ' ' || s[12] == '\t')) &&
 				qcvm->extfuncs.SV_ParseClientCommand)
 			{	//the spawn/begin/prespawn are because of numerous mods that disobey the rules.
 				//at a minimum, we must be able to join the server, so that we can see any sprints/bprints (because dprint sucks, yes there's proper ways to deal with this, but moders don't always know them).

@@ -250,6 +250,7 @@ typedef struct client_s
 	float			skate_lift;
 	qboolean		skate_grounded;		// rearm a flip only after touching ground
 	qboolean		skate_jump_active;	// airborne after a real jump, independent of flip animation
+	qboolean		skate_slide_held;	// slide action held by +skate_slide or toggled via skate_slide
 	qboolean		skate_flip_active;
 	double			skate_flip_start_time;
 } client_t;
@@ -395,9 +396,13 @@ void SV_ProcessTimerExecution(void); // woods #svtimer
 void SV_CleanupTimer(void); // woods #svtimer
 
 void SV_Skate_f (void);
+void SV_SkateSlide_f (void);
+void SV_SkateSlideDown_f (void);
+void SV_SkateSlideUp_f (void);
 void SV_SkateStop (client_t *client);
 void SV_SkateUpdate (client_t *client);
 void SV_SkateMove (client_t *client, edict_t *ent, const usercmd_t *move, double dt);
+qboolean SV_SkateWallSlide (edict_t *ent, const vec3_t normal, const vec3_t incoming_velocity);
 qboolean SV_SkateWallBounce (edict_t *ent, const vec3_t normal, const vec3_t incoming_velocity);
 int SV_SkateStat (const client_t *client);
 qboolean SV_IsSkateBoard (const edict_t *ent);
