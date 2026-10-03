@@ -458,7 +458,7 @@ static void TestWallSlide (void)
 	assert(fabsf(client.edict->v.velocity[1] +
 		(SKATE_SLIDE_MIN_SPEED + 50) * SKATE_SLIDE_SPEED_SCALE) < 0.01f); // forward impact redirected along the wall
 	assert(client.edict->v.velocity[2] == 0 && ((int)client.edict->v.flags & FL_ONGROUND));
-	assert(client.skate_sliding && !client.skate_slide_armed && client.skate_slide_surface == &pool[0]);
+	assert(client.skate_sliding && client.skate_slide_armed && client.skate_slide_surface == &pool[0]);
 	SV_SkateUpdate(&client);
 	assert(client.skate_board->v.angles[PITCH] == SKATE_SLIDE_BOARD_PITCH);
 	assert(fabsf(client.skate_slide_edge_height - wall_top_z) < 0.01f);
@@ -477,11 +477,11 @@ static void TestWallSlide (void)
 	assert(client.skate_sliding && fabsf(client.edict->v.velocity[0]) < 0.01f);
 	assert(client.edict->v.velocity[1] < -250 && client.edict->v.origin[1] < old_y);
 
-	// Losing support ends the one-shot grind; the consumed tap cannot latch
-	// onto a later face unless the player presses the key again.
+	// Losing this lip releases the board, but the slide toggle remains armed
+	// and can catch another nearby edge until the player presses again.
 	wall_support = top_support = false;
 	assert(!SV_SkateWallSlideMove(client.edict));
-	assert(!client.skate_sliding && !client.skate_slide_armed);
+	assert(!client.skate_sliding && client.skate_slide_armed);
 	SV_SkateUpdate(&client);
 	assert(client.skate_board->v.angles[PITCH] == 0); // restore board pitch after leaving the grind
 }
@@ -512,33 +512,34 @@ static void TestSlideNeedsUpperEdge (void)
 static void TestWallSlideLatchRadius (void)
 {
 	vec3_t normal = {-1, 0, 0};
-	vec3_t incoming = {SKATE_SLIDE_MIN_SPEED + 50, 0, 0};
+	vec3_t incoming = {100, 0, 0}; // a nearby tap attaches without needing a wall impact
 
 	Reset(); Command(NULL);
-	client.skate_slide_armed = true;
-	client.edict->v.origin[0] = 66; // 64 units from the lip: outside the old probe/adhesion range
+	client.edict->v.origin[0] = 67; // 63 units from the lip: beyond the old probe radius
 	client.edict->v.flags = 0;
 	VectorCopy(incoming, client.edict->v.velocity);
 	VectorCopy(normal, wall_normal);
 	wall_plane_point[0] = 130;
 	wall_top_z = 64;
 	wall_support = top_support = true;
-	assert(SV_SkateWallSlide(client.edict, &pool[0], normal, incoming));
-	assert(client.skate_sliding && !client.skate_slide_armed);
+	SV_SkateSlideDown_f();
+	assert(client.skate_sliding && client.skate_slide_armed && strstr(printed, "attached"));
 	assert(SV_SkateWallSlideMove(client.edict)); // widened adhesion keeps the catch attached
 	assert(fabsf((client.edict->v.origin[0] - wall_plane_point[0]) * normal[0] -
 		SKATE_SLIDE_EDGE_OFFSET) < 0.01f);
+	SV_SkateSlideDown_f();
+	assert(!client.skate_sliding && !client.skate_slide_armed); // second press detaches
 
 	Reset(); Command(NULL);
-	client.skate_slide_armed = true;
-	client.edict->v.origin[0] = 64; // beyond the new maximum catch radius
+	client.edict->v.origin[0] = 64; // outside the new maximum catch radius
 	client.edict->v.flags = 0;
 	VectorCopy(incoming, client.edict->v.velocity);
 	VectorCopy(normal, wall_normal);
 	wall_plane_point[0] = 130;
 	wall_support = top_support = true;
-	assert(!SV_SkateWallSlide(client.edict, &pool[0], normal, incoming));
+	SV_SkateSlideDown_f();
 	assert(!client.skate_sliding && client.skate_slide_armed);
+	assert(strstr(printed, "armed")); // the toggle remains on for the next nearby edge
 }
 static void TestWallBounce (void)
 {
@@ -738,8 +739,8 @@ int main (void)
 	TestSlopeAndCleanup(); TestGuards();
 	puts("PASS: skate command, forward acceleration, cap, gradual steering, drift and braking.");
 	puts("PASS: skate cruise/idle, acceleration, shooting, jump and landing frame sequences.");
-	puts("PASS: tap-triggered one-shot slide; key-up does not cancel and edge loss consumes the request.");
-	puts("PASS: wider brush-edge catch/adhesion radius with an out-of-range guard.");
+	puts("PASS: slide toggles on/off by tap; key-up is ignored and a second tap detaches.");
+	puts("PASS: proximity tap attaches to an expanded brush-edge radius and ignores distant edges.");
 	puts("PASS: high-speed jump bounce from vertical walls; speed, glancing-hit, and non-jump guards.");
 	puts("PASS: one time-based 360-degree jump flip, upright rider, landing/rearm and takeoff guards.");
 	puts("PASS: board placement/ground clearance, unchanged hull/jump/ammo, lifetime and guards.");

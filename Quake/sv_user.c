@@ -1033,7 +1033,7 @@ qboolean SV_SkateWallSlideMove (edict_t *ent)
 
 	if (!client || !client->skate_sliding)
 		return false;
-	if (!client->active || !client->skate_active ||
+	if (!client->active || !client->skate_active || !client->skate_slide_armed ||
 		((int)ent->v.flags & FL_WATERJUMP) ||
 		!SV_SkateFlatNormal(client->skate_slide_normal, &nx, &ny))
 	{
@@ -1098,8 +1098,8 @@ qboolean SV_SkateWallSlideMove (edict_t *ent)
 	return true;
 }
 
-qboolean SV_SkateWallSlide (edict_t *ent, edict_t *surface,
-	const vec3_t normal, const vec3_t incoming_velocity)
+static qboolean SV_SkateWallSlideInternal (edict_t *ent, edict_t *surface,
+	const vec3_t normal, const vec3_t incoming_velocity, qboolean from_tap)
 {
 	client_t *client = SV_SkateClientForEnt(ent);
 	vec3_t angles = {0, 0, 0}, forward, side, up;
@@ -1110,10 +1110,9 @@ qboolean SV_SkateWallSlide (edict_t *ent, edict_t *surface,
 
 	if (!client || !ent || !normal || !incoming_velocity)
 		return false;
-	if (client->skate_sliding && !client->skate_active)
+	if (client->skate_sliding && (!client->skate_active || !client->skate_slide_armed))
 		SV_SkateSlideClear(client);
-	if (!client->active || !client->skate_active ||
-		(!client->skate_slide_armed && !client->skate_sliding) ||
+	if (!client->active || !client->skate_active || !client->skate_slide_armed ||
 		((int)ent->v.flags & FL_WATERJUMP) || !surface ||
 		surface->v.solid != SOLID_BSP || !SV_SkateFlatNormal(normal, &nx, &ny))
 		return false;
@@ -1142,8 +1141,8 @@ qboolean SV_SkateWallSlide (edict_t *ent, edict_t *surface,
 	speed = sqrtf(incoming_velocity[0] * incoming_velocity[0] +
 		incoming_velocity[1] * incoming_velocity[1]);
 	normal_speed = incoming_velocity[0] * nx + incoming_velocity[1] * ny;
-	if (speed < SKATE_SLIDE_MIN_SPEED ||
-		normal_speed > -SKATE_SLIDE_MIN_IMPACT_SPEED)
+	if (!from_tap && (speed < SKATE_SLIDE_MIN_SPEED ||
+		normal_speed > -SKATE_SLIDE_MIN_IMPACT_SPEED))
 		return false;
 	if (!SV_SkateFindTopEdge(ent, surface, nx, ny, &edge_height))
 		return false;
@@ -1193,7 +1192,6 @@ qboolean SV_SkateWallSlide (edict_t *ent, edict_t *surface,
 	client->skate_yaw = anglemod(atan2f(ent->v.velocity[1], ent->v.velocity[0]) / M_PI_DIV_180);
 	ent->v.angles[YAW] = client->skate_yaw;
 	client->skate_sliding = true;
-	client->skate_slide_armed = false; // one tap buys one grind; release never matters
 	client->skate_slide_normal[0] = nx;
 	client->skate_slide_normal[1] = ny;
 	client->skate_slide_normal[2] = 0;
@@ -1203,6 +1201,68 @@ qboolean SV_SkateWallSlide (edict_t *ent, edict_t *surface,
 	ent->v.flags = (int)ent->v.flags | FL_ONGROUND;
 	ent->v.groundentity = EDICT_TO_PROG(surface);
 	return true;
+}
+
+qboolean SV_SkateWallSlide (edict_t *ent, edict_t *surface,
+	const vec3_t normal, const vec3_t incoming_velocity)
+{
+	return SV_SkateWallSlideInternal(ent, surface, normal, incoming_velocity, false);
+}
+
+static qboolean SV_SkateTryAttachNearbyEdge (client_t *client)
+{
+	static const float height_offsets[] = {-20.0f, -8.0f, 0.0f, 16.0f, 32.0f};
+	vec3_t zero = {0, 0, 0}, start, end, best_normal = {0, 0, 0};
+	edict_t *ent, *best_surface = NULL;
+	float best_distance = SKATE_SLIDE_PROBE_DISTANCE + 1.0f;
+	float edge_height, angle, dx, dy, nx, ny, distance;
+	int direction, height;
+	trace_t trace;
+
+	if (!client || !client->active || !client->skate_active ||
+		!client->skate_slide_armed || client->skate_sliding || !(ent = client->edict))
+		return false;
+
+	// Sweep radial point probes around the rider at several body heights. This
+	// lets a tap find a nearby brush face and validate its upper lip without a
+	// collision having to happen first.
+	for (direction = 0; direction < 16; direction++)
+	{
+		angle = direction * (360.0f / 16.0f) * M_PI_DIV_180;
+		dx = cosf(angle);
+		dy = sinf(angle);
+		for (height = 0; height < (int)(sizeof(height_offsets) / sizeof(height_offsets[0])); height++)
+		{
+			VectorCopy(ent->v.origin, start);
+			start[2] += height_offsets[height];
+			VectorCopy(start, end);
+			end[0] += dx * SKATE_SLIDE_PROBE_DISTANCE;
+			end[1] += dy * SKATE_SLIDE_PROBE_DISTANCE;
+			trace = SV_Move(start, zero, zero, end, MOVE_NOMONSTERS, ent);
+			if (trace.fraction == 1 || trace.startsolid || trace.allsolid || !trace.ent ||
+				trace.ent->v.solid != SOLID_BSP ||
+				!SV_SkateFlatNormal(trace.plane.normal, &nx, &ny))
+				continue;
+
+			distance = sqrtf((trace.endpos[0] - ent->v.origin[0]) *
+				(trace.endpos[0] - ent->v.origin[0]) +
+				(trace.endpos[1] - ent->v.origin[1]) *
+				(trace.endpos[1] - ent->v.origin[1]));
+			if (distance >= best_distance ||
+				!SV_SkateFindTopEdge(ent, trace.ent, nx, ny, &edge_height))
+				continue;
+			best_distance = distance;
+			best_surface = trace.ent;
+			best_normal[0] = nx;
+			best_normal[1] = ny;
+			best_normal[2] = 0;
+		}
+	}
+
+	if (!best_surface)
+		return false;
+	return SV_SkateWallSlideInternal(ent, best_surface, best_normal,
+		ent->v.velocity, true);
 }
 
 qboolean SV_SkateWallBounce (edict_t *ent, const vec3_t normal, const vec3_t incoming_velocity)
@@ -1270,8 +1330,13 @@ static void SV_SkateSlideToggle (client_t *client, qboolean report)
 	else
 	{
 		client->skate_slide_armed = true;
-		if (report)
-			SV_ClientPrintf("Skate slide armed for the next edge\n");
+		if (SV_SkateTryAttachNearbyEdge(client))
+		{
+			if (report)
+				SV_ClientPrintf("Skate slide attached; press again to detach\n");
+		}
+		else if (report)
+			SV_ClientPrintf("Skate slide armed for the next nearby edge\n");
 	}
 }
 
@@ -1286,7 +1351,7 @@ void SV_SkateSlideDown_f (void)
 {
 	client_t *client = SV_SkateSlideCommandClient(false);
 	if (client && client->skate_active)
-		SV_SkateSlideToggle(client, true); // one press arms or cancels; key-up does not affect it
+		SV_SkateSlideToggle(client, true); // one press toggles; a nearby edge is attached immediately
 }
 
 void SV_SkateSlideUp_f (void)
@@ -1387,7 +1452,7 @@ void SV_Skate_f (void)
 	host_client->skate_flip_start_time = 0;
 	host_client->usingpmove = false; // stock client prediction does not know skating
 	SV_SkateUpdate(host_client);
-	SV_ClientPrintf("Skate ON: mouse/A-D steer, S brakes, jump flips the board; tap Skate slide to arm one grind.\n");
+	SV_ClientPrintf("Skate ON: mouse/A-D steer, S brakes, jump flips; tap Skate slide near an edge to attach, tap again to detach.\n");
 }
 
 /*
