@@ -408,8 +408,8 @@ int SV_FlyMove (edict_t *ent, float time, trace_t *steptrace)
 		if (ent->free)
 			break;		// removed by the impact function
 
-		// A held skate-slide grinds a brush's upper edge and spends the remaining
-		// frame moving tangentially instead of retrying this collision as a step.
+		// A tap-armed skate slide grinds a brush's upper edge and spends the
+		// remaining frame moving tangentially instead of retrying this as a step.
 		if (SV_SkateWallSlide(ent, trace.ent, trace.plane.normal, original_velocity))
 		{
 			blocked &= ~2;

@@ -413,23 +413,27 @@ static void TestSlideCommand (void)
 {
 	Reset(); Command(NULL);
 	SV_SkateSlideDown_f();
-	assert(client.skate_slide_held);
+	assert(client.skate_slide_armed && strstr(printed, "armed"));
+	SV_SkateSlideUp_f();
+	assert(client.skate_slide_armed); // releasing the key does not cancel the tap
+	SV_SkateSlide_f();
+	assert(!client.skate_slide_armed && strstr(printed, "OFF")); // another press cancels the request
+	SV_SkateSlide_f();
+	assert(client.skate_slide_armed && strstr(printed, "armed"));
+
+	client.skate_slide_armed = false; // an active grind has consumed the one-shot request
 	client.skate_sliding = true;
 	client.skate_slide_surface = &pool[0];
 	client.skate_slide_edge_height = 64;
+	SV_SkateSlideDown_f();
+	assert(!client.skate_slide_armed && !client.skate_sliding && !client.skate_slide_surface &&
+		client.skate_slide_edge_height == 0 && strstr(printed, "OFF"));
 	SV_SkateSlideUp_f();
-	assert(!client.skate_slide_held && !client.skate_sliding && !client.skate_slide_surface &&
-		client.skate_slide_edge_height == 0);
-	SV_SkateSlide_f();
-	assert(client.skate_slide_held && strstr(printed, "ON"));
-	client.skate_sliding = true;
-	client.skate_slide_surface = &pool[0];
-	SV_SkateSlide_f();
-	assert(!client.skate_slide_held && !client.skate_sliding && !client.skate_slide_surface && strstr(printed, "OFF"));
+	assert(!client.skate_sliding); // key-up remains a no-op
 
 	Reset();
 	SV_SkateSlide_f();
-	assert(!client.skate_slide_held && strstr(printed, "Enable skate mode"));
+	assert(!client.skate_slide_armed && strstr(printed, "Enable skate mode"));
 	cmd_source = src_command;
 	SV_SkateSlide_f();
 	assert(forwarded == 1);
@@ -440,7 +444,9 @@ static void TestWallSlide (void)
 	float old_y;
 	vec3_t incoming = {SKATE_SLIDE_MIN_SPEED + 50, 0, -40};
 	Reset(); Command(NULL);
-	client.skate_slide_held = true;
+	SV_SkateSlideDown_f();
+	SV_SkateSlideUp_f(); // tap once, then release before hitting the edge
+	assert(client.skate_slide_armed);
 	client.edict->v.flags = 0;
 	VectorCopy(incoming, client.edict->v.velocity);
 	wall_normal[0] = -1;
@@ -452,7 +458,7 @@ static void TestWallSlide (void)
 	assert(fabsf(client.edict->v.velocity[1] +
 		(SKATE_SLIDE_MIN_SPEED + 50) * SKATE_SLIDE_SPEED_SCALE) < 0.01f); // forward impact redirected along the wall
 	assert(client.edict->v.velocity[2] == 0 && ((int)client.edict->v.flags & FL_ONGROUND));
-	assert(client.skate_sliding && client.skate_slide_surface == &pool[0]);
+	assert(client.skate_sliding && !client.skate_slide_armed && client.skate_slide_surface == &pool[0]);
 	SV_SkateUpdate(&client);
 	assert(client.skate_board->v.angles[PITCH] == SKATE_SLIDE_BOARD_PITCH);
 	assert(fabsf(client.skate_slide_edge_height - wall_top_z) < 0.01f);
@@ -471,11 +477,11 @@ static void TestWallSlide (void)
 	assert(client.skate_sliding && fabsf(client.edict->v.velocity[0]) < 0.01f);
 	assert(client.edict->v.velocity[1] < -250 && client.edict->v.origin[1] < old_y);
 
-	// Losing support at the end of the face releases the latch without
-	// clearing the held input (the player may latch onto another face).
+	// Losing support ends the one-shot grind; the consumed tap cannot latch
+	// onto a later face unless the player presses the key again.
 	wall_support = top_support = false;
 	assert(!SV_SkateWallSlideMove(client.edict));
-	assert(!client.skate_sliding && client.skate_slide_held);
+	assert(!client.skate_sliding && !client.skate_slide_armed);
 	SV_SkateUpdate(&client);
 	assert(client.skate_board->v.angles[PITCH] == 0); // restore board pitch after leaving the grind
 }
@@ -483,7 +489,7 @@ static void TestSlideNeedsUpperEdge (void)
 {
 	vec3_t incoming = {SKATE_SLIDE_MIN_SPEED + 50, 0, -40};
 	Reset(); Command(NULL);
-	client.skate_slide_held = true;
+	client.skate_slide_armed = true;
 	client.edict->v.flags = 0;
 	VectorCopy(incoming, client.edict->v.velocity);
 	wall_normal[0] = -1;
@@ -494,7 +500,7 @@ static void TestSlideNeedsUpperEdge (void)
 	assert(!client.skate_sliding); // a vertical face without a top lip is not a grind edge
 
 	Reset(); Command(NULL);
-	client.skate_slide_held = true;
+	client.skate_slide_armed = true;
 	client.edict->v.flags = 0;
 	VectorCopy(incoming, client.edict->v.velocity);
 	wall_normal[0] = -1;
@@ -502,6 +508,37 @@ static void TestSlideNeedsUpperEdge (void)
 	wall_collision = true;
 	SV_FlyMove(client.edict, 0.05f, NULL);
 	assert(!client.skate_sliding); // a wall that continues above its apparent cap has no upper edge
+}
+static void TestWallSlideLatchRadius (void)
+{
+	vec3_t normal = {-1, 0, 0};
+	vec3_t incoming = {SKATE_SLIDE_MIN_SPEED + 50, 0, 0};
+
+	Reset(); Command(NULL);
+	client.skate_slide_armed = true;
+	client.edict->v.origin[0] = 66; // 64 units from the lip: outside the old probe/adhesion range
+	client.edict->v.flags = 0;
+	VectorCopy(incoming, client.edict->v.velocity);
+	VectorCopy(normal, wall_normal);
+	wall_plane_point[0] = 130;
+	wall_top_z = 64;
+	wall_support = top_support = true;
+	assert(SV_SkateWallSlide(client.edict, &pool[0], normal, incoming));
+	assert(client.skate_sliding && !client.skate_slide_armed);
+	assert(SV_SkateWallSlideMove(client.edict)); // widened adhesion keeps the catch attached
+	assert(fabsf((client.edict->v.origin[0] - wall_plane_point[0]) * normal[0] -
+		SKATE_SLIDE_EDGE_OFFSET) < 0.01f);
+
+	Reset(); Command(NULL);
+	client.skate_slide_armed = true;
+	client.edict->v.origin[0] = 64; // beyond the new maximum catch radius
+	client.edict->v.flags = 0;
+	VectorCopy(incoming, client.edict->v.velocity);
+	VectorCopy(normal, wall_normal);
+	wall_plane_point[0] = 130;
+	wall_support = top_support = true;
+	assert(!SV_SkateWallSlide(client.edict, &pool[0], normal, incoming));
+	assert(!client.skate_sliding && client.skate_slide_armed);
 }
 static void TestWallBounce (void)
 {
@@ -697,11 +734,12 @@ static void TestGuards (void)
 }
 int main (void)
 {
-	TestToggleAndPlacement(); TestMotion(); TestSkateAnimations(); TestSlideCommand(); TestWallSlide(); TestSlideNeedsUpperEdge(); TestWallBounce(); TestJumpFlip(); TestJumpFlipGuards();
+	TestToggleAndPlacement(); TestMotion(); TestSkateAnimations(); TestSlideCommand(); TestWallSlide(); TestSlideNeedsUpperEdge(); TestWallSlideLatchRadius(); TestWallBounce(); TestJumpFlip(); TestJumpFlipGuards();
 	TestSlopeAndCleanup(); TestGuards();
 	puts("PASS: skate command, forward acceleration, cap, gradual steering, drift and braking.");
 	puts("PASS: skate cruise/idle, acceleration, shooting, jump and landing frame sequences.");
-	puts("PASS: held skate slide latches to brush upper edges, then releases at the edge or key-up.");
+	puts("PASS: tap-triggered one-shot slide; key-up does not cancel and edge loss consumes the request.");
+	puts("PASS: wider brush-edge catch/adhesion radius with an out-of-range guard.");
 	puts("PASS: high-speed jump bounce from vertical walls; speed, glancing-hit, and non-jump guards.");
 	puts("PASS: one time-based 360-degree jump flip, upright rider, landing/rearm and takeoff guards.");
 	puts("PASS: board placement/ground clearance, unchanged hull/jump/ammo, lifetime and guards.");

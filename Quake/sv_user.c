@@ -715,7 +715,7 @@ void SV_SkateStop (client_t *client)
 	client->skate_yaw = 0;
 	client->skate_grounded = false;
 	client->skate_jump_active = false;
-	client->skate_slide_held = false;
+	client->skate_slide_armed = false;
 	SV_SkateSlideClear(client);
 	SV_SkateAnimationReset(client);
 	client->skate_flip_active = false;
@@ -1033,7 +1033,7 @@ qboolean SV_SkateWallSlideMove (edict_t *ent)
 
 	if (!client || !client->skate_sliding)
 		return false;
-	if (!client->active || !client->skate_active || !client->skate_slide_held ||
+	if (!client->active || !client->skate_active ||
 		((int)ent->v.flags & FL_WATERJUMP) ||
 		!SV_SkateFlatNormal(client->skate_slide_normal, &nx, &ny))
 	{
@@ -1110,9 +1110,10 @@ qboolean SV_SkateWallSlide (edict_t *ent, edict_t *surface,
 
 	if (!client || !ent || !normal || !incoming_velocity)
 		return false;
-	if (client->skate_sliding && (!client->skate_active || !client->skate_slide_held))
+	if (client->skate_sliding && !client->skate_active)
 		SV_SkateSlideClear(client);
-	if (!client->active || !client->skate_active || !client->skate_slide_held ||
+	if (!client->active || !client->skate_active ||
+		(!client->skate_slide_armed && !client->skate_sliding) ||
 		((int)ent->v.flags & FL_WATERJUMP) || !surface ||
 		surface->v.solid != SOLID_BSP || !SV_SkateFlatNormal(normal, &nx, &ny))
 		return false;
@@ -1192,6 +1193,7 @@ qboolean SV_SkateWallSlide (edict_t *ent, edict_t *surface,
 	client->skate_yaw = anglemod(atan2f(ent->v.velocity[1], ent->v.velocity[0]) / M_PI_DIV_180);
 	ent->v.angles[YAW] = client->skate_yaw;
 	client->skate_sliding = true;
+	client->skate_slide_armed = false; // one tap buys one grind; release never matters
 	client->skate_slide_normal[0] = nx;
 	client->skate_slide_normal[1] = ny;
 	client->skate_slide_normal[2] = 0;
@@ -1256,22 +1258,35 @@ static client_t *SV_SkateSlideCommandClient (qboolean require_skate)
 	return host_client;
 }
 
+static void SV_SkateSlideToggle (client_t *client, qboolean report)
+{
+	if (client->skate_slide_armed || client->skate_sliding)
+	{
+		client->skate_slide_armed = false;
+		SV_SkateSlideClear(client);
+		if (report)
+			SV_ClientPrintf("Skate slide OFF\n");
+	}
+	else
+	{
+		client->skate_slide_armed = true;
+		if (report)
+			SV_ClientPrintf("Skate slide armed for the next edge\n");
+	}
+}
+
 void SV_SkateSlide_f (void)
 {
 	client_t *client = SV_SkateSlideCommandClient(true);
-	if (!client)
-		return;
-	client->skate_slide_held = !client->skate_slide_held;
-	if (!client->skate_slide_held)
-		SV_SkateSlideClear(client);
-	SV_ClientPrintf("Skate slide %s\n", client->skate_slide_held ? "ON" : "OFF");
+	if (client)
+		SV_SkateSlideToggle(client, true);
 }
 
 void SV_SkateSlideDown_f (void)
 {
 	client_t *client = SV_SkateSlideCommandClient(false);
 	if (client && client->skate_active)
-		client->skate_slide_held = true;
+		SV_SkateSlideToggle(client, true); // one press arms or cancels; key-up does not affect it
 }
 
 void SV_SkateSlideUp_f (void)
@@ -1281,11 +1296,7 @@ void SV_SkateSlideUp_f (void)
 		Cmd_ForwardToServer();
 		return;
 	}
-	if (host_client)
-	{
-		host_client->skate_slide_held = false;
-		SV_SkateSlideClear(host_client);
-	}
+	// A tap arms one grind; releasing the key must not cancel it.
 }
 
 void SV_Skate_f (void)
@@ -1369,14 +1380,14 @@ void SV_Skate_f (void)
 	host_client->skate_yaw = ent->v.v_angle[YAW];
 	host_client->skate_grounded = !!((int)ent->v.flags & FL_ONGROUND);
 	host_client->skate_jump_active = false;
-	host_client->skate_slide_held = false;
+	host_client->skate_slide_armed = false;
 	SV_SkateSlideClear(host_client);
 	SV_SkateAnimationReset(host_client);
 	host_client->skate_flip_active = false;
 	host_client->skate_flip_start_time = 0;
 	host_client->usingpmove = false; // stock client prediction does not know skating
 	SV_SkateUpdate(host_client);
-	SV_ClientPrintf("Skate ON: mouse/A-D steer, S brakes, jump flips the board.\n");
+	SV_ClientPrintf("Skate ON: mouse/A-D steer, S brakes, jump flips the board; tap Skate slide to arm one grind.\n");
 }
 
 /*
