@@ -647,6 +647,91 @@ static void TestJumpFlipGuards (void)
 	assert(!client.skate_flip_active && client.skate_grounded);
 	assert(client.skate_flip_start_time == 0 && client.skate_board->v.angles[ROLL] == 0);
 }
+static void TestShoveIts (void)
+{
+	double start;
+	float base_yaw, expected_yaw;
+	int i;
+
+	Reset(); Command(NULL);
+	SV_SkateShoveIt_f();
+	assert(!client.skate_shoveit_active && strstr(printed, "airborne"));
+
+	// A Pop Shove-It replaces the default air roll, spins the board 180
+	// degrees, and carries that stance through the catch without a yaw snap.
+	client.edict->v.flags = 0;
+	client.edict->v.velocity[2] = 270;
+	SV_SkateUpdate(&client);
+	assert(client.skate_jump_active && client.skate_flip_active);
+	base_yaw = client.skate_yaw;
+	start = qcvm->time;
+	client.cmd.sidemove = -400; // A selects the counterclockwise shove-it
+	SV_SkateShoveIt_f();
+	assert(client.skate_shoveit_active && client.skate_shoveit_degrees == -SKATE_SHOVEIT_POP_ANGLE);
+	assert(!client.skate_flip_active && client.skate_board->v.angles[ROLL] == 0);
+
+	for (i = 1; i <= 4; i++)
+	{
+		qcvm->time = start + SKATE_SHOVEIT_DURATION * i / 4;
+		SV_SkateUpdate(&client);
+		expected_yaw = anglemod(base_yaw - SKATE_SHOVEIT_POP_ANGLE * i / 4);
+		assert(fabsf(client.skate_board->v.angles[YAW] - expected_yaw) < 0.01f);
+		assert(client.edict->v.angles[YAW] == client.skate_yaw); // rider stays facing forward
+	}
+	assert(!client.skate_shoveit_active && client.skate_board_yaw_offset == 180);
+	assert(client.skate_board->v.angles[YAW] == anglemod(base_yaw + 180));
+
+	// Land and take off again. A 360 Shove-It makes a full turn and ends at
+	// the same board heading, including from the post-Pop stance.
+	client.edict->v.flags = FL_ONGROUND;
+	client.edict->v.velocity[2] = 0;
+	SV_SkateUpdate(&client);
+	client.edict->v.flags = 0;
+	client.edict->v.velocity[2] = 270;
+	SV_SkateUpdate(&client);
+	assert(client.skate_jump_active && client.skate_flip_active);
+	client.cmd.sidemove = 400; // D selects the clockwise 360 spin
+	start = qcvm->time;
+	SV_Skate360ShoveIt_f();
+	assert(client.skate_shoveit_active && client.skate_shoveit_degrees == SKATE_SHOVEIT_360_ANGLE);
+	assert(!client.skate_flip_active);
+
+	for (i = 1; i <= 4; i++)
+	{
+		qcvm->time = start + SKATE_SHOVEIT_DURATION * i / 4;
+		SV_SkateUpdate(&client);
+		expected_yaw = anglemod(base_yaw + 180 + SKATE_SHOVEIT_360_ANGLE * i / 4);
+		assert(fabsf(client.skate_board->v.angles[YAW] - expected_yaw) < 0.01f);
+	}
+	assert(!client.skate_shoveit_active && client.skate_board_yaw_offset == 180);
+	assert(client.skate_board->v.angles[YAW] == anglemod(base_yaw + 180));
+
+	// Falling, grinding, and duplicate inputs cannot start/replace a trick.
+	Reset(); Command(NULL);
+	client.edict->v.flags = 0;
+	client.edict->v.velocity[2] = -100;
+	SV_SkateUpdate(&client);
+	SV_SkateShoveIt_f();
+	assert(!client.skate_shoveit_active && strstr(printed, "real jump"));
+
+	Reset(); Command(NULL);
+	client.edict->v.flags = 0;
+	client.edict->v.velocity[2] = 270;
+	SV_SkateUpdate(&client);
+	client.skate_sliding = true;
+	SV_SkateShoveIt_f();
+	assert(!client.skate_shoveit_active && strstr(printed, "grind"));
+	client.skate_sliding = false;
+	SV_SkateShoveIt_f();
+	assert(client.skate_shoveit_active);
+	SV_Skate360ShoveIt_f();
+	assert(client.skate_shoveit_degrees == SKATE_SHOVEIT_POP_ANGLE && strstr(printed, "current trick"));
+
+	Reset();
+	cmd_source = src_command;
+	SV_Skate360ShoveIt_f();
+	assert(forwarded == 1 && !client.skate_shoveit_active);
+}
 static void TestSlopeAndCleanup (void)
 {
 	int reason;
@@ -697,13 +782,14 @@ static void TestGuards (void)
 }
 int main (void)
 {
-	TestToggleAndPlacement(); TestMotion(); TestSkateAnimations(); TestSlideCommand(); TestWallSlide(); TestSlideNeedsUpperEdge(); TestWallBounce(); TestJumpFlip(); TestJumpFlipGuards();
+	TestToggleAndPlacement(); TestMotion(); TestSkateAnimations(); TestSlideCommand(); TestWallSlide(); TestSlideNeedsUpperEdge(); TestWallBounce(); TestJumpFlip(); TestJumpFlipGuards(); TestShoveIts();
 	TestSlopeAndCleanup(); TestGuards();
 	puts("PASS: skate command, forward acceleration, cap, gradual steering, drift and braking.");
 	puts("PASS: skate cruise/idle, acceleration, shooting, jump and landing frame sequences.");
 	puts("PASS: held skate slide latches to brush upper edges, then releases at the edge or key-up.");
 	puts("PASS: high-speed jump bounce from vertical walls; speed, glancing-hit, and non-jump guards.");
 	puts("PASS: one time-based 360-degree jump flip, upright rider, landing/rearm and takeoff guards.");
+	puts("PASS: 180/360 Shove-It yaw spins, stance carry-through, flip suppression and invalid-input guards.");
 	puts("PASS: board placement/ground clearance, unchanged hull/jump/ammo, lifetime and guards.");
 	return 0;
 }

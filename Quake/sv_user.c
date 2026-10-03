@@ -691,6 +691,13 @@ static void SV_SkateSlideClear (client_t *client)
 	client->skate_slide_edge_height = 0;
 }
 
+static void SV_SkateShoveItClear (client_t *client)
+{
+	client->skate_shoveit_active = false;
+	client->skate_shoveit_degrees = 0;
+	client->skate_shoveit_start_time = 0;
+}
+
 void SV_SkateStop (client_t *client)
 {
 	if (client->skate_board && sv.qcvm.edicts)
@@ -720,6 +727,8 @@ void SV_SkateStop (client_t *client)
 	SV_SkateAnimationReset(client);
 	client->skate_flip_active = false;
 	client->skate_flip_start_time = 0;
+	SV_SkateShoveItClear(client);
+	client->skate_board_yaw_offset = 0;
 }
 
 int SV_SkateStat (const client_t *client)
@@ -768,6 +777,50 @@ static float SV_SkateGroundLift (edict_t *ent, const qmodel_t *model)
 	return CLAMP(SKATE_GROUND_CLEARANCE, lift, SKATE_MAX_LIFT);
 }
 
+static void SV_SkateShoveItStart (client_t *client, float degrees, double start_time)
+{
+	client->skate_shoveit_active = true;
+	client->skate_shoveit_degrees = degrees;
+	client->skate_shoveit_start_time = start_time;
+	// The selected shove-it replaces the automatic flip for this jump.
+	client->skate_flip_active = false;
+	client->skate_flip_start_time = 0;
+}
+
+static float SV_SkateShoveItYaw (client_t *client, const edict_t *ent)
+{
+	double elapsed;
+	float angle;
+
+	if (!client->skate_shoveit_active)
+		return 0;
+
+	elapsed = qcvm->time - client->skate_shoveit_start_time;
+	if (elapsed < 0)
+	{
+		SV_SkateShoveItClear(client);
+		return 0;
+	}
+	if (elapsed >= SKATE_SHOVEIT_DURATION)
+	{
+		// Preserve the completed 180-degree stance switch; a 360-degree
+		// shove-it naturally returns to the previous heading.
+		client->skate_board_yaw_offset = anglemod(
+			client->skate_board_yaw_offset + client->skate_shoveit_degrees);
+		SV_SkateShoveItClear(client);
+		return 0;
+	}
+	if (!client->skate_jump_active || ((int)ent->v.flags & FL_ONGROUND))
+	{
+		// A short/aborted jump cancels the trick rather than banking a partial turn.
+		SV_SkateShoveItClear(client);
+		return 0;
+	}
+
+	angle = client->skate_shoveit_degrees * (float)(elapsed / SKATE_SHOVEIT_DURATION);
+	return angle;
+}
+
 static float SV_SkateJumpRoll (client_t *client, const edict_t *ent)
 {
 	qboolean grounded = !!((int)ent->v.flags & FL_ONGROUND);
@@ -785,8 +838,8 @@ static float SV_SkateJumpRoll (client_t *client, const edict_t *ent)
 		// An upward takeoff, not merely holding jump or falling off an edge.
 		// Normal QuakeC/native jump physics have already run at this point.
 		client->skate_jump_active = true;
-		client->skate_flip_active = true;
-		client->skate_flip_start_time = qcvm->time;
+		client->skate_flip_active = !client->skate_shoveit_active;
+		client->skate_flip_start_time = client->skate_flip_active ? qcvm->time : 0;
 	}
 	client->skate_grounded = grounded;
 	if (!client->skate_flip_active)
@@ -808,6 +861,7 @@ void SV_SkateUpdate (client_t *client)
 {
 	edict_t *ent = client->edict, *board = client->skate_board;
 	qmodel_t *model;
+	float shoveit_yaw;
 	if (!client->skate_active)
 		return;
 	if (!client->active || !client->spawned || !SV_SkateCanRide(ent) || !SV_SkateBoardValid(client) ||
@@ -822,12 +876,13 @@ void SV_SkateUpdate (client_t *client)
 	ent->v.angles[PITCH] = ent->v.angles[ROLL] = 0;
 	ent->v.angles[YAW] = client->skate_yaw;
 	board->v.angles[ROLL] = SV_SkateJumpRoll(client, ent);
+	shoveit_yaw = SV_SkateShoveItYaw(client, ent);
 	ent->v.frame = SV_SkateAnimationFrame(client, ent);
 	client->skate_lift = SV_SkateGroundLift(ent, model);
 	VectorCopy(ent->v.origin, board->v.origin);
 	board->v.origin[2] += client->skate_lift;
 	board->v.angles[PITCH] = client->skate_sliding ? SKATE_SLIDE_BOARD_PITCH : 0;
-	board->v.angles[YAW] = client->skate_yaw;
+	board->v.angles[YAW] = anglemod(client->skate_yaw + client->skate_board_yaw_offset + shoveit_yaw);
 	SV_LinkEdict(board, false);
 }
 
@@ -1288,6 +1343,58 @@ void SV_SkateSlideUp_f (void)
 	}
 }
 
+static void SV_SkateDoShoveIt (float degrees, const char *name)
+{
+	client_t *client = SV_SkateSlideCommandClient(true);
+	edict_t *ent;
+	qboolean just_took_off;
+
+	if (!client)
+		return;
+	ent = client->edict;
+	if (client->skate_sliding)
+	{
+		SV_ClientPrintf("Finish the grind before doing a shove-it.\n");
+		return;
+	}
+	if (client->skate_shoveit_active)
+	{
+		SV_ClientPrintf("Finish the current trick before starting another.\n");
+		return;
+	}
+	if ((int)ent->v.flags & (FL_ONGROUND | FL_WATERJUMP))
+	{
+		SV_ClientPrintf("Do a shove-it while airborne.\n");
+		return;
+	}
+
+	// Accept a command arriving in the same server frame as takeoff, before
+	// SV_SkateJumpRoll has recorded the airborne state.
+	just_took_off = client->skate_grounded && ent->v.velocity[2] > 0;
+	if (!client->skate_jump_active && !just_took_off)
+	{
+		SV_ClientPrintf("A shove-it requires a real jump, not a fall.\n");
+		return;
+	}
+
+	// A/D (sidemove) selects the shove-it direction; with no side input the
+	// default is positive yaw.
+	if (client->cmd.sidemove < -1)
+		degrees = -degrees;
+	SV_SkateShoveItStart(client, degrees, qcvm->time);
+	SV_ClientPrintf("%s!\n", name);
+}
+
+void SV_SkateShoveIt_f (void)
+{
+	SV_SkateDoShoveIt(SKATE_SHOVEIT_POP_ANGLE, "Pop Shove-It");
+}
+
+void SV_Skate360ShoveIt_f (void)
+{
+	SV_SkateDoShoveIt(SKATE_SHOVEIT_360_ANGLE, "360 Shove-It");
+}
+
 void SV_Skate_f (void)
 {
 	edict_t *ent, *board;
@@ -1374,9 +1481,11 @@ void SV_Skate_f (void)
 	SV_SkateAnimationReset(host_client);
 	host_client->skate_flip_active = false;
 	host_client->skate_flip_start_time = 0;
+	SV_SkateShoveItClear(host_client);
+	host_client->skate_board_yaw_offset = 0;
 	host_client->usingpmove = false; // stock client prediction does not know skating
 	SV_SkateUpdate(host_client);
-	SV_ClientPrintf("Skate ON: mouse/A-D steer, S brakes, jump flips the board.\n");
+	SV_ClientPrintf("Skate ON: mouse/A-D steer, S brakes, jump flips; Z = Pop Shove-It, V = 360 Shove-It in air (A/D changes spin direction).\n");
 }
 
 /*
@@ -1909,6 +2018,8 @@ qboolean SV_ReadClientMessage (void)
 			if (q_strncasecmp(s, "spawn", 5) && q_strncasecmp(s, "begin", 5) && q_strncasecmp(s, "prespawn", 8) &&
 				!(!q_strncasecmp(s, "skate", 5) && (!s[5] || s[5] == ' ' || s[5] == '\t')) &&
 				!(!q_strncasecmp(s, "skate_slide", 11) && (!s[11] || s[11] == ' ' || s[11] == '\t')) &&
+				!(!q_strncasecmp(s, "skate_shoveit", 13) && (!s[13] || s[13] == ' ' || s[13] == '\t')) &&
+				!(!q_strncasecmp(s, "skate_360shoveit", 16) && (!s[16] || s[16] == ' ' || s[16] == '\t')) &&
 				!(!q_strncasecmp(s, "+skate_slide", 12) && (!s[12] || s[12] == ' ' || s[12] == '\t')) &&
 				!(!q_strncasecmp(s, "-skate_slide", 12) && (!s[12] || s[12] == ' ' || s[12] == '\t')) &&
 				qcvm->extfuncs.SV_ParseClientCommand)

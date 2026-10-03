@@ -26,6 +26,8 @@ static char default_cfg[] =
 
 "bind SPACE +jump\n"
 "bind x +skate_slide\n"
+"bind z skate_shoveit\n"
+"bind v skate_360shoveit\n"
 
 "bind TAB +showscores\n"
 

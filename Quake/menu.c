@@ -4642,6 +4642,8 @@ const char *quakebindnames[][2] = // woods use iw quake bind names
 	{"+moveright",		"Move right"},
 	{"+jump",			"Jump / swim up"},
 	{"+skate_slide",		"Skate slide"},
+	{"skate_shoveit",		"Pop Shove-It"},
+	{"skate_360shoveit",	"360 Shove-It"},
 	{"+moveup",			"Swim up"},
 	{"+movedown",		"Swim down"},
 	{"+speed",			"Run"},
@@ -4697,6 +4699,20 @@ static int numbindnames = 0; // woods #mousemenu
 
 qboolean	bind_grab;
 
+static void M_Keys_EnsureBinding (const char *cmd, const char *desc)
+{
+	int i;
+	for (i = 0; i < numbindnames; i++)
+		if (!strcmp(bindnames[i].cmd, cmd))
+			return;
+	bindnames = (bindname_t*)Z_Realloc(bindnames, sizeof(bindname_t) * (numbindnames + 1));
+	bindnames[numbindnames].cmd = (char*)Z_Malloc(strlen(cmd) + 1);
+	strcpy(bindnames[numbindnames].cmd, cmd);
+	bindnames[numbindnames].desc = (char*)Z_Malloc(strlen(desc) + 1);
+	strcpy(bindnames[numbindnames].desc, desc);
+	numbindnames++;
+}
+
 void M_Keys_Populate(void) // woods #mousemenu -- modified 
 {
 	FILE* file;
@@ -4740,23 +4756,11 @@ void M_Keys_Populate(void) // woods #mousemenu -- modified
 		numbindnames = NUMQUAKECOMMANDS;
 	}
 
-	// Keep the engine skateboard action available even when an external
+	// Keep engine skateboard actions available even when an external
 	// bindlist.lst supplies the rest of the controls.
-	{
-		int i;
-		for (i = 0; i < numbindnames; i++)
-			if (!strcmp(bindnames[i].cmd, "+skate_slide"))
-				break;
-		if (i == numbindnames)
-		{
-			bindnames = (bindname_t*)Z_Realloc(bindnames, sizeof(bindname_t) * (numbindnames + 1));
-			bindnames[numbindnames].cmd = (char*)Z_Malloc(sizeof("+skate_slide"));
-			strcpy(bindnames[numbindnames].cmd, "+skate_slide");
-			bindnames[numbindnames].desc = (char*)Z_Malloc(sizeof("Skate slide"));
-			strcpy(bindnames[numbindnames].desc, "Skate slide");
-			numbindnames++;
-		}
-	}
+	M_Keys_EnsureBinding("+skate_slide", "Skate slide");
+	M_Keys_EnsureBinding("skate_shoveit", "Pop Shove-It");
+	M_Keys_EnsureBinding("skate_360shoveit", "360 Shove-It");
 }
 
 void M_Keys_UpdateFilter(void)
