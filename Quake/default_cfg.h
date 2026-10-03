@@ -25,6 +25,7 @@ static char default_cfg[] =
 "bind RIGHTARROW +right\n"
 
 "bind SPACE +jump\n"
+"bind x +skate_slide\n"
 
 "bind TAB +showscores\n"
 

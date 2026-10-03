@@ -249,6 +249,15 @@ typedef struct client_s
 	float			skate_yaw;
 	float			skate_lift;
 	qboolean		skate_grounded;		// rearm a flip only after touching ground
+	qboolean		skate_jump_active;	// airborne after a real jump, independent of flip animation
+	qboolean		skate_slide_armed;	// slide mode toggled by press; key-up does not disarm it
+	qboolean		skate_sliding;		// grind-latched to a brush upper edge until its end or toggle-off
+	vec3_t			skate_slide_normal;
+	edict_t			*skate_slide_surface;
+	float			skate_slide_edge_height;
+	int				skate_anim_state;
+	int				skate_anim_frame;
+	double			skate_anim_next_frame_time;
 	qboolean		skate_flip_active;
 	double			skate_flip_start_time;
 } client_t;
@@ -394,9 +403,15 @@ void SV_ProcessTimerExecution(void); // woods #svtimer
 void SV_CleanupTimer(void); // woods #svtimer
 
 void SV_Skate_f (void);
+void SV_SkateSlide_f (void);
+void SV_SkateSlideDown_f (void);
+void SV_SkateSlideUp_f (void);
 void SV_SkateStop (client_t *client);
 void SV_SkateUpdate (client_t *client);
 void SV_SkateMove (client_t *client, edict_t *ent, const usercmd_t *move, double dt);
+qboolean SV_SkateWallSlideMove (edict_t *ent);
+qboolean SV_SkateWallSlide (edict_t *ent, edict_t *surface, const vec3_t normal, const vec3_t incoming_velocity);
+qboolean SV_SkateWallBounce (edict_t *ent, const vec3_t normal, const vec3_t incoming_velocity);
 int SV_SkateStat (const client_t *client);
 qboolean SV_IsSkateBoard (const edict_t *ent);
 

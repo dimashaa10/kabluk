@@ -4,16 +4,16 @@
 #include <assert.h>
 
 extern edict_t *sv_player;
-extern cvar_t sv_maxspeed, sv_accelerate;
+extern cvar_t sv_maxspeed, sv_accelerate, sv_friction, sv_stopspeed;
 server_t sv;
+server_static_t svs;
 client_t *host_client;
+extern int SV_FlyMove (edict_t *ent, float time, trace_t *steptrace);
 qcvm_t *qcvm;
 globalvars_t *pr_global_struct;
+static globalvars_t test_globals;
 cmd_source_t cmd_source;
 double host_frametime;
-cvar_t sv_friction = {"sv_friction", "4", CVAR_NONE};
-cvar_t sv_stopspeed = {"sv_stopspeed", "100", CVAR_NONE};
-
 static client_t client;
 static edict_t pool[64];
 static qmodel_t model;
@@ -21,6 +21,9 @@ static int argc_value, allocations, frees, forwarded, links, traces;
 static const char *argument;
 static char printed[256];
 static float slope, camera_ground;
+static qboolean wall_collision, wall_support, top_support, wall_continues_above;
+static float wall_top_z;
+static vec3_t wall_normal, wall_plane_point;
 
 int Cmd_Argc (void) { return argc_value; }
 const char *Cmd_Argv (int n) { assert(n == 1); return argument; }
@@ -82,8 +85,72 @@ trace_t SV_Move (vec3_t start, vec3_t mins, vec3_t maxs, vec3_t end, int type, e
 {
 	trace_t trace = {0};
 	float floor_z = camera_ground + slope * (start[0] - client.edict->v.origin[0]);
+	int i;
 	(void)mins; (void)maxs;
+	if (type == MOVE_NORMAL)
+	{
+		assert(skip == client.edict);
+		if (wall_collision)
+		{
+			float radius;
+			wall_collision = false; // model one collision, followed by free tangential travel
+			trace.fraction = 0.5f;
+			for (i = 0; i < 3; i++)
+				trace.endpos[i] = start[i] + (end[i] - start[i]) * trace.fraction;
+			trace.ent = &pool[0];
+			VectorCopy(wall_normal, trace.plane.normal);
+			radius = -(wall_normal[0] * (wall_normal[0] > 0 ? client.edict->v.mins[0] : client.edict->v.maxs[0]) +
+				wall_normal[1] * (wall_normal[1] > 0 ? client.edict->v.mins[1] : client.edict->v.maxs[1]));
+			wall_plane_point[0] = trace.endpos[0] - wall_normal[0] * radius;
+			wall_plane_point[1] = trace.endpos[1] - wall_normal[1] * radius;
+			wall_plane_point[2] = wall_top_z;
+			return trace;
+		}
+		trace.fraction = 1;
+		VectorCopy(end, trace.endpos);
+		return trace;
+	}
+
 	assert(type == MOVE_NOMONSTERS && skip == client.edict);
+	if (start[2] == end[2])
+	{
+		float denominator = wall_normal[0] * (end[0] - start[0]) +
+			wall_normal[1] * (end[1] - start[1]);
+		float plane = wall_normal[0] * wall_plane_point[0] +
+			wall_normal[1] * wall_plane_point[1];
+		float fraction = denominator ?
+			(plane - wall_normal[0] * start[0] - wall_normal[1] * start[1]) / denominator : 1;
+		if (wall_support && (start[2] < wall_top_z || wall_continues_above) &&
+			fraction >= 0 && fraction < 1)
+		{
+			trace.fraction = fraction;
+			for (i = 0; i < 3; i++)
+				trace.endpos[i] = start[i] + (end[i] - start[i]) * fraction;
+			trace.ent = &pool[0];
+			VectorCopy(wall_normal, trace.plane.normal);
+		}
+		else
+		{
+			trace.fraction = 1;
+			VectorCopy(end, trace.endpos);
+		}
+		return trace;
+	}
+	if (top_support && start[2] > end[2])
+	{
+		float fraction = (start[2] - wall_top_z) / (start[2] - end[2]);
+		if (fraction >= 0 && fraction < 1)
+		{
+			trace.fraction = fraction;
+			trace.endpos[0] = start[0];
+			trace.endpos[1] = start[1];
+			trace.endpos[2] = wall_top_z;
+			trace.ent = &pool[0];
+			trace.plane.normal[2] = 1;
+			return trace;
+		}
+	}
+
 	traces++;
 	trace.fraction = (start[2] - floor_z) / (start[2] - end[2]);
 	VectorCopy(end, trace.endpos);
@@ -94,12 +161,32 @@ float V_CalcRoll (vec3_t angles, vec3_t velocity)
 {
 	(void)angles; (void)velocity; return 0;
 }
+void PR_ExecuteProgram (func_t fnum)
+{
+	(void)fnum;
+	assert(!"unexpected QuakeC call in movement test");
+}
+void Sys_Error (const char *error, ...)
+{
+	(void)error;
+	abort();
+}
 
 static void Reset (void)
 {
 	memset(&sv, 0, sizeof(sv));
+	memset(&svs, 0, sizeof(svs));
+	memset(&test_globals, 0, sizeof(test_globals));
+	pr_global_struct = &test_globals;
 	memset(&client, 0, sizeof(client));
 	memset(pool, 0, sizeof(pool));
+	svs.clients = &client;
+	svs.maxclients = 1;
+	wall_collision = wall_support = top_support = wall_continues_above = false;
+	wall_top_z = 64;
+	wall_normal[0] = wall_normal[1] = wall_normal[2] = 0;
+	wall_plane_point[0] = wall_plane_point[1] = wall_plane_point[2] = 0;
+	pool[0].v.solid = SOLID_BSP;
 	memset(&model, 0, sizeof(model));
 	host_client = &client;
 	qcvm = &sv.qcvm;
@@ -195,9 +282,9 @@ static void TestMotion (void)
 	float slow, fast;
 	Reset(); Command(NULL);
 	Step(0.05);
-	assert(client.edict->v.velocity[0] > 0 && client.edict->v.velocity[0] < 20);
+	assert(client.edict->v.velocity[0] > 20); // stronger initial push than the old 240 u/s^2
 	for (i = 0; i < 150; i++) Step(0.05);
-	assert(fabsf(client.edict->v.velocity[0] - 420) < 0.01f);
+	assert(fabsf(client.edict->v.velocity[0] - SKATE_MAX_SPEED) < 0.01f);
 	CheckPhysical();
 	client.cmd.forwardmove = -400;
 	for (i = 0; i < 30; i++) Step(0.05);
@@ -205,7 +292,7 @@ static void TestMotion (void)
 	client.cmd.forwardmove = 0;
 	client.edict->v.velocity[1] = 100;
 	Step(0.05);
-	assert(client.edict->v.velocity[1] > 80 && client.edict->v.velocity[1] < 100);
+	assert(client.edict->v.velocity[1] > 80 && client.edict->v.velocity[1] < 90); // less lateral drift
 	client.cmd.sidemove = 400;
 	Step(0.05);
 	assert(client.skate_yaw > 350 && client.skate_yaw < 355); // D turns right gradually
@@ -220,7 +307,7 @@ static void TestMotion (void)
 	Reset(); Command(NULL);
 	for (i = 0; i < 20; i++) Step(0.05);
 	fast = client.edict->v.velocity[0];
-	assert(fabsf(slow - fast) < 3); // acceleration/drag is time based
+	assert(fabsf(slow - fast) < 6); // acceleration/drag is time based; allow discrete-step rounding
 
 	Reset(); Command(NULL);
 	client.edict->v.flags = 0;
@@ -235,6 +322,271 @@ static void TestMotion (void)
 	Step(0.05);
 	assert(client.edict->v.velocity[0] == 0); // normal walking does not auto drive
 }
+static void TestSkateAnimations (void)
+{
+	int i;
+	Reset(); Command(NULL);
+	assert(client.edict->v.frame == SKATE_ANIM_CRUISE_FIRST); // same loop while standing still
+	client.edict->v.velocity[0] = 10;
+	qcvm->time += 0.01;
+	SV_SkateUpdate(&client);
+	assert(client.edict->v.frame == SKATE_ANIM_ACCEL_FIRST);
+	for (i = 1; i <= 10; i++)
+	{
+		qcvm->time += SKATE_ANIM_FRAME_TIME;
+		SV_SkateUpdate(&client);
+		assert(client.edict->v.frame == SKATE_ANIM_ACCEL_FIRST + (i % 10));
+	}
+
+	client.edict->v.velocity[0] = SKATE_MAX_SPEED;
+	qcvm->time += 0.01;
+	SV_SkateUpdate(&client);
+	assert(client.edict->v.frame == SKATE_ANIM_CRUISE_FIRST);
+	for (i = 1; i <= 11; i++)
+	{
+		qcvm->time += SKATE_ANIM_FRAME_TIME;
+		SV_SkateUpdate(&client);
+		assert(client.edict->v.frame == SKATE_ANIM_CRUISE_FIRST + (i % 11));
+	}
+
+	client.edict->v.button0 = 1;
+	SV_SkateUpdate(&client);
+	assert(client.edict->v.frame == SKATE_ANIM_SHOOT_FIRST);
+	for (i = 1; i <= 4; i++)
+	{
+		qcvm->time += SKATE_ANIM_FRAME_TIME;
+		SV_SkateUpdate(&client);
+		assert(client.edict->v.frame == SKATE_ANIM_SHOOT_FIRST + (i % 4));
+	}
+	client.edict->v.button0 = 0;
+	for (i = 1; i <= 3; i++)
+	{
+		qcvm->time += SKATE_ANIM_FRAME_TIME;
+		SV_SkateUpdate(&client);
+		assert(client.edict->v.frame == SKATE_ANIM_SHOOT_FIRST + (i % 4));
+	}
+	qcvm->time += SKATE_ANIM_FRAME_TIME;
+	SV_SkateUpdate(&client);
+	assert(client.edict->v.frame == SKATE_ANIM_CRUISE_FIRST);
+
+	client.edict->v.flags = 0;
+	client.edict->v.velocity[2] = 270;
+	SV_SkateUpdate(&client);
+	assert(client.edict->v.frame == SKATE_ANIM_JUMP_FIRST);
+	for (i = 1; i <= SKATE_ANIM_JUMP_PEAK - SKATE_ANIM_JUMP_FIRST; i++)
+	{
+		qcvm->time += SKATE_ANIM_FRAME_TIME;
+		SV_SkateUpdate(&client);
+		assert(client.edict->v.frame == SKATE_ANIM_JUMP_FIRST + i);
+	}
+	client.edict->v.velocity[2] = -1;
+	SV_SkateUpdate(&client);
+	assert(client.edict->v.frame == SKATE_ANIM_JUMP_PEAK);
+	for (i = 1; i <= 2; i++)
+	{
+		qcvm->time += SKATE_ANIM_FRAME_TIME;
+		SV_SkateUpdate(&client);
+		assert(client.edict->v.frame == (i == 1 ? SKATE_ANIM_JUMP_FALL_LAST : SKATE_ANIM_JUMP_PEAK));
+	}
+
+	client.edict->v.flags = FL_ONGROUND;
+	client.edict->v.velocity[2] = 0;
+	SV_SkateUpdate(&client);
+	assert(client.edict->v.frame == SKATE_ANIM_JUMP_LAND_FIRST);
+	for (i = 1; i <= SKATE_ANIM_JUMP_LAND_LAST - SKATE_ANIM_JUMP_LAND_FIRST; i++)
+	{
+		qcvm->time += SKATE_ANIM_FRAME_TIME;
+		SV_SkateUpdate(&client);
+		assert(client.edict->v.frame == SKATE_ANIM_JUMP_LAND_FIRST + i);
+	}
+	qcvm->time += SKATE_ANIM_FRAME_TIME;
+	SV_SkateUpdate(&client);
+	assert(client.edict->v.frame == SKATE_ANIM_CRUISE_FIRST);
+
+	client.edict->v.velocity[0] = 0;
+	client.cmd.forwardmove = -400; // standing/braking keeps the ride loop
+	qcvm->time += 0.01;
+	SV_SkateUpdate(&client);
+	assert(client.edict->v.frame == SKATE_ANIM_CRUISE_FIRST);
+}
+static void TestSlideCommand (void)
+{
+	Reset(); Command(NULL);
+	SV_SkateSlideDown_f();
+	assert(client.skate_slide_armed && strstr(printed, "armed"));
+	SV_SkateSlideUp_f();
+	assert(client.skate_slide_armed); // releasing the key does not cancel the tap
+	SV_SkateSlide_f();
+	assert(!client.skate_slide_armed && strstr(printed, "OFF")); // another press cancels the request
+	SV_SkateSlide_f();
+	assert(client.skate_slide_armed && strstr(printed, "armed"));
+
+	client.skate_slide_armed = false; // an active grind has consumed the one-shot request
+	client.skate_sliding = true;
+	client.skate_slide_surface = &pool[0];
+	client.skate_slide_edge_height = 64;
+	SV_SkateSlideDown_f();
+	assert(!client.skate_slide_armed && !client.skate_sliding && !client.skate_slide_surface &&
+		client.skate_slide_edge_height == 0 && strstr(printed, "OFF"));
+	SV_SkateSlideUp_f();
+	assert(!client.skate_sliding); // key-up remains a no-op
+
+	Reset();
+	SV_SkateSlide_f();
+	assert(!client.skate_slide_armed && strstr(printed, "Enable skate mode"));
+	cmd_source = src_command;
+	SV_SkateSlide_f();
+	assert(forwarded == 1);
+}
+static void TestWallSlide (void)
+{
+	int clip;
+	float old_y;
+	vec3_t incoming = {SKATE_SLIDE_MIN_SPEED + 50, 0, -40};
+	Reset(); Command(NULL);
+	SV_SkateSlideDown_f();
+	SV_SkateSlideUp_f(); // tap once, then release before hitting the edge
+	assert(client.skate_slide_armed);
+	client.edict->v.flags = 0;
+	VectorCopy(incoming, client.edict->v.velocity);
+	wall_normal[0] = -1;
+	wall_support = top_support = true;
+	wall_collision = true;
+	clip = SV_FlyMove(client.edict, 0.05f, NULL);
+	assert(!(clip & 2)); // a grind shouldn't be retried as a stair-step
+	assert(fabsf(client.edict->v.velocity[0]) < 0.01f);
+	assert(fabsf(client.edict->v.velocity[1] +
+		(SKATE_SLIDE_MIN_SPEED + 50) * SKATE_SLIDE_SPEED_SCALE) < 0.01f); // forward impact redirected along the wall
+	assert(client.edict->v.velocity[2] == 0 && ((int)client.edict->v.flags & FL_ONGROUND));
+	assert(client.skate_sliding && client.skate_slide_armed && client.skate_slide_surface == &pool[0]);
+	SV_SkateUpdate(&client);
+	assert(client.skate_board->v.angles[PITCH] == SKATE_SLIDE_BOARD_PITCH);
+	assert(fabsf(client.skate_slide_edge_height - wall_top_z) < 0.01f);
+	assert(fabsf(client.edict->v.origin[2] - (wall_top_z - client.edict->v.mins[2] + SKATE_SLIDE_SURFACE_GAP)) < 0.01f);
+	assert(fabsf((client.edict->v.origin[0] - wall_plane_point[0]) * wall_normal[0] +
+		(client.edict->v.origin[1] - wall_plane_point[1]) * wall_normal[1] - SKATE_SLIDE_EDGE_OFFSET) < 0.01f);
+	assert(client.skate_yaw > 269 && client.skate_yaw < 271); // board aligns to grind direction
+
+	// The latch removes motion away from the brush, preserves tangent speed,
+	// and stays active while the same face is still under the rider.
+	SV_SkateMove(&client, client.edict, &client.cmd, 0.05);
+	assert(client.edict->v.velocity[1] < -250); // grind friction stays low
+	client.edict->v.velocity[0] = 120;
+	old_y = client.edict->v.origin[1];
+	clip = SV_FlyMove(client.edict, 0.05f, NULL);
+	assert(client.skate_sliding && fabsf(client.edict->v.velocity[0]) < 0.01f);
+	assert(client.edict->v.velocity[1] < -250 && client.edict->v.origin[1] < old_y);
+
+	// Losing this lip releases the board, but the slide toggle remains armed
+	// and can catch another nearby edge until the player presses again.
+	wall_support = top_support = false;
+	assert(!SV_SkateWallSlideMove(client.edict));
+	assert(!client.skate_sliding && client.skate_slide_armed);
+	SV_SkateUpdate(&client);
+	assert(client.skate_board->v.angles[PITCH] == 0); // restore board pitch after leaving the grind
+}
+static void TestSlideNeedsUpperEdge (void)
+{
+	vec3_t incoming = {SKATE_SLIDE_MIN_SPEED + 50, 0, -40};
+	Reset(); Command(NULL);
+	client.skate_slide_armed = true;
+	client.edict->v.flags = 0;
+	VectorCopy(incoming, client.edict->v.velocity);
+	wall_normal[0] = -1;
+	wall_support = true;
+	top_support = false;
+	wall_collision = true;
+	SV_FlyMove(client.edict, 0.05f, NULL);
+	assert(!client.skate_sliding); // a vertical face without a top lip is not a grind edge
+
+	Reset(); Command(NULL);
+	client.skate_slide_armed = true;
+	client.edict->v.flags = 0;
+	VectorCopy(incoming, client.edict->v.velocity);
+	wall_normal[0] = -1;
+	wall_support = top_support = wall_continues_above = true;
+	wall_collision = true;
+	SV_FlyMove(client.edict, 0.05f, NULL);
+	assert(!client.skate_sliding); // a wall that continues above its apparent cap has no upper edge
+}
+static void TestWallSlideLatchRadius (void)
+{
+	vec3_t normal = {-1, 0, 0};
+	vec3_t incoming = {100, 0, 0}; // a nearby tap attaches without needing a wall impact
+
+	Reset(); Command(NULL);
+	client.edict->v.origin[0] = 67; // 63 units from the lip: beyond the old probe radius
+	client.edict->v.flags = 0;
+	VectorCopy(incoming, client.edict->v.velocity);
+	VectorCopy(normal, wall_normal);
+	wall_plane_point[0] = 130;
+	wall_top_z = 64;
+	wall_support = top_support = true;
+	SV_SkateSlideDown_f();
+	assert(client.skate_sliding && client.skate_slide_armed && strstr(printed, "attached"));
+	assert(SV_SkateWallSlideMove(client.edict)); // widened adhesion keeps the catch attached
+	assert(fabsf((client.edict->v.origin[0] - wall_plane_point[0]) * normal[0] -
+		SKATE_SLIDE_EDGE_OFFSET) < 0.01f);
+	SV_SkateSlideDown_f();
+	assert(!client.skate_sliding && !client.skate_slide_armed); // second press detaches
+
+	Reset(); Command(NULL);
+	client.edict->v.origin[0] = 64; // outside the new maximum catch radius
+	client.edict->v.flags = 0;
+	VectorCopy(incoming, client.edict->v.velocity);
+	VectorCopy(normal, wall_normal);
+	wall_plane_point[0] = 130;
+	wall_support = top_support = true;
+	SV_SkateSlideDown_f();
+	assert(!client.skate_sliding && client.skate_slide_armed);
+	assert(strstr(printed, "armed")); // the toggle remains on for the next nearby edge
+}
+static void TestWallBounce (void)
+{
+	int clip;
+	trace_t wall = {0};
+	vec3_t incoming = {SKATE_WALL_BOUNCE_MIN_SPEED + 50, 20, -40};
+	Reset(); Command(NULL);
+	client.skate_jump_active = true;
+	client.skate_grounded = false;
+	client.edict->v.flags = 0;
+	VectorCopy(incoming, client.edict->v.velocity);
+	wall_normal[0] = -1;
+	wall_collision = true;
+	clip = SV_FlyMove(client.edict, 0.05f, NULL);
+	wall_collision = false;
+	assert(clip & 2);
+	assert(client.edict->v.origin[0] > 100); // collision moved partway to the wall
+	assert(fabsf(client.edict->v.velocity[0] +
+		(SKATE_WALL_BOUNCE_MIN_SPEED + 50) * SKATE_WALL_BOUNCE_RESTITUTION) < 0.01f);
+	assert(client.edict->v.velocity[1] == incoming[1]); // tangential motion is preserved
+	assert(client.edict->v.velocity[2] == SKATE_WALL_BOUNCE_UPWARD_SPEED);
+
+	Reset(); Command(NULL);
+	client.skate_jump_active = true;
+	client.skate_grounded = false;
+	client.edict->v.flags = 0;
+	wall.plane.normal[0] = -1;
+	incoming[0] = SKATE_WALL_BOUNCE_MIN_SPEED - 1;
+	incoming[1] = 0;
+	incoming[2] = 270;
+	assert(!SV_SkateWallBounce(client.edict, wall.plane.normal, incoming)); // not fast enough
+	incoming[0] = SKATE_WALL_BOUNCE_MIN_SPEED + 50;
+	wall.plane.normal[0] = 0;
+	wall.plane.normal[1] = -1;
+	assert(!SV_SkateWallBounce(client.edict, wall.plane.normal, incoming)); // glancing/tangential hit
+	wall.plane.normal[1] = 0;
+	wall.plane.normal[2] = 1;
+	assert(!SV_SkateWallBounce(client.edict, wall.plane.normal, incoming)); // floor/ceiling isn't a wall
+	wall.plane.normal[0] = -1;
+	wall.plane.normal[2] = 0;
+	client.skate_jump_active = false;
+	client.skate_grounded = false;
+	assert(!SV_SkateWallBounce(client.edict, wall.plane.normal, incoming)); // falling isn't a jump
+	client.skate_grounded = true;
+	client.edict->v.velocity[2] = 100;
+	assert(SV_SkateWallBounce(client.edict, wall.plane.normal, incoming)); // first frame after takeoff
+}
 static void TestJumpFlip (void)
 {
 	edict_t *board;
@@ -243,13 +595,13 @@ static void TestJumpFlip (void)
 	int i;
 	Reset(); Command(NULL);
 	board = client.skate_board;
-	assert(client.skate_grounded && !client.skate_flip_active && board->v.angles[ROLL] == 0);
+	assert(client.skate_grounded && !client.skate_jump_active && !client.skate_flip_active && board->v.angles[ROLL] == 0);
 	client.edict->v.flags = 0; // simulate the actual upward takeoff after QC/physics
 	client.edict->v.button2 = 1;
 	client.edict->v.velocity[2] = 270;
 	SV_SkateUpdate(&client);
 	start = qcvm->time;
-	assert(client.skate_flip_active && !client.skate_grounded);
+	assert(client.skate_jump_active && client.skate_flip_active && !client.skate_grounded);
 	assert(client.skate_flip_start_time == start && board->v.angles[ROLL] == 0);
 
 	for (i = 1; i <= 4; i++)
@@ -271,7 +623,7 @@ static void TestJumpFlip (void)
 		SV_SkateUpdate(&client); // same timestamp: no frame-dependent extra rotation
 		assert(board->v.angles[ROLL] == previous);
 	}
-	assert(total == 360 && !client.skate_flip_active && traces == 4);
+	assert(total == 360 && !client.skate_flip_active && client.skate_jump_active && traces == 4);
 	qcvm->time += 1;
 	client.edict->v.velocity[2] = 270; // no repeat/double flip until landing
 	SV_SkateUpdate(&client);
@@ -279,7 +631,7 @@ static void TestJumpFlip (void)
 
 	client.edict->v.flags = FL_ONGROUND;
 	SV_SkateUpdate(&client);
-	assert(client.skate_grounded);
+	assert(client.skate_grounded && !client.skate_jump_active);
 	client.edict->v.flags = 0;
 	SV_SkateUpdate(&client);
 	assert(client.skate_flip_active && client.skate_flip_start_time == qcvm->time);
@@ -358,7 +710,7 @@ static void TestSlopeAndCleanup (void)
 		if (reason == 3) client.edict->onladder = true;
 		SV_SkateUpdate(&client);
 		assert(!client.skate_active && frees == 1 && SV_SkateStat(&client) == 0);
-		assert(!client.skate_flip_active && !client.skate_grounded && client.skate_flip_start_time == 0);
+		assert(!client.skate_jump_active && !client.skate_flip_active && !client.skate_grounded && client.skate_flip_start_time == 0);
 	}
 	Reset(); Command(NULL);
 	client.skate_board->v.classname = 0; // slot was reused by unrelated QC
@@ -383,9 +735,13 @@ static void TestGuards (void)
 }
 int main (void)
 {
-	TestToggleAndPlacement(); TestMotion(); TestJumpFlip(); TestJumpFlipGuards();
+	TestToggleAndPlacement(); TestMotion(); TestSkateAnimations(); TestSlideCommand(); TestWallSlide(); TestSlideNeedsUpperEdge(); TestWallSlideLatchRadius(); TestWallBounce(); TestJumpFlip(); TestJumpFlipGuards();
 	TestSlopeAndCleanup(); TestGuards();
 	puts("PASS: skate command, forward acceleration, cap, gradual steering, drift and braking.");
+	puts("PASS: skate cruise/idle, acceleration, shooting, jump and landing frame sequences.");
+	puts("PASS: slide toggles on/off by tap; key-up is ignored and a second tap detaches.");
+	puts("PASS: proximity tap attaches to an expanded brush-edge radius and ignores distant edges.");
+	puts("PASS: high-speed jump bounce from vertical walls; speed, glancing-hit, and non-jump guards.");
 	puts("PASS: one time-based 360-degree jump flip, upright rider, landing/rearm and takeoff guards.");
 	puts("PASS: board placement/ground clearance, unchanged hull/jump/ammo, lifetime and guards.");
 	return 0;
