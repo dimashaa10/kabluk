@@ -260,10 +260,6 @@ typedef struct client_s
 	double			skate_anim_next_frame_time;
 	qboolean		skate_flip_active;
 	double			skate_flip_start_time;
-	qboolean		skate_shoveit_active;
-	float			skate_shoveit_degrees;
-	double			skate_shoveit_start_time;
-	float			skate_board_yaw_offset;	// accumulated stance change from completed shove-its
 } client_t;
 
 
@@ -410,8 +406,6 @@ void SV_Skate_f (void);
 void SV_SkateSlide_f (void);
 void SV_SkateSlideDown_f (void);
 void SV_SkateSlideUp_f (void);
-void SV_SkateShoveIt_f (void);
-void SV_Skate360ShoveIt_f (void);
 void SV_SkateStop (client_t *client);
 void SV_SkateUpdate (client_t *client);
 void SV_SkateMove (client_t *client, edict_t *ent, const usercmd_t *move, double dt);

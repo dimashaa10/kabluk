@@ -1636,8 +1636,6 @@ void SV_Init (void)
 	Cmd_AddCommand_ClientCommand("pext", SV_Pext_f);
 	Cmd_AddCommand_ClientCommand("skate", SV_Skate_f);
 	Cmd_AddCommand_ClientCommand("skate_slide", SV_SkateSlide_f);
-	Cmd_AddCommand_ClientCommand("skate_shoveit", SV_SkateShoveIt_f);
-	Cmd_AddCommand_ClientCommand("skate_360shoveit", SV_Skate360ShoveIt_f);
 	Cmd_AddCommand_ClientCommand("+skate_slide", SV_SkateSlideDown_f);
 	Cmd_AddCommand_ClientCommand("-skate_slide", SV_SkateSlideUp_f);
 	Cmd_AddCommand ("sv_protocol", &SV_Protocol_f); //johnfitz
