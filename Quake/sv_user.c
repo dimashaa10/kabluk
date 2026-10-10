@@ -405,6 +405,94 @@ void SV_AirMove (void)
 	}
 }
 
+#define SV_CROUCH_HEIGHT		32
+#define SV_CROUCH_VIEWHEIGHT	8
+
+static void SV_SetCrouchBounds (client_t *client, edict_t *ent, qboolean crouched)
+{
+	float mins_z, maxs_z, viewheight;
+
+	if (crouched)
+	{
+		mins_z = client->crouch_stand_mins_z;
+		maxs_z = q_min(client->crouch_stand_maxs_z, mins_z + SV_CROUCH_HEIGHT);
+		viewheight = q_min(client->crouch_stand_viewheight,
+			q_min((float)SV_CROUCH_VIEWHEIGHT, maxs_z));
+	}
+	else
+	{
+		mins_z = client->crouch_stand_mins_z;
+		maxs_z = client->crouch_stand_maxs_z;
+		viewheight = client->crouch_stand_viewheight;
+	}
+
+	if (ent->v.mins[2] != mins_z || ent->v.maxs[2] != maxs_z)
+	{
+		ent->v.mins[2] = mins_z;
+		ent->v.maxs[2] = maxs_z;
+		ent->v.size[2] = maxs_z - mins_z;
+		SV_LinkEdict(ent, false);
+	}
+
+	ent->v.view_ofs[2] = viewheight;
+}
+
+void SV_UpdateCrouch (client_t *client, edict_t *ent, float upmove)
+{
+	qboolean wants_crouch;
+
+	if (!client || !ent || ent->free)
+		return;
+
+	// +movedown produces negative upmove; keep its swimming/ladder behavior intact.
+	wants_crouch = upmove < 0 && client->spawned && ent->v.health > 0 &&
+		ent->v.deadflag == DEAD_NO && ent->v.movetype == MOVETYPE_WALK &&
+		ent->v.waterlevel < 2 && !ent->onladder && !client->skate_active;
+
+	if (wants_crouch)
+	{
+		if (!client->crouched)
+		{
+			client->crouch_stand_mins_z = ent->v.mins[2];
+			client->crouch_stand_maxs_z = ent->v.maxs[2];
+			client->crouch_stand_viewheight = ent->v.view_ofs[2];
+			client->crouched = true;
+		}
+
+		if (client->crouch_stand_maxs_z <= client->crouch_stand_mins_z)
+		{
+			client->crouched = false;
+			return;
+		}
+
+		SV_SetCrouchBounds(client, ent, true);
+		return;
+	}
+
+	if (client->crouched)
+	{
+		vec3_t stand_mins, stand_maxs;
+		trace_t trace;
+
+		VectorCopy(ent->v.mins, stand_mins);
+		VectorCopy(ent->v.maxs, stand_maxs);
+		stand_mins[2] = client->crouch_stand_mins_z;
+		stand_maxs[2] = client->crouch_stand_maxs_z;
+		trace = SV_Move(ent->v.origin, stand_mins, stand_maxs,
+			ent->v.origin, MOVE_NORMAL, ent);
+
+		// Keep the shorter hull until the entire standing hull has room.
+		if (trace.startsolid || trace.allsolid || trace.fraction < 1)
+		{
+			SV_SetCrouchBounds(client, ent, true);
+			return;
+		}
+
+		SV_SetCrouchBounds(client, ent, false);
+		client->crouched = false;
+	}
+}
+
 /*
 ===================
 SV_ClientThink
@@ -416,6 +504,9 @@ the angle fields specify an exact angular motion in degrees
 void SV_ClientThink (void)
 {
 	vec3_t		v_angle;
+
+	if (host_client && sv_player)
+		SV_UpdateCrouch(host_client, sv_player, host_client->cmd.upmove);
 
 	if (sv_player->v.movetype == MOVETYPE_NONE)
 		return;
@@ -1713,6 +1804,7 @@ void SV_ReadClientMove (usercmd_t *move)
 	move->forwardmove = movevalues[0];
 	move->sidemove = movevalues[1];
 	move->upmove = movevalues[2];
+	SV_UpdateCrouch(host_client, host_client->edict, move->upmove);
 
 // read buttons
 	host_client->edict->v.button0 = (buttonbits & 1)>>0;

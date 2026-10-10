@@ -35,6 +35,9 @@ compile "$repo/tests/test_cigarette_smoke.c" "$work/chase.o" \
 compile "$repo/tests/test_skate_server.c" "$work/sv_user.o" "$work/sv_phys.o" "$work/mathlib.o" \
     ${LDFLAGS:-} -Wl,--gc-sections -lm -o "$work/skate_server"
 "$work/skate_server"
+compile "$repo/tests/test_crouch_server.c" "$work/sv_user.o" \
+    ${LDFLAGS:-} -Wl,--gc-sections -lm -o "$work/crouch_server"
+"$work/crouch_server"
 # The pre-existing renderer has an unused model_matrix local unrelated to these tests.
 compile -Wno-unused-variable "$repo/tests/test_skate_client.c" "$work/chase.o" "$work/mathlib.o" "$work/gl_rmain.o" \
     ${LDFLAGS:-} -Wl,--gc-sections -lm -o "$work/skate_client"

@@ -4641,9 +4641,9 @@ const char *quakebindnames[][2] = // woods use iw quake bind names
 	{"+moveleft",		"Move left"},
 	{"+moveright",		"Move right"},
 	{"+jump",			"Jump / swim up"},
-	{"+skate_slide",	"Skate slide"},
+	{"+skate_slide",		"Skate slide"},
 	{"+moveup",			"Swim up"},
-	{"+movedown",		"Swim down"},
+	{"+movedown",			"Crouch / swim down"},
 	{"+speed",			"Run"},
 	{"+strafe",			"Sidestep"},
 	{"+left",			"Turn left"},
@@ -4659,7 +4659,7 @@ const char *quakebindnames[][2] = // woods use iw quake bind names
 	{"impulse 1",		"Khopesh"},
 	{"impulse 2",		"Revolver"},
 	{"impulse 3",		"RB-12"},
-	{"impulse 4",		"Shuropoverty"},
+	{"impulse 4",		"Shuropovety"},
 	{"impulse 5",		"VHS-2"},
 	{"impulse 6",		"Grudnichkomyot"},
 	{"impulse 7",		"Rocket Launcher"},
@@ -15695,7 +15695,7 @@ void M_CheckMods(void) // woods #modsmenu (iw)
 		sgl_hashes[] = { 0x7bba813d }
 	;
 
-	m_main_mods = M_CheckCustomGfx("gfx/a_mods/amods1.lmp",
+	m_main_mods = M_CheckCustomGfx("gfx/a_mods/amods1.png",
 		"gfx/mainmenu.lmp", 26888, main_hashes, countof(main_hashes));
 
 	m_main_demos = M_CheckCustomGfx("gfx/a_demos/ademos1.lmp", // woods #demosmenu

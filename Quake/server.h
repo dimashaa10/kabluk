@@ -220,6 +220,10 @@ typedef struct client_s
 	int lastmovemessage;
 	double lastmovetime;
 	qboolean usingpmove;	//using the SV_RunClientCommand entrypoint, or getting pmove thrust upon them serverside (disables sv_user.c+movetype stuff, enables provides pmove hints to the client)
+	qboolean crouched;		// engine-managed crouch state
+	float crouch_stand_mins_z;	// bounds/view height saved on first crouch
+	float crouch_stand_maxs_z;
+	float crouch_stand_viewheight;
 
 	char userinfo[1024];	//spike -- for csqc to (ab)use.
 	client_voip_t voip;	//spike -- for voip
@@ -375,6 +379,7 @@ void SV_SetIdealPitch (void);
 void SV_AddUpdates (void);
 
 void SV_ClientThink (void);
+void SV_UpdateCrouch (client_t *client, edict_t *ent, float upmove);
 void SV_AddClientToServer (struct qsocket_s	*ret);
 
 void SV_ClientPrintf (const char *fmt, ...) FUNC_PRINTF(1,2);
