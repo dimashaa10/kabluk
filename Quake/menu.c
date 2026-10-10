@@ -15695,7 +15695,7 @@ void M_CheckMods(void) // woods #modsmenu (iw)
 		sgl_hashes[] = { 0x7bba813d }
 	;
 
-	m_main_mods = M_CheckCustomGfx("gfx/a_mods/amods1.png",
+	m_main_mods = M_CheckCustomGfx("gfx/a_mods/amods1.lmp",
 		"gfx/mainmenu.lmp", 26888, main_hashes, countof(main_hashes));
 
 	m_main_demos = M_CheckCustomGfx("gfx/a_demos/ademos1.lmp", // woods #demosmenu
