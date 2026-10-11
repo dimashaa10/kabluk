@@ -67,7 +67,7 @@ byte		*host_colormap;
 //float	host_netinterval;
 float	host_netinterval = 1.0 / 72;
 cvar_t	host_framerate = {"host_framerate","0",CVAR_NONE};	// set for slow motion
-cvar_t	host_speeds = {"host_speeds","0",CVAR_NONE};			// set for running times
+cvar_t	host_speeds = {"host_speeds","0",CVAR_NONE};			// 1: legacy per-frame; 2: rolling phase profile
 cvar_t	host_maxfps = {"host_maxfps", "250", CVAR_ARCHIVE}; //johnfitz
 cvar_t	host_timescale = {"host_timescale", "0", CVAR_NONE}; //johnfitz
 cvar_t	max_edicts = {"max_edicts", "15000", CVAR_NONE}; //johnfitz //ericw -- changed from 2048 to 8192, removed CVAR_ARCHIVE
@@ -1439,6 +1439,61 @@ static void CL_LoadCSProgs(void)
 	PR_SwitchQCVM(NULL);
 }
 
+enum host_profile_phase_e
+{
+	HOST_PROFILE_TOTAL,
+	HOST_PROFILE_PREPARE,
+	HOST_PROFILE_SERVER,
+	HOST_PROFILE_CLIENT,
+	HOST_PROFILE_RENDER,
+	HOST_PROFILE_PARTICLES,
+	HOST_PROFILE_AUDIO,
+	HOST_PROFILE_PHASE_COUNT
+};
+
+typedef struct host_profile_stats_s
+{
+	double sum[HOST_PROFILE_PHASE_COUNT];
+	double max[HOST_PROFILE_PHASE_COUNT];
+	double window_start;
+	unsigned int frames;
+} host_profile_stats_t;
+
+static host_profile_stats_t host_profile_stats;
+static const char *host_profile_phase_names[HOST_PROFILE_PHASE_COUNT] =
+{
+	"total", "prepare", "server", "client", "render CPU", "particles", "audio"
+};
+
+static void Host_ProfileFrame (const double phase_times[HOST_PROFILE_PHASE_COUNT], double now)
+{
+	unsigned int i;
+	double elapsed;
+
+	if (!host_profile_stats.frames)
+		host_profile_stats.window_start = now;
+	for (i = 0; i < HOST_PROFILE_PHASE_COUNT; i++)
+	{
+		host_profile_stats.sum[i] += phase_times[i];
+		if (phase_times[i] > host_profile_stats.max[i])
+			host_profile_stats.max[i] = phase_times[i];
+	}
+	host_profile_stats.frames++;
+	elapsed = now - host_profile_stats.window_start;
+	if (elapsed < 1.0)
+		return;
+
+	Con_Printf ("host_speeds 2: %u frames in %.2f s (%.1f FPS)\n",
+		host_profile_stats.frames, elapsed, host_profile_stats.frames / elapsed);
+	for (i = 0; i < HOST_PROFILE_PHASE_COUNT; i++)
+		Con_Printf ("  %-10s avg %6.2f ms  max %6.2f ms\n", host_profile_phase_names[i],
+			host_profile_stats.sum[i] * 1000.0 / host_profile_stats.frames,
+			host_profile_stats.max[i] * 1000.0);
+
+	memset (&host_profile_stats, 0, sizeof(host_profile_stats));
+	host_profile_stats.window_start = now;
+}
+
 /*
 ==================
 Host_Frame
@@ -1453,6 +1508,11 @@ void _Host_Frame (double time)
 	static double		time2 = 0;
 	static double		time3 = 0;
 	int			pass1, pass2, pass3;
+	qboolean		profile_enabled;
+	double			profile_frame_start = 0.0;
+	double			profile_phase_start = 0.0;
+	double			profile_now = 0.0;
+	double			profile_times[HOST_PROFILE_PHASE_COUNT];
 
 	if (setjmp (host_abortserver) )
 		return;			// something bad happened, or the server disconnected
@@ -1472,6 +1532,14 @@ void _Host_Frame (double time)
 		}
 		return;			// don't run too fast, or packets will flood out
 	}
+
+	profile_enabled = host_speeds.value >= 2.0;
+	if (profile_enabled)
+	{
+		memset (profile_times, 0, sizeof(profile_times));
+		profile_frame_start = profile_phase_start = Sys_DoubleTime();
+	}
+
 	if (!isDedicated) // woods  -- don't call the input functions in dedicated servers (vkquake)
 	{ 
 		// get new key events
@@ -1508,6 +1576,12 @@ void _Host_Frame (double time)
 	}
 
 	CL_AccumulateCmd ();
+	if (profile_enabled)
+	{
+		profile_now = Sys_DoubleTime();
+		profile_times[HOST_PROFILE_PREPARE] = profile_now - profile_phase_start;
+		profile_phase_start = profile_now;
+	}
 
 	//Run the server+networking (client->server->client), at a different rate from everything else
 	if (accumtime >= host_netinterval)
@@ -1534,6 +1608,12 @@ void _Host_Frame (double time)
 		host_frametime = realframetime;
 		Cbuf_Waited();
 	}
+	if (profile_enabled)
+	{
+		profile_now = Sys_DoubleTime();
+		profile_times[HOST_PROFILE_SERVER] = profile_now - profile_phase_start;
+		profile_phase_start = profile_now;
+	}
 
 	host_time += host_frametime; // woods smoothcam  #smoothcam
 
@@ -1549,16 +1629,40 @@ void _Host_Frame (double time)
 	if (cls.state == ca_connected)
 		CL_ReadFromServer ();
 
-// update video
-	if (host_speeds.value)
-		time1 = Sys_DoubleTime ();
+	if (profile_enabled)
+	{
+		profile_now = Sys_DoubleTime();
+		profile_times[HOST_PROFILE_CLIENT] = profile_now - profile_phase_start;
+		profile_phase_start = profile_now;
+	}
 
+// update video
+	if (host_speeds.value > 0 && host_speeds.value < 2)
+		time1 = Sys_DoubleTime ();
+	if (profile_enabled)
+		profile_phase_start = Sys_DoubleTime();
+
+	// CPU submission time only; avoid glFinish so profiling does not stall the GPU.
 	SCR_UpdateScreen ();
+	if (profile_enabled)
+	{
+		profile_now = Sys_DoubleTime();
+		profile_times[HOST_PROFILE_RENDER] = profile_now - profile_phase_start;
+		profile_phase_start = profile_now;
+	}
 
 	CL_RunParticles (); //johnfitz -- seperated from rendering
+	if (profile_enabled)
+	{
+		profile_now = Sys_DoubleTime();
+		profile_times[HOST_PROFILE_PARTICLES] = profile_now - profile_phase_start;
+		profile_phase_start = profile_now;
+	}
 
-	if (host_speeds.value)
+	if (host_speeds.value > 0 && host_speeds.value < 2)
 		time2 = Sys_DoubleTime ();
+	if (profile_enabled)
+		profile_phase_start = Sys_DoubleTime();
 
 // update audio
 	BGM_Update();	// adds music raw samples and/or advances midi driver
@@ -1576,7 +1680,15 @@ void _Host_Frame (double time)
 	CDAudio_Update();
 	UpdateWindowTitle(); // github.com/andrei-drexler/ironwail (Show game summary in window title)
 
-	if (host_speeds.value)
+	if (profile_enabled)
+	{
+		profile_now = Sys_DoubleTime();
+		profile_times[HOST_PROFILE_AUDIO] = profile_now - profile_phase_start;
+		profile_times[HOST_PROFILE_TOTAL] = profile_now - profile_frame_start;
+		Host_ProfileFrame (profile_times, profile_now);
+	}
+
+	if (host_speeds.value > 0 && host_speeds.value < 2)
 	{
 		pass1 = (time1 - time3)*1000;
 		time3 = Sys_DoubleTime ();
