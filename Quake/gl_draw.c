@@ -453,6 +453,11 @@ qpic_t	*Draw_TryCachePic (const char *path, unsigned int texflags)
 		return &pic->pic;
 	}
 
+	/* Quake LMP UI pictures use palette index 255 as transparency. Keep an
+	 * alpha-capable texture for gfx LMPs so that the palette key is preserved. */
+	if (!strncmp(path, "gfx/", 4))
+		texflags |= TEXPREF_ALPHA;
+
 //
 // load the pic from disk, preferring the language-specific loose/pack file
 //
