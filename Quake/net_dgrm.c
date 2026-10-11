@@ -47,14 +47,11 @@ static int receivedDuplicateCount = 0;
 static int shortPacketCount = 0;
 static int droppedDatagrams;
 
-//cvars controlling dpmaster support:
-//our servers might as well claim to be 'FTE-Quake' servers. this means FTE can see us, we can see FTE (when its pretending to be nq).
-//we additionally look for 'DarkPlaces-Quake' servers too, because we can, but most of those servers will be using dpp7 and will (safely) not respond to our ccreq_server_info requests.
-//we are not visible to DarkPlaces users - dp does not support fitz666 so that's not a viable option, at least by default, feel free to switch the order if you also change sv_protocol back to 15.
+// Public master support; use a Kabluk-specific game identifier so the browser does not query Quake lists.
 cvar_t sv_reportheartbeats = {"sv_reportheartbeats", "0"};
 cvar_t sv_heartbeat_interval = {"sv_heartbeat_interval", "110"};
 cvar_t sv_public = {"sv_public", NULL};
-cvar_t com_protocolname = {"com_protocolname", "FTE-Quake DarkPlaces-Quake"};
+cvar_t com_protocolname = {"com_protocolname", KABLUK_PROTOCOL_NAME};
 cvar_t password = {"password", ""};	//this is super-lame and limited to numbers, so when not numeric we hash it and use that instead. there's no nonces though.
 cvar_t net_masters[] = 
 {
@@ -1254,7 +1251,7 @@ static void _Datagram_ServerControlPacket (sys_socket_t acceptsock, struct qsock
 			qboolean full = !strcmp(Cmd_Argv(0), "getstatus");
 			char cookie[128];
 			const char *s = Cmd_Args();
-			const char *gamedir = COM_GetGameNames(false);
+			const char *gamedir = COM_GetGameNames(true);
 			unsigned int numclients = 0, numbots = 0;
 			int i;
 			size_t j;
@@ -1336,7 +1333,9 @@ static void _Datagram_ServerControlPacket (sys_socket_t acceptsock, struct qsock
 	command = MSG_ReadByte();
 	if (command == CCREQ_SERVER_INFO)
 	{
-		if (Q_strcmp(MSG_ReadString(), "QUAKE") != 0)
+		if (Q_strcmp(MSG_ReadString(), KABLUCKUZBASS_LAN_TAG) != 0)
+			return;
+		if (q_strcasecmp(COM_GetGameNames(true), GAMENAME) != 0)
 			return;
 
 		SZ_Clear(&net_message);
@@ -1751,7 +1750,7 @@ static void _Datagram_SendServerQuery(struct qsockaddr *addr, qboolean master)
 		// save space for the header, filled in later
 		MSG_WriteLong(&net_message, 0);
 		MSG_WriteByte(&net_message, CCREQ_SERVER_INFO);
-		MSG_WriteString(&net_message, "QUAKE");
+		MSG_WriteString(&net_message, KABLUCKUZBASS_LAN_TAG);
 		MSG_WriteByte(&net_message, NET_PROTOCOL_VERSION);
 		*((int *)net_message.data) = BigLong(NETFLAG_CTL | (net_message.cursize & NETFLAG_LENGTH_MASK));
 	}
@@ -1855,7 +1854,7 @@ static qboolean _Datagram_SearchForHosts (qboolean xmit)
 		// save space for the header, filled in later
 		MSG_WriteLong(&net_message, 0);
 		MSG_WriteByte(&net_message, CCREQ_SERVER_INFO);
-		MSG_WriteString(&net_message, "QUAKE");
+		MSG_WriteString(&net_message, KABLUCKUZBASS_LAN_TAG);
 		MSG_WriteByte(&net_message, NET_PROTOCOL_VERSION);
 		*((int *)net_message.data) = BigLong(NETFLAG_CTL | (net_message.cursize & NETFLAG_LENGTH_MASK));
 
@@ -1984,6 +1983,7 @@ static qboolean _Datagram_SearchForHosts (qboolean xmit)
 				if (!*hostcache[n].name)
 					q_strlcpy(hostcache[n].name, "UNNAMED", sizeof(hostcache[n].name));
 				Info_ReadKey(info, "mapname", hostcache[n].map, sizeof(hostcache[n].map));
+				Info_ReadKey(info, "gamename", hostcache[n].gamename, sizeof(hostcache[n].gamename));
 				Info_ReadKey(info, "modname", hostcache[n].gamedir, sizeof(hostcache[n].gamedir));
 
 				Info_ReadKey(info, "clients", tmp, sizeof(tmp));
@@ -2070,6 +2070,8 @@ static qboolean _Datagram_SearchForHosts (qboolean xmit)
 		if (!*hostcache[n].name)
 			q_strlcpy(hostcache[n].name, "UNNAMED", sizeof(hostcache[n].name));
 		q_strlcpy(hostcache[n].map, MSG_ReadString(), sizeof(hostcache[n].map));
+		hostcache[n].gamename[0] = '\0';
+		hostcache[n].gamedir[0] = '\0';
 		hostcache[n].users = MSG_ReadByte();
 		hostcache[n].maxusers = MSG_ReadByte();
 		if (MSG_ReadByte() != NET_PROTOCOL_VERSION)

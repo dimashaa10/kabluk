@@ -117,12 +117,16 @@ extern	enum slistScope_e
 
 #define HOSTCACHESIZE	128	// woods #serversmenu
 
+#define KABLUK_PROTOCOL_NAME "Kabluk"
+
 typedef enum { // woods #serversmenu
 	SERVER_NAME,
 	SERVER_CNAME,
 	SERVER_MAP,
 	SERVER_USERS,
-	SERVER_MAX_USERS
+	SERVER_MAX_USERS,
+	SERVER_GAMENAME,
+	SERVER_GAMEDIR
 } ServerInfoType;
 
 const char* NET_SlistPrintServerInfo(size_t idx, ServerInfoType type); // woods #serversmenu

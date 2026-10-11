@@ -23,8 +23,6 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "quakedef.h"
 #include "bgmusic.h"
 #include "q_ctype.h" // woods #modsmenu (iw)
-#include <curl/curl.h> // woods #serversmenu
-#include "json.h" // woods #serversmenu
 #include <sys/stat.h>
 
 #ifdef _WIN32
@@ -12963,6 +12961,28 @@ double		searchCompleteTime;
 enum slistScope_e searchLastScope = SLIST_LAN;
 void ResetHostlist (void); // woods #resethostlist
 
+static qboolean M_SearchResultMatchesGame(size_t index)
+{
+	const char *engine = NET_SlistPrintServerInfo(index, SERVER_GAMENAME);
+	const char *game = NET_SlistPrintServerInfo(index, SERVER_GAMEDIR);
+
+	if (searchLastScope == SLIST_INTERNET)
+		return q_strcasecmp(engine, KABLUK_PROTOCOL_NAME) == 0 &&
+			q_strcasecmp(game, GAMENAME) == 0;
+
+	// Internet responses carry the game directory; the compact LAN reply does not.
+	return !*game || q_strcasecmp(game, GAMENAME) == 0;
+}
+
+static qboolean M_SearchHasMatchingResults(void)
+{
+	size_t i;
+	for (i = 0; i < hostCacheCount; i++)
+		if (M_SearchResultMatchesGame(i))
+			return true;
+	return false;
+}
+
 void M_Menu_Search_f (enum slistScope_e scope)
 {
 	key_dest = key_menu;
@@ -13001,13 +13021,13 @@ void M_Search_Draw (void)
 		searchCompleteTime = realtime;
 	}
 
-	if (hostCacheCount)
+	if (M_SearchHasMatchingResults())
 	{
 		M_Menu_ServerList_f ();
 		return;
 	}
 
-	M_PrintWhite ((320/2) - ((22*8)/2), 64, "No Kuzba$$ servers found");
+	M_PrintWhite ((320/2) - ((22*8)/2), 64, "No Kabluk/Kuzbass servers found");
 	if ((realtime - searchCompleteTime) < 3.0)
 		return;
 
@@ -13061,7 +13081,7 @@ static struct {
 } serversmenu;
 
 //=============================================================================
-// woods servers.quakeone.com support curl+json parsing #serversmenu
+// Kabluk/Kuzbass master-server browser and ping support
 //=============================================================================
 
 static volatile qboolean pingThreadsShouldExit = false;
@@ -13280,147 +13300,6 @@ void PingAllServers(void)
 		Con_DPrintf("SDL_CreateThread failed: %s\n", SDL_GetError());
 }
 
-struct MemoryStruct
-{
-	char* memory;
-	size_t size;
-};
-
-static size_t WriteMemoryCallback (void* contents, size_t size, size_t nmemb, void* userp)
-{
-	size_t realSize = size * nmemb;
-	struct MemoryStruct* mem = (struct MemoryStruct*)userp;
-
-	char* ptr = realloc(mem->memory, mem->size + realSize + 1);
-	if (!ptr) {
-		Con_DPrintf("not enough memory (realloc returned NULL)\n");
-		return 0;
-	}
-
-	mem->memory = ptr;
-	memcpy(&(mem->memory[mem->size]), contents, realSize);
-	mem->size += realSize;
-	mem->memory[mem->size] = 0;
-
-	return realSize;
-}
-
-void setStatusFlagBasedOnTimestamp (const char* timestamp, const char* lastQuery, qboolean* status)
-{
-	char bufTimestamp[20], bufLastQuery[20]; // Extract time components up to seconds
-	Q_strncpy(bufTimestamp, timestamp, 19);
-	bufTimestamp[19] = '\0';
-	Q_strncpy(bufLastQuery, lastQuery, 19);
-	bufLastQuery[19] = '\0';
-
-	if (Q_strcmp(bufTimestamp, bufLastQuery) == 0) // Compare the timestamp and lastQuery to the second
-		*status = true;
-	else
-		*status = false;
-}
-
-void populateServersFromJSON (const char* jsonText, servertitem_t** items, int* actualServerCount)
-{
-	json_t* json = JSON_Parse(jsonText);
-	if (!json || !json->root || json->root->type != JSON_ARRAY) 
-	{
-		Con_DPrintf("Failed to parse JSON or JSON is not an array.\n");
-		if (json) JSON_Free(json);
-		return;
-	}
-
-	const jsonentry_t* serverEntry;
-	for (serverEntry = json->root->firstchild; serverEntry; serverEntry = serverEntry->next)
-	{
-		const char* name = JSON_FindString(serverEntry, "hostname");
-		const char* address = JSON_FindString(serverEntry, "address");
-		const double* maxPlayers = JSON_FindNumber(serverEntry, "maxPlayers");
-		const char* map = JSON_FindString(serverEntry, "map");
-		const char* parameters = JSON_FindString(serverEntry, "parameters");
-		const double* gameId = JSON_FindNumber(serverEntry, "gameId");
-		const double* port = JSON_FindNumber(serverEntry, "port");
-		const char* timestamp = JSON_FindString(serverEntry, "timestamp");
-		const char* lastQuery = JSON_FindString(serverEntry, "lastQuery");
-
-		const jsonentry_t* playersArray = JSON_Find(serverEntry, "players", JSON_ARRAY);
-
-		int numPlayers = 0;
-		if (playersArray)
-		{
-			const jsonentry_t* playerEntry;
-			for (playerEntry = playersArray->firstchild; playerEntry; playerEntry = playerEntry->next) 
-			{
-				numPlayers++;
-			}
-		}
-
-		qboolean status;
-		setStatusFlagBasedOnTimestamp(timestamp, lastQuery, &status);
-
-		if (!status || !name || !address || !port || !gameId || (*gameId != 0 && (*gameId != 5 || !parameters || !strstr(parameters, "fte")))) continue; // Skip if essential info is missing or server is down
-
-		*items = realloc(*items, sizeof(servertitem_t) * (*actualServerCount + 1));
-		if (!*items) {
-			Con_DPrintf("Memory allocation failed.\n");
-			break;
-		}
-
-		size_t addressLength = strlen(address) + 1 /* colon */ + 6 /* max length of port number */ + 1 /* null terminator */;
-		char* addressWithPort = malloc(addressLength);
-		if (!addressWithPort) {
-			Con_DPrintf("Memory allocation for address with port failed.\n");
-			break;
-		}
-		q_snprintf(addressWithPort, addressLength, "%s:%d", address, (int)*port);
-
-		servertitem_t* newItem = &(*items)[*actualServerCount];
-		newItem->name = strdup(name ? name : "Unknown");
-		newItem->ip = strdup(addressWithPort);
-		free(addressWithPort);
-		newItem->users = numPlayers;
-		newItem->maxusers = maxPlayers ? (int)*maxPlayers : 0;
-		newItem->map = strdup(map ? map : "Unknown");
-		newItem->active = true;
-		newItem->ping = -1;
-
-		(*actualServerCount)++;
-	}
-
-	JSON_Free(json);
-}
-
-void CurlServerList (servertitem_t** items, int* actualServerCount) 
-{
-	CURL* curl;
-	CURLcode res;
-	struct MemoryStruct chunk;
-
-	chunk.memory = malloc(1);  // Initial allocation
-	chunk.size = 0;    // No data at this point
-
-	curl_global_init(CURL_GLOBAL_ALL);
-	curl = curl_easy_init();
-
-	if (curl) 
-	{
-		curl_easy_setopt(curl, CURLOPT_URL, "https://servers.quakeone.com/api/servers/status");
-		curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
-		curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void*)&chunk);
-		curl_easy_setopt(curl, CURLOPT_USERAGENT, "libcurl-agent/1.0");
-
-		res = curl_easy_perform(curl);
-		if (res != CURLE_OK)
-			Con_DPrintf("curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
-		else
-			populateServersFromJSON(chunk.memory, items, actualServerCount);
-
-		free(chunk.memory);
-		curl_easy_cleanup(curl);
-	}
-
-	curl_global_cleanup();
-}
-
 int compareServerUsers (const void* a, const void* b) 
 {
 	const servertitem_t* serverA = (const servertitem_t*)a;
@@ -13461,8 +13340,12 @@ void FetchAndSortServers (void)
 	serversmenu.items = NULL;
 	int actualServerCount = 0;
 
-	for (int i = 0; i < HOSTCACHESIZE; i++) // Fetch and add servers from the dp list
+	for (int i = 0; i < (int)hostCacheCount; i++) // Add results from the current network search
 	{
+		// LAN's compact reply has no game metadata; its query uses a private tag.
+		if (!M_SearchResultMatchesGame((size_t)i))
+			continue;
+
 		const char* serverName = NET_SlistPrintServerInfo(i, SERVER_NAME);
 		const char* serverIP = NET_SlistPrintServerInfo(i, SERVER_CNAME);
 		int users = atoi(NET_SlistPrintServerInfo(i, SERVER_USERS));
@@ -13490,8 +13373,6 @@ void FetchAndSortServers (void)
 		}
 	}
 
-	if (searchLastScope == SLIST_INTERNET)
-	CurlServerList (&serversmenu.items, &actualServerCount);// fetch and add servers from the server.quakeone.com json API
 
 	RemoveDuplicateServers(&serversmenu.items, &actualServerCount);
 

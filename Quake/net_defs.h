@@ -242,11 +242,15 @@ double SetNetTime(void);
 
 #define HOSTCACHESIZE	128	//fixme: make dynamic.
 
+// LAN browser tag for the Kabluk/Kuzbass protocol.
+#define KABLUCKUZBASS_LAN_TAG "KABLUCKUZBASS"
+
 typedef struct
 {
 	char	name[64];
 	char	map[16];
-	char	gamedir[16];
+	char	gamename[16];	// master protocol/engine identifier (e.g. Kabluk)
+	char	gamedir[16];	// game directory list (e.g. kuzbass)
 	char	cname[NET_NAMELEN];
 	int		users;
 	int		maxusers;
