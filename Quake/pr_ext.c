@@ -2078,16 +2078,35 @@ void PF_sv_pmove(void)
 {
 	edict_t	*e			= G_EDICT(OFS_PARM0);
 	movevars = svmovevars;
+	if (host_client && host_client->edict == e && host_client->crouched &&
+		!host_client->skate_active)
+		movevars.maxspeed = q_min(movevars.maxspeed, SV_CROUCH_MAX_SPEED);
 	PF_both_pmove(e);
 }
 void PMSV_SetMoveStats(edict_t *plent, float *fstat, int *istat)
 {
+	float maxspeed = svmovevars.maxspeed;
+	int i;
 	eval_t *entgrav = GetEdictFieldValue(plent, qcvm->extfields.gravity);
+
+	if (svs.clients)
+	{
+		for (i = 0; i < svs.maxclients; i++)
+		{
+			if (svs.clients[i].edict == plent && svs.clients[i].crouched &&
+				!svs.clients[i].skate_active)
+			{
+				maxspeed = q_min(maxspeed, SV_CROUCH_MAX_SPEED);
+				break;
+			}
+		}
+	}
+
 	fstat[STAT_MOVEVARS_STEPHEIGHT] = svmovevars.stepheight;
 	istat[STAT_MOVEFLAGS] = svmovevars.flags;
 	fstat[STAT_MOVEVARS_GRAVITY] = svmovevars.gravity;
 	fstat[STAT_MOVEVARS_STOPSPEED] = svmovevars.stopspeed;
-	fstat[STAT_MOVEVARS_MAXSPEED] = svmovevars.maxspeed;
+	fstat[STAT_MOVEVARS_MAXSPEED] = maxspeed;
 	fstat[STAT_MOVEVARS_SPECTATORMAXSPEED] = svmovevars.spectatormaxspeed;
 	fstat[STAT_MOVEVARS_ACCELERATE] = svmovevars.accelerate;
 	fstat[STAT_MOVEVARS_AIRACCELERATE] = svmovevars.airaccelerate;

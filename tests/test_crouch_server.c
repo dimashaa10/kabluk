@@ -100,6 +100,26 @@ static void TestBlockedStand (void)
 	assert(links == 2 && traces == 2);
 }
 
+static void TestCrouchSpeed (void)
+{
+	float speed;
+
+	Reset();
+	player.v.velocity[0] = 300;
+	player.v.velocity[1] = 200;
+	player.v.velocity[2] = -120;
+	SV_UpdateCrouch(&client, &player, -200);
+	speed = sqrtf(player.v.velocity[0] * player.v.velocity[0] +
+		player.v.velocity[1] * player.v.velocity[1]);
+	assert(fabsf(speed - SV_CROUCH_MAX_SPEED) < 0.01f);
+	assert(player.v.velocity[2] == -120); // crouch doesn't alter jump/fall velocity
+
+	player.v.velocity[0] = 220;
+	player.v.velocity[1] = 0;
+	SV_UpdateCrouch(&client, &player, 0);
+	assert(!client.crouched && player.v.velocity[0] == 220); // normal speed returns on stand
+}
+
 static void TestMovementModes (void)
 {
 	Reset();
@@ -127,9 +147,11 @@ int main (void)
 {
 	TestCrouchAndRelease();
 	TestBlockedStand();
+	TestCrouchSpeed();
 	TestMovementModes();
 	puts("PASS: crouch shrinks the player hull and lowers view height until released.");
 	puts("PASS: standing is deferred while blocked, then restores the original bounds.");
+	puts("PASS: crouch caps horizontal velocity at 160 without changing vertical speed.");
 	puts("PASS: swimming down, noclip, ladder and skate mode do not trigger crouch.");
 	return 0;
 }

@@ -362,7 +362,7 @@ void SV_AirMove (void)
 {
 	int			i;
 	vec3_t		wishvel, wishdir;
-	float		wishspeed;
+	float		wishspeed, maxspeed;
 	float		fmove, smove;
 
 	AngleVectors (sv_player->v.angles, forward, right, up);
@@ -384,10 +384,14 @@ void SV_AirMove (void)
 
 	VectorCopy (wishvel, wishdir);
 	wishspeed = VectorNormalize(wishdir);
-	if (wishspeed > sv_maxspeed.value)
+	maxspeed = sv_maxspeed.value;
+	if (host_client && host_client->crouched && !host_client->skate_active &&
+		sv_player->v.movetype == MOVETYPE_WALK)
+		maxspeed = q_min(maxspeed, SV_CROUCH_MAX_SPEED);
+	if (wishspeed > maxspeed)
 	{
-		VectorScale (wishvel, sv_maxspeed.value/wishspeed, wishvel);
-		wishspeed = sv_maxspeed.value;
+		VectorScale (wishvel, maxspeed/wishspeed, wishvel);
+		wishspeed = maxspeed;
 	}
 
 	if ( sv_player->v.movetype == MOVETYPE_NOCLIP)
@@ -407,6 +411,24 @@ void SV_AirMove (void)
 
 #define SV_CROUCH_HEIGHT		32
 #define SV_CROUCH_VIEWHEIGHT	8
+
+static void SV_ClampCrouchSpeed (client_t *client, edict_t *ent)
+{
+	float speed, scale;
+
+	if (!client || !ent || !client->crouched || client->skate_active ||
+		ent->v.health <= 0 || ent->v.movetype != MOVETYPE_WALK)
+		return;
+
+	speed = sqrtf(ent->v.velocity[0] * ent->v.velocity[0] +
+		ent->v.velocity[1] * ent->v.velocity[1]);
+	if (speed <= SV_CROUCH_MAX_SPEED)
+		return;
+
+	scale = SV_CROUCH_MAX_SPEED / speed;
+	ent->v.velocity[0] *= scale;
+	ent->v.velocity[1] *= scale;
+}
 
 static void SV_SetCrouchBounds (client_t *client, edict_t *ent, qboolean crouched)
 {
@@ -466,6 +488,7 @@ void SV_UpdateCrouch (client_t *client, edict_t *ent, float upmove)
 		}
 
 		SV_SetCrouchBounds(client, ent, true);
+		SV_ClampCrouchSpeed(client, ent);
 		return;
 	}
 
@@ -485,6 +508,7 @@ void SV_UpdateCrouch (client_t *client, edict_t *ent, float upmove)
 		if (trace.startsolid || trace.allsolid || trace.fraction < 1)
 		{
 			SV_SetCrouchBounds(client, ent, true);
+			SV_ClampCrouchSpeed(client, ent);
 			return;
 		}
 
@@ -509,7 +533,10 @@ void SV_ClientThink (void)
 		SV_UpdateCrouch(host_client, sv_player, host_client->cmd.upmove);
 
 	if (sv_player->v.movetype == MOVETYPE_NONE)
+	{
+		SV_ClampCrouchSpeed(host_client, sv_player);
 		return;
+	}
 
 	prevonground = onground; // woods #qwbunnyhop
 	onground = (int)sv_player->v.flags & FL_ONGROUND;
@@ -530,6 +557,7 @@ void SV_ClientThink (void)
 			sv_player->v.angles[PITCH] = -v_angle[PITCH] / 3;
 			sv_player->v.angles[YAW] = v_angle[YAW];
 		}
+		SV_ClampCrouchSpeed(host_client, sv_player);
 		return;	//this stuff is handled on inputs. don't corrupt anything.
 	}
 
@@ -556,6 +584,7 @@ void SV_ClientThink (void)
 	if ( (int)sv_player->v.flags & FL_WATERJUMP )
 	{
 		SV_WaterJump ();
+		SV_ClampCrouchSpeed(host_client, sv_player);
 		return;
 	}
 //
@@ -573,6 +602,7 @@ void SV_ClientThink (void)
 		SV_AirMove ();
 	//johnfitz
 
+	SV_ClampCrouchSpeed(host_client, sv_player);
 	SV_UpdateSpeedInfo (); // woods #speedometer
 }
 
@@ -1919,6 +1949,7 @@ void SV_ReadClientMove (usercmd_t *move)
 		PR_ExecuteProgram(pr_global_struct->PlayerPostThink);
 		SV_CigarettePostThink(host_client, host_client->edict, saved_button0, equip_cigarette);
 		SV_SkateUpdate(host_client);
+		SV_ClampCrouchSpeed(host_client, host_client->edict);
 	}
 }
 

@@ -118,6 +118,7 @@ typedef struct
 #define	NUM_PING_TIMES		16
 #define	NUM_BASIC_SPAWN_PARMS		16
 #define	NUM_TOTAL_SPAWN_PARMS		64
+#define SV_CROUCH_MAX_SPEED		160.0f
 
 typedef struct client_s
 {
