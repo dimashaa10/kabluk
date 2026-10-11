@@ -4641,8 +4641,9 @@ const char *quakebindnames[][2] = // woods use iw quake bind names
 	{"+moveleft",		"Move left"},
 	{"+moveright",		"Move right"},
 	{"+jump",			"Jump / swim up"},
+	{"+skate_slide",		"Skate slide"},
 	{"+moveup",			"Swim up"},
-	{"+movedown",		"Swim down"},
+	{"+movedown",			"Crouch / swim down"},
 	{"+speed",			"Run"},
 	{"+strafe",			"Sidestep"},
 	{"+left",			"Turn left"},
@@ -4737,6 +4738,24 @@ void M_Keys_Populate(void) // woods #mousemenu -- modified
 			strcpy(bindnames[i].desc, quakebindnames[i][1]);
 		}
 		numbindnames = NUMQUAKECOMMANDS;
+	}
+
+	// Keep the engine skateboard action available even when an external
+	// bindlist.lst supplies the rest of the controls.
+	{
+		int i;
+		for (i = 0; i < numbindnames; i++)
+			if (!strcmp(bindnames[i].cmd, "+skate_slide"))
+				break;
+		if (i == numbindnames)
+		{
+			bindnames = (bindname_t*)Z_Realloc(bindnames, sizeof(bindname_t) * (numbindnames + 1));
+			bindnames[numbindnames].cmd = (char*)Z_Malloc(sizeof("+skate_slide"));
+			strcpy(bindnames[numbindnames].cmd, "+skate_slide");
+			bindnames[numbindnames].desc = (char*)Z_Malloc(sizeof("Skate slide"));
+			strcpy(bindnames[numbindnames].desc, "Skate slide");
+			numbindnames++;
+		}
 	}
 }
 
@@ -15676,7 +15695,7 @@ void M_CheckMods(void) // woods #modsmenu (iw)
 		sgl_hashes[] = { 0x7bba813d }
 	;
 
-	m_main_mods = M_CheckCustomGfx("gfx/a_mods/amods1.png",
+	m_main_mods = M_CheckCustomGfx("gfx/a_mods/amods1.lmp",
 		"gfx/mainmenu.lmp", 26888, main_hashes, countof(main_hashes));
 
 	m_main_demos = M_CheckCustomGfx("gfx/a_demos/ademos1.lmp", // woods #demosmenu

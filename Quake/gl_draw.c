@@ -231,6 +231,10 @@ qpic_t *Draw_PicFromWad2 (const char *name, unsigned int texflags)
 	glpic_t	gl;
 	src_offset_t offset; //johnfitz
 	lumpinfo_t *info;
+	const byte *wad_palette = NULL;
+	unsigned int wad_palette_colors = 0;
+	qboolean has_wad_palette = false;
+	size_t pixel_count;
 
 	texflags |= (premul_hud?TEXPREF_PREMULTIPLY:0);
 
@@ -251,8 +255,15 @@ qpic_t *Draw_PicFromWad2 (const char *name, unsigned int texflags)
 	}
 	if (info->type != TYP_QPIC) {Con_SafePrintf ("Draw_PicFromWad: lump \"%s\" is not a qpic\n", name); return pic_nul;}
 	if (info->size < sizeof(int)*2) {Con_SafePrintf ("Draw_PicFromWad: pic \"%s\" is too small for its qpic header (%u bytes)\n", name, info->size); return pic_nul;}
-	if (info->size < sizeof(int)*2+p->width*p->height) {Con_SafePrintf ("Draw_PicFromWad: pic \"%s\" truncated (%u*%u requires %u at least bytes)\n", name, p->width,p->height, 8+p->width*p->height); return pic_nul;}
-	if (info->size > sizeof(int)*2+p->width*p->height) Con_DPrintf ("Draw_PicFromWad: pic \"%s\" over-sized (%u*%u requires only %u bytes)\n", name, p->width,p->height, 8+p->width*p->height);
+	if (!p->width || !p->height || (size_t)p->width > (size_t)-1 / (size_t)p->height)
+	{ Con_SafePrintf ("Draw_PicFromWad: pic \"%s\" has invalid dimensions\n", name); return pic_nul; }
+	pixel_count = (size_t)p->width * p->height;
+	if (pixel_count > info->size - sizeof(int)*2)
+	{ Con_SafePrintf ("Draw_PicFromWad: pic \"%s\" truncated (%u*%u requires %u at least bytes)\n", name, p->width,p->height, (unsigned)(sizeof(int)*2+pixel_count)); return pic_nul; }
+	if (wad_version == WAD_VERSION_3)
+		has_wad_palette = WAD_ParsePalette((const byte *)p, info->size, sizeof(int)*2+pixel_count, &wad_palette, &wad_palette_colors);
+	if (info->size > sizeof(int)*2+pixel_count && !has_wad_palette)
+		Con_DPrintf ("Draw_PicFromWad: pic \"%s\" over-sized (%u*%u requires only %u bytes)\n", name, p->width,p->height, (unsigned)(sizeof(int)*2+pixel_count));
 
 	//Spike -- if we're loading external images, and one exists, then use that instead.
 	if (draw_load24bit && (gl.gltexture=TexMgr_LoadImage (NULL, name, 0, 0, SRC_EXTERNAL, NULL, va("gfx/%s", name), 0, texflags|TEXPREF_MIPMAP|TEXPREF_ALLOWMISSING)))
@@ -262,8 +273,8 @@ qpic_t *Draw_PicFromWad2 (const char *name, unsigned int texflags)
 		gl.tl = 0;
 		gl.th = (texflags&TEXPREF_PAD)?(float)gl.gltexture->source_height/(float)TexMgr_PadConditional(gl.gltexture->source_height):1;
 	}
-	// load little ones into the scrap
-	else if (p->width < 64 && p->height < 64 && texflags==((premul_hud?TEXPREF_PREMULTIPLY:0)|TEXPREF_ALPHA | TEXPREF_PAD | TEXPREF_NOPICMIP))
+	// load little ones into the scrap; WAD3 images need their own palette.
+	else if (!has_wad_palette && p->width < 64 && p->height < 64 && texflags==((premul_hud?TEXPREF_PREMULTIPLY:0)|TEXPREF_ALPHA | TEXPREF_PAD | TEXPREF_NOPICMIP))
 	{
 		int		x, y;
 		int		i, j, k;
@@ -289,10 +300,23 @@ qpic_t *Draw_PicFromWad2 (const char *name, unsigned int texflags)
 		char texturename[64]; //johnfitz
 		q_snprintf (texturename, sizeof(texturename), "%s:%s", WADFILENAME, name); //johnfitz
 
-		offset = (src_offset_t)p - (src_offset_t)wad_base + sizeof(int)*2; //johnfitz
-
-		gl.gltexture = TexMgr_LoadImage (NULL, texturename, p->width, p->height, SRC_INDEXED, p->data, WADFILENAME,
-										  offset, texflags); //johnfitz -- TexMgr
+		if (has_wad_palette)
+		{
+			byte *rgba;
+			if (pixel_count > (size_t)-1 / 4)
+				return pic_nul;
+			rgba = (byte *)Hunk_AllocName(pixel_count * 4, "wad3_pic");
+			WAD_ConvertIndexedToRGBA(p->data, pixel_count, wad_palette, wad_palette_colors,
+				(texflags & TEXPREF_ALPHA) ? 255 : -1, rgba);
+			gl.gltexture = TexMgr_LoadImage(NULL, texturename, p->width, p->height, SRC_RGBA,
+				rgba, "", (src_offset_t)rgba, texflags);
+		}
+		else
+		{
+			offset = (src_offset_t)p - (src_offset_t)wad_base + sizeof(int)*2; //johnfitz
+			gl.gltexture = TexMgr_LoadImage (NULL, texturename, p->width, p->height, SRC_INDEXED, p->data, WADFILENAME,
+											  offset, texflags); //johnfitz -- TexMgr
+		}
 		gl.sl = 0;
 		gl.sh = (texflags&TEXPREF_PAD)?(float)p->width/(float)TexMgr_PadConditional(p->width):1; //johnfitz
 		gl.tl = 0;
@@ -480,12 +504,31 @@ void Draw_LoadPics (void)
 	if (!char_texture)
 	{
 		data = (byte *) W_GetLumpName ("conchars", &info);
-		if (!data || info->size < 128*128)	Sys_Error ("Draw_LoadPics: couldn't load conchars");
-		if (info->size != 128*128)			Con_Warning("Invalid size for gfx.wad conchars lump (%u, expected %u) - attempting to ignore for compat.\n", info->size, 128*128);
-		else if (info->type != TYP_MIPTEX)	Con_DWarning("Invalid type for gfx.wad conchars lump - attempting to ignore for compat.\n"); //not really a miptex, but certainly NOT a qpic.
-		offset = (src_offset_t)data - (src_offset_t)wad_base;
-		char_texture = TexMgr_LoadImage (NULL, WADFILENAME":conchars", 128, 128, SRC_INDEXED, data,
-			WADFILENAME, offset, conchar_texflags | TEXPREF_NEAREST);
+		if (!data)
+			Sys_Error ("Draw_LoadPics: couldn't load conchars");
+
+		if (wad_version == WAD_VERSION_3 && info->type == TYP_WAD3_MIPTEX)
+		{
+			wadmiptex_t miptex;
+			byte *rgba;
+			if (!WAD_ExtractMipTex(data, info->size, &miptex) ||
+				miptex.width != 128 || miptex.height != 128 || !miptex.palette)
+				Sys_Error("Draw_LoadPics: invalid WAD3 conchars texture");
+			rgba = (byte *)Hunk_AllocName(miptex.pixel_count * 4, "wad3_conchars");
+			WAD_ConvertIndexedToRGBA(miptex.pixels, miptex.pixel_count,
+				miptex.palette, miptex.palette_colors, 0, rgba);
+			char_texture = TexMgr_LoadImage(NULL, WADFILENAME":conchars", 128, 128, SRC_RGBA, rgba,
+				"", (src_offset_t)rgba, conchar_texflags | TEXPREF_NEAREST);
+		}
+		else
+		{
+			if (info->size < 128*128)	Sys_Error ("Draw_LoadPics: couldn't load conchars");
+			if (info->size != 128*128)			Con_Warning("Invalid size for gfx.wad conchars lump (%u, expected %u) - attempting to ignore for compat.\n", info->size, 128*128);
+			else if (info->type != TYP_MIPTEX)	Con_DWarning("Invalid type for gfx.wad conchars lump - attempting to ignore for compat.\n"); //not really a miptex, but certainly NOT a qpic.
+			offset = (src_offset_t)data - (src_offset_t)wad_base;
+			char_texture = TexMgr_LoadImage (NULL, WADFILENAME":conchars", 128, 128, SRC_INDEXED, data,
+				WADFILENAME, offset, conchar_texflags | TEXPREF_NEAREST);
+		}
 	}
 
 	draw_disc = Draw_PicFromWad ("disc");
