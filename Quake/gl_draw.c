@@ -36,6 +36,7 @@ qpic_t		*draw_backtile;
 qboolean	custom_conchars; // woods (iw) #democontrols
 
 gltexture_t *char_texture; //johnfitz
+gltexture_t *cyrillic_texture; // optional UTF-8 Cyrillic glyph atlas
 qpic_t		*pic_ovr, *pic_ins; //johnfitz -- new cursor handling
 qpic_t		*pic_nul; //johnfitz -- for missing gfx, don't crash
 
@@ -531,6 +532,12 @@ void Draw_LoadPics (void)
 		}
 	}
 
+	// The separate atlas keeps the legacy 256 Quake conchars cells untouched.
+	cyrillic_texture = TexMgr_LoadImage(NULL, "gfx/conchars_ru", 0, 0, SRC_EXTERNAL, NULL,
+		"gfx/conchars_ru", 0,
+		(premul_hud ? TEXPREF_PREMULTIPLY : 0) | TEXPREF_ALPHA | TEXPREF_NOPICMIP |
+		TEXPREF_MIPMAP | TEXPREF_CLAMP | TEXPREF_ALLOWMISSING);
+
 	draw_disc = Draw_PicFromWad ("disc");
 	draw_backtile = Draw_PicFromWad2 ("backtile", TEXPREF_NOPICMIP);	//do NOT use PAD because that breaks wrapping. do NOT use alpha, because that could result in glitches.
 }
@@ -621,13 +628,14 @@ void Draw_Init (void)
 Draw_CharacterQuad -- johnfitz -- seperate function to spit out verts
 ================
 */
-void Draw_CharacterQuad (int x, int y, char num)
+void Draw_CharacterQuad (int x, int y, int num)
 {
 	int				row, col;
 	float			frow, fcol, size;
 
-	row = num>>4;
-	col = num&15;
+	num &= 255;
+	row = num >> 4;
+	col = num & 15;
 
 	frow = row*0.0625;
 	fcol = col*0.0625;
@@ -767,70 +775,234 @@ void Draw_Character_Rotation (int x, int y, int num, int rotation) // woods #mov
 	glPopMatrix(); // Restore the previous transformation state
 }
 
-/*
-================
-Draw_String -- johnfitz -- modified to call Draw_CharacterQuad
-================
-*/
-void Draw_String (int x, int y, const char *str)
+#define DRAW_RAW_UTF8_BASE 0x110000u
+
+static uint32_t Draw_UTF8NextCodepoint(const char **text)
 {
-	//if (y <= -8) // woods enabled for more printing options #varmatchclock
-	//	return;			// totally off screen
+	const unsigned char *s = (const unsigned char *)*text;
+	uint32_t cp;
 
-	GL_Bind (char_texture);
-	glBegin (GL_QUADS);
-
-	while (*str)
+	if (!s || !*s)
+		return 0;
+	if (s[0] < 0x80)
 	{
-		if (*str != 32) //don't waste verts on spaces
-			Draw_CharacterQuad (x, y, *str);
-		str++;
-		x += 8;
+		*text += 1;
+		return s[0];
 	}
 
-	glEnd ();
+	if (s[0] >= 0xC2 && s[0] <= 0xDF && (s[1] & 0xC0) == 0x80)
+	{
+		cp = ((uint32_t)(s[0] & 0x1F) << 6) | (s[1] & 0x3F);
+		*text += 2;
+		return cp;
+	}
+	if (s[0] >= 0xE0 && s[0] <= 0xEF && s[1] && s[2] &&
+		(s[1] & 0xC0) == 0x80 && (s[2] & 0xC0) == 0x80 &&
+		!(s[0] == 0xE0 && s[1] < 0xA0) && !(s[0] == 0xED && s[1] >= 0xA0))
+	{
+		cp = ((uint32_t)(s[0] & 0x0F) << 12) | ((uint32_t)(s[1] & 0x3F) << 6) | (s[2] & 0x3F);
+		*text += 3;
+		return cp;
+	}
+	if (s[0] >= 0xF0 && s[0] <= 0xF4 && s[1] && s[2] && s[3] &&
+		(s[1] & 0xC0) == 0x80 && (s[2] & 0xC0) == 0x80 && (s[3] & 0xC0) == 0x80 &&
+		!(s[0] == 0xF0 && s[1] < 0x90) && !(s[0] == 0xF4 && s[1] > 0x8F))
+	{
+		cp = ((uint32_t)(s[0] & 0x07) << 18) | ((uint32_t)(s[1] & 0x3F) << 12) |
+			((uint32_t)(s[2] & 0x3F) << 6) | (s[3] & 0x3F);
+		*text += 4;
+		return cp;
+	}
+
+	// Preserve invalid/legacy high bytes as their original Quake glyph indices.
+	*text += 1;
+	return DRAW_RAW_UTF8_BASE + s[0];
 }
 
-/*
-================
-Draw_StringRGBA -- woods
-================
-*/
-void Draw_StringRGBA (int x, int y, const char* str, plcolour_t c, float alpha)
+const char *Draw_UTF8NextChar(const char *text)
 {
-	//if (y <= -8) // woods enabled for more printing options #varmatchclock
-	//	return;			// totally off screen
+	const char *next = text;
+	if (text && *text)
+		(void)Draw_UTF8NextCodepoint(&next);
+	return next;
+}
 
-	glEnable(GL_BLEND);
+static qboolean Draw_CyrillicGlyphIndex(uint32_t codepoint, int *glyph)
+{
+	if (codepoint >= 0x0410 && codepoint <= 0x042F)
+		*glyph = (int)(codepoint - 0x0410);
+	else if (codepoint >= 0x0430 && codepoint <= 0x044F)
+		*glyph = 32 + (int)(codepoint - 0x0430);
+	else if (codepoint == 0x0401)
+		*glyph = 64;
+	else if (codepoint == 0x0451)
+		*glyph = 65;
+	else
+		return false;
 
+	return true;
+}
+
+static void Draw_SetTextColour(plcolour_t c, float alpha)
+{
 	if (c.type == 2)
-		glColor4f(c.rgb[0] / 255.0, c.rgb[1] / 255.0, c.rgb[2] / 255.0, alpha);
+		glColor4f(c.rgb[0] / 255.0f, c.rgb[1] / 255.0f, c.rgb[2] / 255.0f, alpha);
 	else
 	{
-		byte* pal = (byte*)&d_8to24table[(c.basic << 4) + 8];
-		glColor4f(pal[0] / 255.0, pal[1] / 255.0, pal[2] / 255.0, alpha);
+		byte *pal = (byte *)&d_8to24table[(c.basic << 4) + 8];
+		glColor4f(pal[0] / 255.0f, pal[1] / 255.0f, pal[2] / 255.0f, alpha);
 	}
+}
 
+static void Draw_CyrillicGlyphRaw(int x, int y, int glyph)
+{
+	GL_Bind(cyrillic_texture);
+	glBegin(GL_QUADS);
+	Draw_CharacterQuad(x, y, glyph);
+	glEnd();
+}
+
+static void Draw_CyrillicGlyphTinted(int x, int y, int glyph, plcolour_t colour, float alpha)
+{
+	if (!cyrillic_texture)
+		return;
+
+	glEnable(GL_BLEND);
 	glDisable(GL_ALPHA_TEST);
 	glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
-
-	GL_Bind(char_texture);
+	Draw_SetTextColour(colour, alpha);
+	GL_Bind(cyrillic_texture);
 	glBegin(GL_QUADS);
-
-	while (*str)
-	{
-		if (*str != 32) //don't waste verts on spaces
-			Draw_CharacterQuad(x, y, *str);
-		str++;
-		x += 8;
-	}
-
+	Draw_CharacterQuad(x, y, glyph);
 	glEnd();
-
 	glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
 	glEnable(GL_ALPHA_TEST);
 	glDisable(GL_BLEND);
 	glColor4f(1, 1, 1, 1);
+	GL_Bind(char_texture);
+}
+
+static void Draw_StringInternal(int x, int y, const char *str, qboolean masked, qboolean coloured, plcolour_t colour, float alpha)
+{
+	const char *cursor;
+	plcolour_t masked_cyrillic_colour;
+
+	if (!str)
+		return;
+	str = LOC_TranslateText(str);
+	if (!str)
+		return;
+	cursor = str;
+	masked_cyrillic_colour = Draw_GetConcharsAccentColor();
+
+	if (coloured)
+	{
+		glEnable(GL_BLEND);
+		glDisable(GL_ALPHA_TEST);
+		glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+		Draw_SetTextColour(colour, alpha);
+	}
+
+	GL_Bind(char_texture);
+	glBegin(GL_QUADS);
+	while (*cursor)
+	{
+		uint32_t codepoint = Draw_UTF8NextCodepoint(&cursor);
+		int glyph;
+
+		if (Draw_CyrillicGlyphIndex(codepoint, &glyph) && cyrillic_texture)
+		{
+			glEnd();
+			if (masked && !coloured)
+				Draw_CyrillicGlyphTinted(x, y, glyph, masked_cyrillic_colour, 1.0f);
+			else
+				Draw_CyrillicGlyphRaw(x, y, glyph);
+
+			GL_Bind(char_texture);
+			if (coloured)
+			{
+				glEnable(GL_BLEND);
+				glDisable(GL_ALPHA_TEST);
+				glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+				Draw_SetTextColour(colour, alpha);
+			}
+			glBegin(GL_QUADS);
+		}
+		else
+		{
+			if (codepoint >= DRAW_RAW_UTF8_BASE)
+				glyph = (int)(codepoint - DRAW_RAW_UTF8_BASE);
+			else if (codepoint <= 0x7F)
+				glyph = (int)codepoint;
+			else
+				glyph = '?';
+
+			if (masked)
+				glyph = (glyph + 128) & 255;
+			if (glyph != 32)
+				Draw_CharacterQuad(x, y, glyph);
+		}
+
+		x += 8;
+	}
+	glEnd();
+
+	if (coloured)
+	{
+		glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+		glEnable(GL_ALPHA_TEST);
+		glDisable(GL_BLEND);
+		glColor4f(1, 1, 1, 1);
+	}
+}
+
+/*
+================
+Draw_String -- johnfitz -- UTF-8-aware UI text
+================
+*/
+void Draw_String(int x, int y, const char *str)
+{
+	plcolour_t white = { .type = 2, .rgb = { 255, 255, 255 }, .basic = 0 };
+	Draw_StringInternal(x, y, str, false, false, white, 1.0f);
+}
+
+void Draw_StringMasked(int x, int y, const char *str)
+{
+	plcolour_t white = { .type = 2, .rgb = { 255, 255, 255 }, .basic = 0 };
+	Draw_StringInternal(x, y, str, true, false, white, 1.0f);
+}
+
+/*
+================
+Draw_StringRGBA -- UTF-8-aware colored text
+================
+*/
+void Draw_StringRGBA(int x, int y, const char *str, plcolour_t c, float alpha)
+{
+	Draw_StringInternal(x, y, str, false, true, c, alpha);
+}
+
+void Draw_StringMaskedRGBA(int x, int y, const char *str, plcolour_t c, float alpha)
+{
+	Draw_StringInternal(x, y, str, true, true, c, alpha);
+}
+
+int Draw_StringWidth(const char *str)
+{
+	const char *cursor;
+	int width = 0;
+
+	if (!str)
+		return 0;
+	cursor = LOC_TranslateText(str);
+	while (cursor && *cursor)
+	{
+		(void)Draw_UTF8NextCodepoint(&cursor);
+		if (width <= 0x7FFFFFF7)
+			width += 8;
+	}
+	return width;
 }
 
 static void Draw_BoostAccentRGB(int* r, int* g, int* b) // woods #goldtext

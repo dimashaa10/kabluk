@@ -651,12 +651,7 @@ void M_DrawArrowCursor(int cx, int cy) // woods #skillmenu (iw)
 
 void M_Print (int cx, int cy, const char *str)
 {
-	while (*str)
-	{
-		M_DrawCharacter (cx, cy, (*str)+128);
-		str++;
-		cx += 8;
-	}
+	Draw_StringMasked(cx, cy, str);
 }
 
 void M_DrawCharacterRGBA (int cx, int line, int num, plcolour_t c, float alpha) // woods
@@ -666,15 +661,10 @@ void M_DrawCharacterRGBA (int cx, int line, int num, plcolour_t c, float alpha) 
 
 void M_PrintRGBA (int cx, int cy, const char* str, plcolour_t c, float alpha, qboolean mask) // woods
 {
-	while (*str)
-	{
-		if (mask)
-			M_DrawCharacterRGBA(cx, cy, (*str) + 128, c, alpha);  // Add 128 for masked version
-		else
-			M_DrawCharacterRGBA(cx, cy, (*str), c, alpha);
-		str++;
-		cx += 8;
-	}
+	if (mask)
+		Draw_StringMaskedRGBA(cx, cy, str, c, alpha);
+	else
+		Draw_StringRGBA(cx, cy, str, c, alpha);
 }
 
 void M_Print2 (int cx, int cy, const char* str) // woods #speed yellow/gold numbers
@@ -689,12 +679,7 @@ void M_Print2 (int cx, int cy, const char* str) // woods #speed yellow/gold numb
 
 void M_PrintWhite (int cx, int cy, const char *str)
 {
-	while (*str)
-	{
-		M_DrawCharacter (cx, cy, *str);
-		str++;
-		cx += 8;
-	}
+	Draw_String(cx, cy, str);
 }
 
 void M_DrawTransPic (int x, int y, qpic_t *pic)
@@ -912,6 +897,13 @@ static qboolean M_Ticker_Key(menuticker_t* ticker, int key)
 
 void M_PrintHighlight(int x, int y, const char* str, const char* search, int searchlen)
 {
+	const char *translated = LOC_TranslateText(str);
+	if (translated && strcmp(translated, str))
+	{
+		M_Print(x, y, translated);
+		return;
+	}
+
 	if (!searchlen)
 	{
 		M_Print(x, y, str);
@@ -941,33 +933,62 @@ void M_PrintHighlight(int x, int y, const char* str, const char* search, int sea
 // TODO: smooth scrolling
 void M_PrintScroll(int x, int y, int maxwidth, const char* str, double time, qboolean color) // woods #modsmenu (iw)
 {
+	char display[1024];
+	static const char gap[] = " /// ";
 	int maxchars = maxwidth / 8;
-	int len = strlen(str);
-	int i, ofs;
-	char mask = color ? 128 : 0;
+	int len, scroll_len, ofs;
+	size_t written = 0;
+	const char *translated;
 
+	if (!str || maxchars <= 0)
+		return;
+
+	translated = LOC_TranslateText(str);
+	len = Draw_StringWidth(translated) / 8;
 	if (len <= maxchars)
 	{
 		if (color)
-			M_Print(x, y, str);
+			M_Print(x, y, translated);
 		else
-			M_PrintWhite(x, y, str);
+			M_PrintWhite(x, y, translated);
 		return;
 	}
 
+	// The buffer can hold four UTF-8 bytes per visible character.
+	maxchars = q_min(maxchars, (int)(sizeof(display) - 1) / 4);
+	scroll_len = len + (int)sizeof(gap) - 1;
 	ofs = (int)floor(time * 4.0);
-	ofs %= len + 5;
+	ofs %= scroll_len;
 	if (ofs < 0)
-		ofs += len + 5;
+		ofs += scroll_len;
 
-	for (i = 0; i < maxchars; i++)
+	for (int i = 0; i < maxchars; i++)
 	{
-		char c = (ofs < len) ? str[ofs] : " /// "[ofs - len];
-		M_DrawCharacter(x, y, c ^ mask);
-		x += 8;
-		if (++ofs >= len + 5)
-			ofs = 0;
+		int pos = (ofs + i) % scroll_len;
+		if (pos < len)
+		{
+			const char *start = translated;
+			const char *end;
+			int skip;
+			for (skip = 0; skip < pos && *start; skip++)
+				start = Draw_UTF8NextChar(start);
+			end = Draw_UTF8NextChar(start);
+			if (end > start && written + (size_t)(end - start) < sizeof(display))
+			{
+				size_t bytes = (size_t)(end - start);
+				memcpy(display + written, start, bytes);
+				written += bytes;
+			}
+		}
+		else if (written + 1 < sizeof(display))
+			display[written++] = gap[pos - len];
 	}
+	display[written] = '\0';
+
+	if (color)
+		M_Print(x, y, display);
+	else
+		M_PrintWhite(x, y, display);
 }
 
 void M_PrintScroll2(int x, int y, int maxwidth, const char* str, const char* str2, double time)
@@ -3120,7 +3141,10 @@ void M_MultiPlayer_Draw (void)
 
 	if (ipxAvailable || ipv4Available || ipv6Available)
 		return;
-	M_PrintWhite ((320/2) - ((27*8)/2), 148, "No Communications Available");
+	{
+		const char *message = LOC_TranslateText("No Communications Available");
+		M_PrintWhite((320 - Draw_StringWidth(message)) / 2, 148, message);
+	}
 }
 
 
@@ -4119,6 +4143,7 @@ enum
 	OPT_EXTRAS,
 	OPT_SPACE,       // Spacer
 	OPT_MENUSCALE,
+	OPT_LANGUAGE,
 	OPT_CONSOLE,
 	OPT_RESETCONFIG,
 	OPTIONS_ITEMS
@@ -4179,6 +4204,13 @@ void M_AdjustSliders (int dir)
 		if (f > 6) f = 6;
 		else if (f < 1) f = 1;
 		Cvar_SetValue("scr_menuscale", f);
+		break;
+	case OPT_LANGUAGE:
+		if (!q_strcasecmp(Cvar_VariableString("language"), "russian") ||
+			!q_strcasecmp(Cvar_VariableString("language"), "ru"))
+			Cvar_Set("language", "english");
+		else
+			Cvar_Set("language", "russian");
 		break;
 	}
 }
@@ -4338,9 +4370,14 @@ void M_Options_Draw (void)
 				M_DrawSlider(220, y, r, scr_menuscale.value, "%.0f");
 			}
 			break;
-		case OPT_CONSOLE:
-			text = "          Goto Console";
-			break;
+			case OPT_LANGUAGE:
+				text = "             Language";
+				M_Print(220, y, (!q_strcasecmp(Cvar_VariableString("language"), "russian") ||
+					!q_strcasecmp(Cvar_VariableString("language"), "ru")) ? "Russian" : "English");
+				break;
+			case OPT_CONSOLE:
+				text = "          Goto Console";
+				break;
 		case OPT_RESETCONFIG:
 			text = "          Reset Config   ...";
 			break;
@@ -4407,6 +4444,8 @@ static const char* M_Options_GetItemText(int index)
 		return "                  Misc   ...";
 	case OPT_MENUSCALE:
 		return "            Menu Scale";
+	case OPT_LANGUAGE:
+		return "Language";
 	case OPT_CONSOLE:
 		return "          Goto Console";
 	case OPT_RESETCONFIG:
@@ -5365,7 +5404,7 @@ void M_Mouse_Draw(void)
 	M_DrawPic((320 - p->width) / 2, 4, p);
 
 	const char* title = "Mouse Options";
-	M_PrintWhite((320 - 8 * strlen(title)) / 2, 32, title);
+	M_PrintWhite((320 - Draw_StringWidth(title)) / 2, 32, title);
 
 	for (i = 0; i < MOUSE_ITEMS; i++)
 	{
@@ -5966,7 +6005,7 @@ void M_Graphics_Draw(void)
 	M_DrawPic((320 - p->width) / 2, 4, p);
 
 	const char* title = "Graphics Options";
-	M_PrintWhite((320 - 8 * strlen(title)) / 2, 32, title);
+	M_PrintWhite((320 - Draw_StringWidth(title)) / 2, 32, title);
 
 	for (i = 0; i < GRAPHICS_ITEMS; i++)
 	{
@@ -6596,7 +6635,7 @@ void M_Sound_Draw(void)
 	M_DrawPic((320 - p->width) / 2, 4, p);
 
 	const char* title = "Sound Options";
-	M_PrintWhite((320 - 8 * strlen(title)) / 2, 32, title);
+	M_PrintWhite((320 - Draw_StringWidth(title)) / 2, 32, title);
 
 	for (i = 0; i < SOUND_ITEMS; i++)
 	{
@@ -8032,7 +8071,7 @@ void M_HUD_Draw(void)
 	M_DrawPic((320 - p->width) / 2, 4, p);
 
 	const char* title = "HUD Options";
-	M_PrintWhite((320 - 8 * strlen(title)) / 2, 32, title);
+	M_PrintWhite((320 - Draw_StringWidth(title)) / 2, 32, title);
 
 	for (int i = 0; i < HUD_ITEMS; i++)
 	{
@@ -8944,7 +8983,7 @@ void M_Crosshair_Draw(void)
 	M_DrawPic((320 - p->width) / 2, 4, p);
 
 	const char* title = "Crosshair Options";
-	M_PrintWhite((320 - 8 * strlen(title)) / 2, 32, title);
+	M_PrintWhite((320 - Draw_StringWidth(title)) / 2, 32, title);
 
 	for (i = 0; i < CROSSHAIR_ITEMS; i++)
 	{
@@ -9378,7 +9417,7 @@ void M_Console_Draw(void)
 	M_DrawPic((320 - p->width) / 2, 4, p);
 
 	const char* title = "Console Options";
-	M_PrintWhite((320 - 8 * strlen(title)) / 2, 32, title);
+	M_PrintWhite((320 - Draw_StringWidth(title)) / 2, 32, title);
 
 	for (i = 0; i < CONSOLE_ITEMS; i++)
 	{
@@ -9899,7 +9938,7 @@ void M_Extras_Draw(void)
 	M_DrawPic((320 - p->width) / 2, 4, p);
 
 	const char* title = "Miscellaneous Options";
-	M_PrintWhite((320 - 8 * strlen(title)) / 2, 32, title);
+	M_PrintWhite((320 - Draw_StringWidth(title)) / 2, 32, title);
 
 	for (i = 0; i < EXTRAS_ITEMS; i++)
 	{
@@ -11169,7 +11208,7 @@ void M_LanConfig_Draw (void)
 		}
 		else 
 		{
-		M_Print(basex + (9 * 8) + 10, y, va("local: %s", cached_addresses[0]));
+		M_Print(basex + (9 * 8) + 10, y, va(LOC_GetStringOr("$LAN_LOCAL_ADDRESS", "local: %s"), cached_addresses[0]));
 		}
 		y += 8;
 
@@ -11188,7 +11227,7 @@ void M_LanConfig_Draw (void)
 		}
 		else 
 		{
-		M_Print(basex + (9 * 8) + 10, y, va("ext:   %s", my_public_ip));
+		M_Print(basex + (9 * 8) + 10, y, va(LOC_GetStringOr("$LAN_EXTERNAL_ADDRESS", "ext:   %s"), my_public_ip));
 		}
 		y += 8;
 	}
@@ -12691,14 +12730,14 @@ void M_GameOptions_Draw (void)
 	if (fraglimit.value == 0)
 		M_Print (160, y, "none");
 	else
-		M_Print (160, y, va("%i frags", (int)fraglimit.value));
+		M_Print(160, y, va(LOC_GetStringOr("$GAME_FRAG_LIMIT", "%i frags"), (int)fraglimit.value));
 	y+=8;
 
 	M_Print (0, y, "       Time Limit");
 	if (timelimit.value == 0)
 		M_Print (160, y, "none");
 	else
-		M_Print (160, y, va("%i minutes", (int)timelimit.value));
+		M_Print(160, y, va(LOC_GetStringOr("$GAME_TIME_LIMIT", "%i minutes"), (int)timelimit.value));
 	y+=8;
 
 	y+=8;
@@ -13027,7 +13066,10 @@ void M_Search_Draw (void)
 		return;
 	}
 
-	M_PrintWhite ((320/2) - ((22*8)/2), 64, "No Kabluk/Kuzbass servers found");
+	{
+		const char *message = LOC_TranslateText("No Kabluk/Kuzbass servers found");
+		M_PrintWhite((320 - Draw_StringWidth(message)) / 2, 64, message);
+	}
 	if ((realtime - searchCompleteTime) < 3.0)
 		return;
 
@@ -14437,12 +14479,12 @@ void M_Demos_Draw (void)
         
         if (di->map[0] && di->duration[0] && di->filesize[0])
         {
-            M_Print(x, current_y, va("%s (%s) - %s", di->map, di->duration, di->filesize));
+            M_Print(x, current_y, va(LOC_GetStringOr("$DEMO_MAP_DURATION_SIZE", "%s (%s) - %s"), di->map, di->duration, di->filesize));
             current_y += 8;
         }
         else if (di->map[0] && di->duration[0])
         {
-            M_Print(x, current_y, va("%s (%s)", di->map, di->duration));
+            M_Print(x, current_y, va(LOC_GetStringOr("$DEMO_MAP_DURATION", "%s (%s)"), di->map, di->duration));
             current_y += 8;
         }
         else if (di->map[0])
@@ -14452,7 +14494,7 @@ void M_Demos_Draw (void)
         }
         else if (di->duration[0])
         {
-            M_Print(x, current_y, va("Duration: %s", di->duration));
+            M_Print(x, current_y, va(LOC_GetStringOr("$DEMO_DURATION", "Duration: %s"), di->duration));
             current_y += 8;
         }
         

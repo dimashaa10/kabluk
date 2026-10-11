@@ -5166,7 +5166,10 @@ typedef struct
 	char		*text;
 } localization_t;
 
-static localization_t localization;
+static localization_t localization_english;
+static localization_t localization_current;
+static qboolean localization_initialized;
+static cvar_t loc_language = {"language", "english", CVAR_ARCHIVE};
 
 /*
 ================
@@ -5208,52 +5211,48 @@ unsigned COM_HashBlock(const void* data, size_t size)
 LOC_LoadFile
 ================
 */
-void LOC_LoadFile (const char *file)
+static void LOC_FreeTable(localization_t *table)
 {
-	int i,lineno;
+	if (!table)
+		return;
+
+	free(table->indices);
+	free(table->entries);
+	free(table->text);
+	memset(table, 0, sizeof(*table));
+}
+
+static qboolean LOC_LoadFile(localization_t *table, const char *file)
+{
+	int i, lineno;
 	char *cursor;
 
-	// clear existing data
-	if (localization.text)
-	{
-		free(localization.text);
-		localization.text = NULL;
-	}
-	localization.numentries = 0;
-	localization.numindices = 0;
-
+	LOC_FreeTable(table);
 	if (!file || !*file)
-		return;
+		return false;
 
 	Con_Printf("\nLanguage initialization\n");
-
-	localization.text = (char*)COM_LoadFile(file, LOADFILE_MALLOC, NULL);
-	if (!localization.text)
+	table->text = (char*)COM_LoadFile(file, LOADFILE_MALLOC, NULL);
+	if (!table->text)
 	{
 		Con_Printf("Couldn't load '%s'\nfrom '%s'\n", file, com_basedir);
-		return;
+		return false;
 	}
 
-	cursor = localization.text;
-
-	// skip BOM
-	if ((unsigned char)(cursor[0]) == 0xEF && (unsigned char)(cursor[1]) == 0xBB && (unsigned char)(cursor[2]) == 0xBF)
+	cursor = table->text;
+	if ((unsigned char)cursor[0] == 0xEF && (unsigned char)cursor[1] == 0xBB && (unsigned char)cursor[2] == 0xBF)
 		cursor += 3;
 
 	lineno = 0;
 	while (*cursor)
 	{
 		char *line, *equals;
-
 		lineno++;
 
-		// skip leading whitespace
 		while (q_isblank(*cursor))
 			++cursor;
-
 		line = cursor;
 		equals = NULL;
-		// find line end and first equals sign, if any
 		while (*cursor && *cursor != '\n')
 		{
 			if (*cursor == '=' && !equals)
@@ -5270,27 +5269,20 @@ void LOC_LoadFile (const char *file)
 		{
 			char *key_end = equals;
 			qboolean leading_quote;
-			qboolean trailing_quote;
+			qboolean trailing_quote = false;
 			locentry_t *entry;
-			char *value_src;
-			char *value_dst;
-			char *value;
+			char *value_src, *value_dst, *value;
 
-			// trim whitespace before equals sign
 			while (key_end != line && q_isspace(key_end[-1]))
 				key_end--;
 			*key_end = 0;
 
 			value = equals + 1;
-			// skip whitespace after equals sign
 			while (value != cursor && q_isspace(*value))
 				value++;
-
 			leading_quote = (*value == '\"');
-			trailing_quote = false;
 			value += leading_quote;
 
-			// transform escape sequences in-place
 			value_src = value;
 			value_dst = value;
 			while (value_src != cursor)
@@ -5306,12 +5298,8 @@ void LOC_LoadFile (const char *file)
 						case 'v': *value_dst++ = '\v'; break;
 						case 'b': *value_dst++ = '\b'; break;
 						case 'f': *value_dst++ = '\f'; break;
-
 						case '"':
-						case '\'':
-							*value_dst++ = c;
-							break;
-
+						case '\'': *value_dst++ = c; break;
 						default:
 							Con_Printf("LOC_LoadFile: unrecognized escape sequence \\%c on line %d\n", c, lineno);
 							*value_dst++ = c;
@@ -5326,11 +5314,9 @@ void LOC_LoadFile (const char *file)
 					*value_dst = 0;
 					break;
 				}
-
 				*value_dst++ = *value_src++;
 			}
 
-			// if not a quoted string, trim trailing whitespace
 			if (!trailing_quote)
 			{
 				while (value_dst != value && q_isblank(value_dst[-1]))
@@ -5340,58 +5326,102 @@ void LOC_LoadFile (const char *file)
 				}
 			}
 
-			if (localization.numentries == localization.maxnumentries)
+			if (table->numentries == table->maxnumentries)
 			{
-				// grow by 50%
-				localization.maxnumentries += localization.maxnumentries >> 1;
-				localization.maxnumentries = q_max(localization.maxnumentries, 32);
-				localization.entries = (locentry_t*) realloc(localization.entries, sizeof(*localization.entries) * localization.maxnumentries);
+				table->maxnumentries += table->maxnumentries >> 1;
+				table->maxnumentries = q_max(table->maxnumentries, 32);
+				table->entries = (locentry_t*)realloc(table->entries, sizeof(*table->entries) * table->maxnumentries);
+				if (!table->entries)
+					Sys_Error("LOC_LoadFile: out of memory loading '%s'", file);
 			}
 
-			entry = &localization.entries[localization.numentries++];
+			entry = &table->entries[table->numentries++];
 			entry->key = line;
 			entry->value = value;
 		}
 
 		if (*cursor)
-			*cursor++ = 0; // terminate line and advance to next
+			*cursor++ = 0;
 	}
 
-	// hash all entries
-
-	localization.numindices = localization.numentries * 2; // 50% load factor
-	if (localization.numindices == 0)
+	table->numindices = table->numentries * 2;
+	if (table->numindices == 0)
 	{
 		Con_Printf("No localized strings in file '%s'\n", file);
-		return;
+		return true;
 	}
 
-	localization.indices = (unsigned*) realloc(localization.indices, localization.numindices * sizeof(*localization.indices));
-	memset(localization.indices, 0, localization.numindices * sizeof(*localization.indices));
+	table->indices = (unsigned*)realloc(table->indices, table->numindices * sizeof(*table->indices));
+	if (!table->indices)
+		Sys_Error("LOC_LoadFile: out of memory building index for '%s'", file);
+	memset(table->indices, 0, table->numindices * sizeof(*table->indices));
 
-	for (i = 0; i < localization.numentries; i++)
+	for (i = 0; i < table->numentries; i++)
 	{
-		locentry_t *entry = &localization.entries[i];
-		unsigned pos = COM_HashString(entry->key) % localization.numindices, end = pos;
-
+		locentry_t *entry = &table->entries[i];
+		unsigned pos = COM_HashString(entry->key) % table->numindices, end = pos;
 		for (;;)
 		{
-			if (!localization.indices[pos])
+			if (!table->indices[pos])
 			{
-				localization.indices[pos] = i + 1;
+				table->indices[pos] = i + 1;
 				break;
 			}
-
-			++pos;
-			if (pos == localization.numindices)
+			if (++pos == table->numindices)
 				pos = 0;
-
 			if (pos == end)
 				Sys_Error("LOC_LoadFile failed");
 		}
 	}
 
-	Con_Printf("Loaded %d strings from '%s'\n", localization.numentries, file);
+	Con_Printf("Loaded %d strings from '%s'\n", table->numentries, file);
+	return true;
+}
+
+static const char *LOC_LookupTable(const localization_t *table, const char *key)
+{
+	unsigned pos, end;
+	if (!table || !table->numindices || !key || !*key)
+		return NULL;
+
+	pos = COM_HashString(key) % table->numindices;
+	end = pos;
+	do
+	{
+		unsigned idx = table->indices[pos];
+		const locentry_t *entry;
+		if (!idx)
+			return NULL;
+		entry = &table->entries[idx - 1];
+		if (!Q_strcmp(entry->key, key))
+			return entry->value;
+		if (++pos == table->numindices)
+			pos = 0;
+	} while (pos != end);
+	return NULL;
+}
+
+static void LOC_LanguageChanged(cvar_t *var)
+{
+	const char *language = var ? var->string : "english";
+	const char *file = NULL;
+
+	if (!q_strcasecmp(language, "russian") || !q_strcasecmp(language, "ru"))
+		file = "localization/loc_russian.txt";
+	else if (q_strcasecmp(language, "english") && q_strcasecmp(language, "en"))
+		Con_Printf("Unknown language '%s'; using English.\n", language);
+
+	if (file)
+		LOC_LoadFile(&localization_current, file);
+	else
+		LOC_FreeTable(&localization_current);
+}
+
+static void LOC_Reload_f(void)
+{
+	LOC_LoadFile(&localization_english, "localization/loc_english.txt");
+	if (localization_initialized)
+		LOC_LanguageChanged(&loc_language);
 }
 
 /*
@@ -5401,7 +5431,12 @@ LOC_Init
 */
 void LOC_Init(void)
 {
-	LOC_LoadFile("localization/loc_english.txt");
+	Cvar_RegisterVariable(&loc_language);
+	Cvar_SetCallback(&loc_language, LOC_LanguageChanged);
+	LOC_LoadFile(&localization_english, "localization/loc_english.txt");
+	localization_initialized = true;
+	LOC_LanguageChanged(&loc_language);
+	Cmd_AddCommand("loc_reload", LOC_Reload_f);
 }
 
 /*
@@ -5411,9 +5446,9 @@ LOC_Shutdown
 */
 void LOC_Shutdown(void)
 {
-	free(localization.indices);
-	free(localization.entries);
-	free(localization.text);
+	LOC_FreeTable(&localization_current);
+	LOC_FreeTable(&localization_english);
+	localization_initialized = false;
 }
 
 /*
@@ -5425,32 +5460,14 @@ Returns localized string if available, or NULL otherwise
 */
 const char* LOC_GetRawString (const char *key)
 {
-	unsigned pos, end;
-
-	if (!localization.numindices || !key || !*key || *key != '$')
+	const char *value;
+	if (!key || !*key || *key != '$')
 		return NULL;
-	key++;
 
-	pos = COM_HashString(key) % localization.numindices;
-	end = pos;
-
-	do
-	{
-		unsigned idx = localization.indices[pos];
-		locentry_t *entry;
-		if (!idx)
-			return NULL;
-
-		entry = &localization.entries[idx - 1];
-		if (!Q_strcmp(entry->key, key))
-			return entry->value;
-
-		++pos;
-		if (pos == localization.numindices)
-			pos = 0;
-	} while (pos != end);
-
-	return NULL;
+	value = LOC_LookupTable(&localization_current, key + 1);
+	if (!value)
+		value = LOC_LookupTable(&localization_english, key + 1);
+	return value;
 }
 
 /*
@@ -5464,6 +5481,65 @@ const char* LOC_GetString (const char *key)
 {
 	const char* value = LOC_GetRawString(key);
 	return value ? value : key;
+}
+
+const char* LOC_GetStringOr (const char *key, const char *fallback)
+{
+	const char *value = LOC_GetRawString(key);
+	return value ? value : fallback;
+}
+
+/*
+================
+LOC_TranslateText
+
+Translate literal English UI strings while preserving their whitespace padding.
+================
+*/
+const char* LOC_TranslateText(const char *text)
+{
+	static char translated[4][2048];
+	static unsigned int translated_index;
+	char key[2048];
+	const char *value;
+	size_t prefix = 0, keylen, suffix;
+
+	if (!text || !*text)
+		return text;
+	if (*text == '$')
+		return LOC_GetString(text);
+
+	while (text[prefix] == ' ' || text[prefix] == '\t')
+		prefix++;
+	keylen = strlen(text + prefix);
+	while (keylen && (text[prefix + keylen - 1] == ' ' || text[prefix + keylen - 1] == '\t'))
+		keylen--;
+	suffix = strlen(text + prefix + keylen);
+	if (!keylen || keylen >= sizeof(key))
+		return text;
+
+	memcpy(key, text + prefix, keylen);
+	key[keylen] = 0;
+	value = LOC_LookupTable(&localization_current, key);
+	if (!value)
+		value = LOC_LookupTable(&localization_english, key);
+	if (!value)
+		return text;
+	if (!prefix && !suffix)
+		return value;
+
+	{
+		char *out = translated[translated_index++ & 3];
+		size_t value_len = strlen(value);
+		size_t copy_prefix = q_min(prefix, sizeof(translated[0]) - 1);
+		size_t copy_value = q_min(value_len, sizeof(translated[0]) - 1 - copy_prefix);
+		size_t copy_suffix = q_min(suffix, sizeof(translated[0]) - 1 - copy_prefix - copy_value);
+		memcpy(out, text, copy_prefix);
+		memcpy(out + copy_prefix, value, copy_value);
+		memcpy(out + copy_prefix + copy_value, text + prefix + keylen, copy_suffix);
+		out[copy_prefix + copy_value + copy_suffix] = 0;
+		return out;
+	}
 }
 
 /*
@@ -5503,7 +5579,7 @@ LOC_HasPlaceholders
 */
 qboolean LOC_HasPlaceholders (const char *str)
 {
-	if (!localization.numindices)
+	if (!localization_current.numindices && !localization_english.numindices)
 		return false;
 	while (*str)
 	{

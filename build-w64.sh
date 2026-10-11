@@ -16,4 +16,5 @@ make -f Makefile.w64 clean
 ./build_cross_win64-sdl2.sh $MAKEARGS
 mv quakespasm.exe QSS-M-w64.exe
 zip -9j QSS-M-w64.zip ../Windows/codecs/x64/*.dll ../Windows/curl/lib/x64/libcurl.dll ../Windows/zlib/x64/zlib1.dll ../LICENSE.txt ../Quakespasm.html quakespasm.pak qssm.pak ../Quakespasm.txt ../Quakespasm-Spiked.txt ../Quakespasm-Music.txt ../Windows/SDL2/lib64/SDL2.dll ../QSS-M-Revision.txt QSS-M-w64.exe
+zip -9 -r QSS-M-w64.zip kuzbass/
 make -f Makefile.w64 clean

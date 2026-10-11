@@ -61,6 +61,10 @@ void Draw_Fill (int x, int y, int w, int h, int c, float alpha); //johnfitz -- a
 void Draw_FillPlayer (int x, int y, int w, int h, plcolour_t c, float alpha); //Spike - for richer player colours.
 void Draw_FadeScreen (void);
 void Draw_String (int x, int y, const char *str);
+void Draw_StringMasked (int x, int y, const char *str);
+void Draw_StringMaskedRGBA (int x, int y, const char *str, plcolour_t c, float alpha);
+int Draw_StringWidth (const char *str);
+const char *Draw_UTF8NextChar (const char *str); // Return the next UTF-8 codepoint boundary.
 void Draw_StringAnimatedDots(int x, int y, const char* str); // woods
 void Draw_StringGradientSweep(int x, int y, const char* str, float speed, float span_px, float alpha, qboolean masked); // woods
 void Draw_StringRGBA (int x, int y, const char* str, plcolour_t c, float alpha); // woods
