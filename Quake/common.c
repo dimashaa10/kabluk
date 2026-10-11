@@ -2706,6 +2706,7 @@ static int COM_FindFile (const char *filename, int *handle, FILE **file,
 	if (strcmp(ext, "pcx") != 0
 		&& strcmp(ext, "tga") != 0
 		&& strcmp(ext, "png") != 0
+		&& strcmp(ext, "bmp") != 0
 		&& strcmp(ext, "jpg") != 0
 		&& strcmp(ext, "jpeg") != 0
 		&& strcmp(ext, "dds") != 0
@@ -5170,6 +5171,16 @@ static localization_t localization_english;
 static localization_t localization_current;
 static qboolean localization_initialized;
 static cvar_t loc_language = {"language", "english", CVAR_ARCHIVE};
+static char loc_asset_language[4] = "en";
+
+const char *LOC_GetLanguageCode(void)
+{
+	const char *language = loc_language.string ? loc_language.string : "english";
+
+	if (!q_strcasecmp(language, "russian") || !q_strcasecmp(language, "ru"))
+		return "ru";
+	return "en";
+}
 
 /*
 ================
@@ -5405,6 +5416,8 @@ static void LOC_LanguageChanged(cvar_t *var)
 {
 	const char *language = var ? var->string : "english";
 	const char *file = NULL;
+	const char *asset_language;
+	qboolean reload_pics;
 
 	if (!q_strcasecmp(language, "russian") || !q_strcasecmp(language, "ru"))
 		file = "localization/loc_russian.txt";
@@ -5415,6 +5428,15 @@ static void LOC_LanguageChanged(cvar_t *var)
 		LOC_LoadFile(&localization_current, file);
 	else
 		LOC_FreeTable(&localization_current);
+
+	asset_language = LOC_GetLanguageCode();
+	reload_pics = strcmp(loc_asset_language, asset_language) != 0;
+	if (reload_pics)
+	{
+		q_strlcpy(loc_asset_language, asset_language, sizeof(loc_asset_language));
+		if (localization_initialized)
+			Draw_ReloadLocalizedPics();
+	}
 }
 
 static void LOC_Reload_f(void)

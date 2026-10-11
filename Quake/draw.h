@@ -74,6 +74,7 @@ qpic_t *Draw_PicFromWad (const char *name);
 qpic_t *Draw_CachePic (const char *path);
 qpic_t *Draw_TryCachePic (const char *path, unsigned int texflags);
 void Draw_NewGame (void);
+void Draw_ReloadLocalizedPics (void);
 void Draw_GetMenuTransform(vrect_t* bounds, vrect_t* viewport); // woods #mousemenu (iw)
 qboolean Draw_ReloadTextures(qboolean force);
 plcolour_t Draw_GetConcharsAccentColor(void); // woods #goldtext

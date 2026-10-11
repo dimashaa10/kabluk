@@ -73,9 +73,10 @@ static inline int Buf_GetC(stdio_buffer_t *buf)
 
 /*small function to read files with stb_image - single-file image loader library.
 ** downloaded from: https://raw.githubusercontent.com/nothings/stb/master/stb_image.h
-** only use jpeg+png formats, because tbh there's not much need for the others.
+** use JPEG, PNG and BMP formats for external UI images.
 ** */
 #define STB_IMAGE_IMPLEMENTATION
+#define STBI_ONLY_BMP
 #define STBI_ONLY_JPEG
 #ifdef LODEPNG_NO_COMPILE_DECODER
 	#define STBI_ONLY_PNG
@@ -568,6 +569,11 @@ byte *Image_LoadImage (const char *name, int *width, int *height, enum srcformat
 		COM_FOpenFile (loadfilename, &f, NULL);
 		if (f)
 			return Image_LoadPNG (f, width, height, malloced);
+
+		q_snprintf (loadfilename, sizeof(loadfilename), "%s%s.bmp", prefixes[i], name);
+		COM_FOpenFile (loadfilename, &f, NULL);
+		if (f)
+			return Image_LoadSTBI (f, width, height);
 
 		q_snprintf (loadfilename, sizeof(loadfilename), "%s%s.jpeg", prefixes[i], name);
 		COM_FOpenFile (loadfilename, &f, NULL);

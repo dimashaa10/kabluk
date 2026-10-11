@@ -133,6 +133,8 @@ typedef struct cachepic_s
 #define	MAX_CACHED_PICS		512	//Spike -- increased to avoid csqc issues.
 cachepic_t	menu_cachepics[MAX_CACHED_PICS];
 int			menu_numcachepics;
+static qboolean draw_initialized;
+static qboolean draw_reloading_localized_pics;
 
 byte		menuplyr_pixels[4096];
 
@@ -238,6 +240,8 @@ qpic_t *Draw_PicFromWad2 (const char *name, unsigned int texflags)
 	size_t pixel_count;
 
 	texflags |= (premul_hud?TEXPREF_PREMULTIPLY:0);
+	if (draw_reloading_localized_pics)
+		texflags |= TEXPREF_OVERWRITE;
 
 	//Spike -- added cachepic stuff here, to avoid glitches if the function is called multiple times with the same image.
 	for (pic=menu_cachepics, i=0 ; i<menu_numcachepics ; pic++, i++)
@@ -351,6 +355,37 @@ qpic_t	*Draw_GetCachedPic (const char *path)
 }
 
 /*
+=============
+Draw_GetLocalizedPicPath
+
+Maps gfx/foo/bar.ext to gfx/<language>/foo/bar.ext, e.g. gfx/a_cstm/acstm1.png to gfx/ru/a_cstm/acstm1.png.
+The localized file tree is rooted at the active game directory.
+=============
+*/
+static qboolean Draw_GetLocalizedPicPath(const char *path, char *localized_path, size_t path_size)
+{
+	const char *relative_path;
+	int len;
+
+	if (!path || !localized_path || !path_size || strncmp(path, "gfx/", 4))
+		return false;
+
+	relative_path = path + 4;
+	if (!*relative_path || strstr(relative_path, "..") ||
+		!strncmp(relative_path, "ru/", 3) || !strncmp(relative_path, "en/", 3))
+		return false;
+
+	len = q_snprintf(localized_path, path_size, "gfx/%s/%s", LOC_GetLanguageCode(), relative_path);
+	if (len < 0 || (size_t)len >= path_size)
+	{
+		localized_path[0] = 0;
+		return false;
+	}
+
+	return true;
+}
+
+/*
 ================
 Draw_CachePic
 ================
@@ -362,8 +397,21 @@ qpic_t	*Draw_TryCachePic (const char *path, unsigned int texflags)
 	qpic_t		*dat;
 	glpic_t		gl;
 	char newname[MAX_QPATH];
+	char localized_path[MAX_QPATH];
+	const char *picpath = path;
+	qboolean has_localized_path;
+	qboolean localized_file_exists = false;
 
 	texflags |= (premul_hud?TEXPREF_PREMULTIPLY:0);
+	if (draw_reloading_localized_pics)
+		texflags |= TEXPREF_OVERWRITE;
+
+	has_localized_path = Draw_GetLocalizedPicPath(path, localized_path, sizeof(localized_path));
+	if (has_localized_path && COM_FileExists(localized_path, NULL))
+	{
+		localized_file_exists = true;
+		picpath = localized_path;
+	}
 
 	for (pic=menu_cachepics, i=0 ; i<menu_numcachepics ; pic++, i++)
 	{
@@ -378,8 +426,20 @@ qpic_t	*Draw_TryCachePic (const char *path, unsigned int texflags)
 	if (strcmp("lmp", COM_FileGetExtension(path)))
 	{
 		char npath[MAX_QPATH];
-		COM_StripExtension(path, npath, sizeof(npath));
-		gl.gltexture = TexMgr_LoadImage (NULL, npath, 0, 0, SRC_EXTERNAL, NULL, npath, 0, texflags);
+		char localized_name[MAX_QPATH];
+
+		gl.gltexture = NULL;
+		if (has_localized_path)
+		{
+			COM_StripExtension(localized_path, localized_name, sizeof(localized_name));
+			gl.gltexture = TexMgr_LoadImage(NULL, localized_name, 0, 0, SRC_EXTERNAL, NULL,
+				localized_name, 0, texflags | TEXPREF_ALLOWMISSING);
+		}
+		if (!gl.gltexture)
+		{
+			COM_StripExtension(path, npath, sizeof(npath));
+			gl.gltexture = TexMgr_LoadImage(NULL, npath, 0, 0, SRC_EXTERNAL, NULL, npath, 0, texflags);
+		}
 
 		pic->pic.width = gl.gltexture->width;
 		pic->pic.height = gl.gltexture->height;
@@ -394,9 +454,11 @@ qpic_t	*Draw_TryCachePic (const char *path, unsigned int texflags)
 	}
 
 //
-// load the pic from disk
+// load the pic from disk, preferring the language-specific loose/pack file
 //
-	dat = (qpic_t *)COM_LoadTempFile (path, NULL);
+	dat = (qpic_t *)COM_LoadTempFile (picpath, NULL);
+	if (!dat && picpath != path)
+		dat = (qpic_t *)COM_LoadTempFile(path, NULL);
 	if (!dat)
 		return NULL;
 	SwapPic (dat);
@@ -411,8 +473,21 @@ qpic_t	*Draw_TryCachePic (const char *path, unsigned int texflags)
 	pic->pic.height = dat->height;
 
 	//Spike -- if we're loading external images, and one exists, then use that instead (but with the sizes of the lmp).
-	COM_StripExtension(path, newname, sizeof(newname));
-	if (draw_load24bit && (gl.gltexture=TexMgr_LoadImage (NULL, path, 0, 0, SRC_EXTERNAL, NULL, newname, 0, texflags|TEXPREF_MIPMAP|TEXPREF_ALLOWMISSING|TEXPREF_CLAMP))) // woods iw add clamp
+	COM_StripExtension(picpath, newname, sizeof(newname));
+	gl.gltexture = NULL;
+	/* Localized external formats (PNG/BMP/TGA, etc.) can replace an LMP even when 24-bit HUD replacements are disabled. */
+	if (has_localized_path && (draw_load24bit || !localized_file_exists))
+	{
+		char localized_name[MAX_QPATH];
+		COM_StripExtension(localized_path, localized_name, sizeof(localized_name));
+		gl.gltexture = TexMgr_LoadImage(NULL, localized_name, 0, 0, SRC_EXTERNAL, NULL,
+			localized_name, 0, texflags | TEXPREF_MIPMAP | TEXPREF_ALLOWMISSING | TEXPREF_CLAMP);
+	}
+	if (!gl.gltexture && draw_load24bit)
+		gl.gltexture = TexMgr_LoadImage(NULL, picpath, 0, 0, SRC_EXTERNAL, NULL, newname, 0,
+			texflags | TEXPREF_MIPMAP | TEXPREF_ALLOWMISSING | TEXPREF_CLAMP);
+
+	if (gl.gltexture)
 	{
 		gl.sl = 0;
 		gl.sh = (texflags&TEXPREF_PAD)?(float)gl.gltexture->source_width/(float)TexMgr_PadConditional(gl.gltexture->source_width):1;
@@ -421,7 +496,7 @@ qpic_t	*Draw_TryCachePic (const char *path, unsigned int texflags)
 	}
 	else
 	{
-		gl.gltexture = TexMgr_LoadImage (NULL, path, dat->width, dat->height, SRC_INDEXED, dat->data, path,
+		gl.gltexture = TexMgr_LoadImage (NULL, picpath, dat->width, dat->height, SRC_INDEXED, dat->data, picpath,
 										  sizeof(int)*2, texflags | TEXPREF_NOPICMIP | TEXPREF_CLAMP); //johnfitz -- TexMgr -- woods iw add clamp
 		gl.sl = 0;
 		gl.sh = (texflags&TEXPREF_PAD)?(float)dat->width/(float)TexMgr_PadConditional(dat->width):1; //johnfitz
@@ -484,7 +559,8 @@ void Draw_LoadPics (void)
 	lumpinfo_t *info;
 	extern cvar_t gl_load24bit;
 
-	const unsigned int conchar_texflags = (premul_hud?TEXPREF_PREMULTIPLY:0)|TEXPREF_ALPHA | TEXPREF_NOPICMIP | TEXPREF_CONCHARS;	//Spike - we use nearest with 8bit, but not replacements. replacements also use mipmaps because they're just noise otherwise.
+	const unsigned int conchar_texflags = (premul_hud?TEXPREF_PREMULTIPLY:0)|TEXPREF_ALPHA | TEXPREF_NOPICMIP | TEXPREF_CONCHARS |
+		(draw_reloading_localized_pics ? TEXPREF_OVERWRITE : 0);	//Spike - we use nearest with 8bit, but not replacements. replacements also use mipmaps because they're just noise otherwise.
 
 	if (gl_load24bit.value > 0 && gl_load24bit_hud.value) // woods #24bithud
 		draw_load24bit = true;
@@ -536,7 +612,8 @@ void Draw_LoadPics (void)
 	cyrillic_texture = TexMgr_LoadImage(NULL, "gfx/conchars_ru", 0, 0, SRC_EXTERNAL, NULL,
 		"gfx/conchars_ru", 0,
 		(premul_hud ? TEXPREF_PREMULTIPLY : 0) | TEXPREF_ALPHA | TEXPREF_NOPICMIP |
-		TEXPREF_MIPMAP | TEXPREF_CLAMP | TEXPREF_ALLOWMISSING);
+		TEXPREF_MIPMAP | TEXPREF_CLAMP | TEXPREF_ALLOWMISSING |
+		(draw_reloading_localized_pics ? TEXPREF_OVERWRITE : 0));
 
 	draw_disc = Draw_PicFromWad ("disc");
 	draw_backtile = Draw_PicFromWad2 ("backtile", TEXPREF_NOPICMIP);	//do NOT use PAD because that breaks wrapping. do NOT use alpha, because that could result in glitches.
@@ -569,6 +646,16 @@ void Draw_NewGame (void)
 	SCR_LoadPics ();
 	Sbar_LoadPics ();
 	PR_ReloadPics(false);
+}
+
+void Draw_ReloadLocalizedPics(void)
+{
+	if (!draw_initialized)
+		return;
+
+	draw_reloading_localized_pics = true;
+	Draw_NewGame();
+	draw_reloading_localized_pics = false;
 }
 
 qboolean Draw_ReloadTextures(qboolean force)
@@ -615,6 +702,7 @@ void Draw_Init (void)
 
 	// load game pics
 	Draw_LoadPics ();
+	draw_initialized = true;
 }
 
 //==============================================================================
