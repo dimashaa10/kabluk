@@ -166,6 +166,10 @@ int main(void)
 	WAD_ConvertIndexedToRGBA(indices, 2, miptex.palette, miptex.palette_colors, 255, rgba);
 	assert(rgba[0] == 1 && rgba[1] == 254 && rgba[2] == (byte)(1 ^ 0x55) && rgba[3] == 255);
 	assert(rgba[4] == 255 && rgba[5] == 0 && rgba[6] == (byte)(255 ^ 0x55) && rgba[7] == 0);
+	indices[0] = 0;
+	indices[1] = 1;
+	WAD_ConvertIndexedToRGBA(indices, 2, miptex.palette, miptex.palette_colors, 0, rgba);
+	assert(rgba[3] == 0 && rgba[7] == 255); // Quake sky overlay masks palette index 0
 
 	memset(qpic, 0, sizeof(qpic));
 	WriteLittleLong(qpic + 0, 2);
@@ -193,6 +197,6 @@ int main(void)
 	assert(!miptex.palette && miptex.palette_colors == 0);
 	WAD_ArchiveFree(&archive);
 
-	puts("PASS: WAD2 compatibility and WAD3 archive, palettes, QPIC parsing, and RGBA conversion.");
+	puts("PASS: WAD2 compatibility, WAD3 palettes/QPIC/RGBA, and Quake sky index-0 mask.");
 	return 0;
 }

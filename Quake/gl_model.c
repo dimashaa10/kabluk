@@ -663,6 +663,17 @@ static qboolean Mod_CheckFullbrights (byte *pixels, int count)
 	return false;
 }
 
+static int Mod_WadTransparentIndex (const char *name)
+{
+	if (!name)
+		return -1;
+	if (name[0] == '{')
+		return 255; // Quake fence textures
+	if (!q_strncasecmp(name, "sky", 3))
+		return 0; // the classic Quake sky overlay uses palette index 0 as its mask
+	return -1;
+}
+
 static texture_t *Mod_LoadMipTex(miptex_t *mt, byte *lumpend, enum srcformat *fmt,
 	unsigned int *width, unsigned int *height, unsigned int *pixelbytes,
 	qboolean *has_source_pixels, qboolean *has_custom_palette)
@@ -812,7 +823,7 @@ static texture_t *Mod_LoadMipTex(miptex_t *mt, byte *lumpend, enum srcformat *fm
 	{
 		if (convert_palette)
 			WAD_ConvertIndexedToRGBA(srcdata, (size_t)*width * *height, palette, palette_colors,
-				tx->name[0] == '{' ? 255 : -1, (byte *)(tx+1));
+				Mod_WadTransparentIndex(tx->name), (byte *)(tx+1));
 		else
 			memcpy (tx+1, srcdata, *pixelbytes);
 	}
@@ -940,7 +951,7 @@ static texture_t *Mod_LoadWadMipTex (const wadmiptex_t *miptex, const char *name
 	tx->height = *height;
 	if (*fmt == SRC_RGBA)
 		WAD_ConvertIndexedToRGBA(miptex->pixels, miptex->pixel_count,
-			miptex->palette, miptex->palette_colors, tx->name[0] == '{' ? 255 : -1, (byte *)(tx+1));
+			miptex->palette, miptex->palette_colors, Mod_WadTransparentIndex(tx->name), (byte *)(tx+1));
 	else
 		memcpy(tx+1, miptex->pixels, miptex->pixel_count);
 	return tx;
@@ -965,7 +976,7 @@ static texture_t *Mod_ApplyWadPalette (texture_t *indexed_texture, const wadmipt
 	memcpy(rgba_texture, indexed_texture, sizeof(*rgba_texture));
 	WAD_ConvertIndexedToRGBA((byte *)(indexed_texture+1), pixel_count,
 		miptex->palette, miptex->palette_colors,
-		indexed_texture->name[0] == '{' ? 255 : -1, (byte *)(rgba_texture+1));
+		Mod_WadTransparentIndex(indexed_texture->name), (byte *)(rgba_texture+1));
 	*fmt = SRC_RGBA;
 	*pixelbytes = (unsigned int)bytes;
 	return rgba_texture;
