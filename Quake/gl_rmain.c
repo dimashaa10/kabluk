@@ -63,7 +63,7 @@ mleaf_t		*r_viewleaf, *r_oldviewleaf;
 
 int		d_lightstylevalue[MAX_LIGHTSTYLES];	// 8.8 fraction of base light value
 
-cvar_t	cl_damagehue = {"cl_damagehue", "1",CVAR_ARCHIVE};  // woods #damage
+cvar_t	cl_damagehue = {"cl_damagehue", "0",CVAR_ARCHIVE};  // woods #damage
 cvar_t	cl_damagehuecolor = {"cl_damagehuecolor", "0xeb580e",CVAR_ARCHIVE};  // woods #damage
 cvar_t	cl_autodemo = {"cl_autodemo","0",CVAR_ARCHIVE};	//R00k   // woods #autodemo
 
@@ -74,7 +74,7 @@ cvar_t	r_speeds = {"r_speeds","0",CVAR_NONE};
 cvar_t	r_pos = {"r_pos","0",CVAR_NONE};
 cvar_t	r_fullbright = {"r_fullbright","0",CVAR_NONE};
 cvar_t	r_lightmap = {"r_lightmap","0",CVAR_ARCHIVE};
-cvar_t	r_shadows = {"r_shadows","0",CVAR_ARCHIVE};
+cvar_t	r_shadows = {"r_shadows","0.5",CVAR_ARCHIVE};
 cvar_t	r_shadows_groundcheck = {"r_shadows_groundcheck","1",CVAR_ARCHIVE}; // woods #shadow
 cvar_t	r_shadows_bmodels = {"r_shadows_bmodels","0",CVAR_ARCHIVE}; // woods #shadow
 cvar_t	r_wateralpha = {"r_wateralpha","1",CVAR_ARCHIVE};
