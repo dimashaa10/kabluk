@@ -83,7 +83,7 @@ static void FinishCrouch (void)
 {
 	int i;
 	SV_UpdateCrouch(&client, &player, -200); // initialize the time baseline
-	for (i = 0; i < 6; i++)
+	for (i = 0; i < 3; i++)
 		StepCrouch(-200);
 }
 
@@ -98,11 +98,11 @@ static void TestSmoothCrouchAndRelease (void)
 	assert(fabsf(client.crouch_amount) < 0.001f);
 	assert(player.v.maxs[2] == 32 && player.v.view_ofs[2] == 22);
 
-	for (i = 0; i < 6; i++)
+	for (i = 0; i < 3; i++)
 	{
 		StepCrouch(-200);
 		assert(player.v.maxs[2] < previous_maxs);
-		assert(player.v.maxs[2] > 8 || i == 5);
+		assert(player.v.maxs[2] > 8 || i == 2);
 		assert(player.v.view_ofs[2] < 22);
 		previous_maxs = player.v.maxs[2];
 	}
@@ -117,7 +117,7 @@ static void TestSmoothCrouchAndRelease (void)
 	SV_UpdateCrouch(&client, &player, -200);
 	assert(client.crouched && player.v.maxs[2] == 8 && player.v.view_ofs[2] == 8);
 
-	for (i = 0; i < 5; i++)
+	for (i = 0; i < 2; i++)
 	{
 		StepCrouch(0);
 		assert(client.crouched);
@@ -127,7 +127,7 @@ static void TestSmoothCrouchAndRelease (void)
 	assert(!client.crouched && !client.crouch_wanted);
 	assert(player.v.mins[2] == -24 && player.v.maxs[2] == 32);
 	assert(player.v.size[2] == 56 && player.v.view_ofs[2] == 22);
-	assert(links >= 12 && traces == 6);
+	assert(links == 7 && traces == 3);
 }
 
 static void TestBlockedStand (void)
@@ -143,10 +143,10 @@ static void TestBlockedStand (void)
 	assert(client.crouched && !client.crouch_wanted && client.crouch_stand_blocked);
 	assert(fabsf(client.crouch_amount - 1.0f) < 0.001f);
 	assert(player.v.maxs[2] == 8 && player.v.view_ofs[2] == 8);
-	assert(links == 6 && traces == 1);
+	assert(links == 3 && traces == 1);
 
 	block_standing = false;
-	for (i = 0; i < 5; i++)
+	for (i = 0; i < 2; i++)
 	{
 		StepCrouch(0);
 		assert(client.crouched && player.v.maxs[2] > 8 && player.v.maxs[2] < 32);
@@ -154,7 +154,7 @@ static void TestBlockedStand (void)
 	StepCrouch(0);
 	assert(!client.crouched && player.v.maxs[2] == 32);
 	assert(player.v.view_ofs[2] == 22 && player.v.size[2] == 56);
-	assert(traces == 7);
+	assert(traces == 4);
 }
 
 static void TestCrouchSpeed (void)
@@ -167,7 +167,7 @@ static void TestCrouchSpeed (void)
 	player.v.velocity[1] = 200;
 	player.v.velocity[2] = -120;
 	SV_UpdateCrouch(&client, &player, -200);
-	for (i = 0; i < 6; i++)
+	for (i = 0; i < 3; i++)
 		StepCrouch(-200);
 	speed = sqrtf(player.v.velocity[0] * player.v.velocity[0] +
 		player.v.velocity[1] * player.v.velocity[1]);
@@ -178,8 +178,7 @@ static void TestCrouchSpeed (void)
 	player.v.velocity[1] = 0;
 	StepCrouch(0);
 	assert(client.crouched && player.v.velocity[0] == SV_CROUCH_MAX_SPEED);
-	for (i = 0; i < 4; i++)
-		StepCrouch(0);
+	StepCrouch(0);
 	player.v.velocity[0] = 220;
 	StepCrouch(0);
 	assert(!client.crouched && player.v.velocity[0] == 220);
