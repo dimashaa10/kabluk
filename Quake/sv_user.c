@@ -411,6 +411,18 @@ void SV_AirMove (void)
 
 #define SV_CROUCH_HEIGHT		32
 #define SV_CROUCH_VIEWHEIGHT	8
+#define SV_CROUCH_MOVE_EPSILON	4.0f
+
+enum
+{
+	SV_CROUCH_ANIM_NONE,
+	SV_CROUCH_ANIM_IDLE,
+	SV_CROUCH_ANIM_WALK,
+	SV_CROUCH_ANIM_MELEE_IDLE,
+	SV_CROUCH_ANIM_SHOOT_IDLE,
+	SV_CROUCH_ANIM_MELEE_WALK,
+	SV_CROUCH_ANIM_SHOOT_WALK
+};
 
 static void SV_ClampCrouchSpeed (client_t *client, edict_t *ent)
 {
@@ -430,24 +442,46 @@ static void SV_ClampCrouchSpeed (client_t *client, edict_t *ent)
 	ent->v.velocity[1] *= scale;
 }
 
-static void SV_SetCrouchBounds (client_t *client, edict_t *ent, qboolean crouched)
+static float SV_CrouchDeltaTime (client_t *client)
+{
+	double now, elapsed;
+
+	if (!qcvm)
+		return (float)q_min(host_frametime, 0.1);
+
+	now = qcvm->time;
+	if (!client->crouch_time_initialized || now < client->crouch_last_update_time)
+		elapsed = 0;
+	else
+		elapsed = now - client->crouch_last_update_time;
+
+	client->crouch_time_initialized = true;
+	client->crouch_last_update_time = now;
+	return (float)q_min(q_max(elapsed, 0.0), 0.1);
+}
+
+static void SV_CrouchBoundsForAmount (const client_t *client, float amount,
+	float *mins_z, float *maxs_z, float *viewheight)
+{
+	float crouch_maxs, crouch_viewheight;
+
+	amount = q_min(q_max(amount, 0.0f), 1.0f);
+	crouch_maxs = q_min(client->crouch_stand_maxs_z,
+		client->crouch_stand_mins_z + SV_CROUCH_HEIGHT);
+	crouch_viewheight = q_min(client->crouch_stand_viewheight,
+		q_min((float)SV_CROUCH_VIEWHEIGHT, crouch_maxs));
+	*mins_z = client->crouch_stand_mins_z;
+	*maxs_z = client->crouch_stand_maxs_z +
+		(crouch_maxs - client->crouch_stand_maxs_z) * amount;
+	*viewheight = client->crouch_stand_viewheight +
+		(crouch_viewheight - client->crouch_stand_viewheight) * amount;
+}
+
+static void SV_SetCrouchBounds (client_t *client, edict_t *ent, float amount)
 {
 	float mins_z, maxs_z, viewheight;
 
-	if (crouched)
-	{
-		mins_z = client->crouch_stand_mins_z;
-		maxs_z = q_min(client->crouch_stand_maxs_z, mins_z + SV_CROUCH_HEIGHT);
-		viewheight = q_min(client->crouch_stand_viewheight,
-			q_min((float)SV_CROUCH_VIEWHEIGHT, maxs_z));
-	}
-	else
-	{
-		mins_z = client->crouch_stand_mins_z;
-		maxs_z = client->crouch_stand_maxs_z;
-		viewheight = client->crouch_stand_viewheight;
-	}
-
+	SV_CrouchBoundsForAmount(client, amount, &mins_z, &maxs_z, &viewheight);
 	if (ent->v.mins[2] != mins_z || ent->v.maxs[2] != maxs_z)
 	{
 		ent->v.mins[2] = mins_z;
@@ -455,66 +489,285 @@ static void SV_SetCrouchBounds (client_t *client, edict_t *ent, qboolean crouche
 		ent->v.size[2] = maxs_z - mins_z;
 		SV_LinkEdict(ent, false);
 	}
-
 	ent->v.view_ofs[2] = viewheight;
+}
+
+static void SV_ResetCrouchAnimation (client_t *client)
+{
+	client->crouch_anim_state = SV_CROUCH_ANIM_NONE;
+	client->crouch_anim_frame = 0;
+	client->crouch_anim_next_frame_time = 0;
+}
+
+static void SV_ResetCrouch (client_t *client, edict_t *ent)
+{
+	if (client->crouch_bounds_saved)
+		SV_SetCrouchBounds(client, ent, 0);
+	client->crouched = false;
+	client->crouch_wanted = false;
+	client->crouch_bounds_saved = false;
+	client->crouch_stand_blocked = false;
+	client->crouch_amount = 0;
+	SV_ResetCrouchAnimation(client);
+}
+
+static void SV_CrouchAnimationBegin (client_t *client, int state, int frame, double now)
+{
+	client->crouch_anim_state = state;
+	client->crouch_anim_frame = frame;
+	client->crouch_anim_next_frame_time = now + SV_CROUCH_ANIM_FRAME_TIME;
+}
+
+static int SV_CrouchAnimationSteps (client_t *client, double now)
+{
+	int steps;
+	double elapsed;
+
+	if (client->crouch_anim_next_frame_time <= 0)
+	{
+		client->crouch_anim_next_frame_time = now + SV_CROUCH_ANIM_FRAME_TIME;
+		return 0;
+	}
+	elapsed = now - client->crouch_anim_next_frame_time;
+	if (elapsed < -0.000001)
+		return 0;
+	steps = (int)(elapsed / SV_CROUCH_ANIM_FRAME_TIME) + 1;
+	if (steps < 1)
+		steps = 1;
+	client->crouch_anim_next_frame_time += steps * SV_CROUCH_ANIM_FRAME_TIME;
+	return steps;
+}
+
+static qboolean SV_CrouchAnimationIsAttack (int state)
+{
+	return state == SV_CROUCH_ANIM_MELEE_IDLE || state == SV_CROUCH_ANIM_SHOOT_IDLE ||
+		state == SV_CROUCH_ANIM_MELEE_WALK || state == SV_CROUCH_ANIM_SHOOT_WALK;
+}
+
+static void SV_CrouchAnimationRange (int state, int *first, int *last)
+{
+	switch (state)
+	{
+	case SV_CROUCH_ANIM_MELEE_IDLE:
+		*first = SV_CROUCH_MELEE_IDLE_FIRST;
+		*last = SV_CROUCH_MELEE_IDLE_LAST;
+		break;
+	case SV_CROUCH_ANIM_SHOOT_IDLE:
+		*first = SV_CROUCH_SHOOT_IDLE_FIRST;
+		*last = SV_CROUCH_SHOOT_IDLE_LAST;
+		break;
+	case SV_CROUCH_ANIM_MELEE_WALK:
+		*first = SV_CROUCH_MELEE_WALK_FIRST;
+		*last = SV_CROUCH_MELEE_WALK_LAST;
+		break;
+	default:
+		*first = SV_CROUCH_SHOOT_WALK_FIRST;
+		*last = SV_CROUCH_SHOOT_WALK_LAST;
+		break;
+	}
+}
+
+static qboolean SV_CrouchMeleeWeapon (int weapon)
+{
+	if (rogue)
+		return weapon == RIT_AXE;
+	return weapon == IT_AXE || (hipnotic && weapon == HIT_MJOLNIR);
+}
+
+static int SV_CrouchTransitionFrame (int first, float fraction)
+{
+	int offset = (int)(q_min(q_max(fraction, 0.0f), 1.0f) * 6.0f);
+	if (offset > 5)
+		offset = 5;
+	return first + offset;
+}
+
+void SV_UpdateCrouchAnimation (client_t *client, edict_t *ent)
+{
+	qboolean moving, attack_down;
+	float speed, amount;
+	double now = qcvm ? qcvm->time : 0;
+	int target_state, first, last, steps, i;
+
+	if (!client || !ent)
+		return;
+	if (!client->crouched || !client->crouch_bounds_saved || client->skate_active)
+	{
+		SV_ResetCrouchAnimation(client);
+		return;
+	}
+
+	amount = q_min(q_max(client->crouch_amount, 0.0f), 1.0f);
+	if (client->crouch_wanted && amount < 1.0f)
+	{
+		SV_ResetCrouchAnimation(client);
+		ent->v.frame = SV_CrouchTransitionFrame(SV_CROUCH_DOWN_FIRST_FRAME, amount);
+		return;
+	}
+	if (!client->crouch_wanted && amount > 0 && !client->crouch_stand_blocked)
+	{
+		SV_ResetCrouchAnimation(client);
+		ent->v.frame = SV_CrouchTransitionFrame(SV_STAND_UP_FIRST_FRAME, 1.0f - amount);
+		return;
+	}
+
+	speed = sqrtf(ent->v.velocity[0] * ent->v.velocity[0] +
+		ent->v.velocity[1] * ent->v.velocity[1]);
+	moving = fabsf(client->cmd.forwardmove) > 1 || fabsf(client->cmd.sidemove) > 1 ||
+		speed > SV_CROUCH_MOVE_EPSILON;
+	attack_down = ent->v.button0 != 0;
+
+	if (attack_down)
+	{
+		qboolean melee = SV_CrouchMeleeWeapon((int)ent->v.weapon);
+		target_state = melee ? (moving ? SV_CROUCH_ANIM_MELEE_WALK : SV_CROUCH_ANIM_MELEE_IDLE) :
+			(moving ? SV_CROUCH_ANIM_SHOOT_WALK : SV_CROUCH_ANIM_SHOOT_IDLE);
+		if (client->crouch_anim_state != target_state)
+		{
+			SV_CrouchAnimationRange(target_state, &first, &last);
+			SV_CrouchAnimationBegin(client, target_state, first, now);
+			ent->v.frame = first;
+			return;
+		}
+	}
+
+	if (SV_CrouchAnimationIsAttack(client->crouch_anim_state))
+	{
+		SV_CrouchAnimationRange(client->crouch_anim_state, &first, &last);
+		steps = SV_CrouchAnimationSteps(client, now);
+		for (i = 0; i < steps; i++)
+		{
+			if (client->crouch_anim_frame < last)
+				client->crouch_anim_frame++;
+			else if (attack_down)
+				client->crouch_anim_frame = first;
+			else
+			{
+				SV_ResetCrouchAnimation(client);
+				break;
+			}
+		}
+		if (SV_CrouchAnimationIsAttack(client->crouch_anim_state))
+		{
+			ent->v.frame = client->crouch_anim_frame;
+			return;
+		}
+	}
+
+	if (attack_down)
+	{
+		qboolean melee = SV_CrouchMeleeWeapon((int)ent->v.weapon);
+		target_state = melee ? (moving ? SV_CROUCH_ANIM_MELEE_WALK : SV_CROUCH_ANIM_MELEE_IDLE) :
+			(moving ? SV_CROUCH_ANIM_SHOOT_WALK : SV_CROUCH_ANIM_SHOOT_IDLE);
+		SV_CrouchAnimationRange(target_state, &first, &last);
+		SV_CrouchAnimationBegin(client, target_state, first, now);
+		ent->v.frame = first;
+		return;
+	}
+
+	if (moving)
+	{
+		if (client->crouch_anim_state != SV_CROUCH_ANIM_WALK)
+			SV_CrouchAnimationBegin(client, SV_CROUCH_ANIM_WALK,
+				SV_CROUCH_WALK_FIRST_FRAME, now);
+		else
+		{
+			steps = SV_CrouchAnimationSteps(client, now);
+			for (i = 0; i < steps; i++)
+				client->crouch_anim_frame = client->crouch_anim_frame < SV_CROUCH_WALK_LAST_FRAME ?
+					client->crouch_anim_frame + 1 : SV_CROUCH_WALK_FIRST_FRAME;
+		}
+		ent->v.frame = client->crouch_anim_frame;
+	}
+	else
+	{
+		client->crouch_anim_state = SV_CROUCH_ANIM_IDLE;
+		client->crouch_anim_frame = SV_CROUCH_IDLE_FRAME;
+		client->crouch_anim_next_frame_time = 0;
+		ent->v.frame = SV_CROUCH_IDLE_FRAME;
+	}
 }
 
 void SV_UpdateCrouch (client_t *client, edict_t *ent, float upmove)
 {
 	qboolean wants_crouch;
+	float dt;
 
 	if (!client || !ent || ent->free)
 		return;
 
-	// +movedown produces negative upmove; keep its swimming/ladder behavior intact.
-	wants_crouch = upmove < 0 && client->spawned && ent->v.health > 0 &&
-		ent->v.deadflag == DEAD_NO && ent->v.movetype == MOVETYPE_WALK &&
-		ent->v.waterlevel < 2 && !ent->onladder && !client->skate_active;
-
-	if (wants_crouch)
+	if (!client->spawned || ent->v.health <= 0 || ent->v.deadflag != DEAD_NO)
 	{
-		if (!client->crouched)
-		{
-			client->crouch_stand_mins_z = ent->v.mins[2];
-			client->crouch_stand_maxs_z = ent->v.maxs[2];
-			client->crouch_stand_viewheight = ent->v.view_ofs[2];
-			client->crouched = true;
-		}
-
-		if (client->crouch_stand_maxs_z <= client->crouch_stand_mins_z)
-		{
-			client->crouched = false;
-			return;
-		}
-
-		SV_SetCrouchBounds(client, ent, true);
-		SV_ClampCrouchSpeed(client, ent);
+		SV_ResetCrouch(client, ent);
 		return;
 	}
 
-	if (client->crouched)
+	// +movedown produces negative upmove; keep its swimming/ladder behavior intact.
+	wants_crouch = upmove < 0 && ent->v.movetype == MOVETYPE_WALK &&
+		ent->v.waterlevel < 2 && !ent->onladder && !client->skate_active;
+	client->crouch_wanted = wants_crouch;
+	dt = SV_CrouchDeltaTime(client);
+
+	if (wants_crouch && !client->crouch_bounds_saved)
 	{
-		vec3_t stand_mins, stand_maxs;
-		trace_t trace;
-
-		VectorCopy(ent->v.mins, stand_mins);
-		VectorCopy(ent->v.maxs, stand_maxs);
-		stand_mins[2] = client->crouch_stand_mins_z;
-		stand_maxs[2] = client->crouch_stand_maxs_z;
-		trace = SV_Move(ent->v.origin, stand_mins, stand_maxs,
-			ent->v.origin, MOVE_NORMAL, ent);
-
-		// Keep the shorter hull until the entire standing hull has room.
-		if (trace.startsolid || trace.allsolid || trace.fraction < 1)
+		client->crouch_stand_mins_z = ent->v.mins[2];
+		client->crouch_stand_maxs_z = ent->v.maxs[2];
+		client->crouch_stand_viewheight = ent->v.view_ofs[2];
+		client->crouch_bounds_saved = true;
+		if (client->crouch_stand_maxs_z <= client->crouch_stand_mins_z)
 		{
-			SV_SetCrouchBounds(client, ent, true);
-			SV_ClampCrouchSpeed(client, ent);
+			SV_ResetCrouch(client, ent);
 			return;
 		}
-
-		SV_SetCrouchBounds(client, ent, false);
-		client->crouched = false;
 	}
+
+	if (wants_crouch)
+	{
+		client->crouch_stand_blocked = false;
+		client->crouch_amount += dt / SV_CROUCH_TRANSITION_TIME;
+		if (client->crouch_amount >= 0.9999f)
+			client->crouch_amount = 1.0f;
+	}
+	else if (client->crouch_bounds_saved && client->crouch_amount > 0)
+	{
+		float next_amount = q_max(0.0f,
+			client->crouch_amount - dt / SV_CROUCH_TRANSITION_TIME);
+		if (next_amount <= 0.0001f)
+			next_amount = 0.0f;
+		if (next_amount < client->crouch_amount)
+		{
+			vec3_t stand_mins, stand_maxs;
+			trace_t trace;
+			float viewheight;
+
+			VectorCopy(ent->v.mins, stand_mins);
+			VectorCopy(ent->v.maxs, stand_maxs);
+			SV_CrouchBoundsForAmount(client, next_amount,
+				&stand_mins[2], &stand_maxs[2], &viewheight);
+			trace = SV_Move(ent->v.origin, stand_mins, stand_maxs,
+				ent->v.origin, MOVE_NORMAL, ent);
+			if (trace.startsolid || trace.allsolid || trace.fraction < 1)
+				client->crouch_stand_blocked = true;
+			else
+			{
+				client->crouch_amount = next_amount;
+				client->crouch_stand_blocked = false;
+			}
+		}
+	}
+
+	client->crouch_amount = q_min(q_max(client->crouch_amount, 0.0f), 1.0f);
+	client->crouched = wants_crouch || client->crouch_amount > 0;
+	if (client->crouch_bounds_saved)
+		SV_SetCrouchBounds(client, ent, client->crouch_amount);
+
+	if (!client->crouched)
+	{
+		client->crouch_bounds_saved = false;
+		client->crouch_stand_blocked = false;
+		client->crouch_amount = 0;
+	}
+	SV_ClampCrouchSpeed(client, ent);
 }
 
 /*
@@ -1949,6 +2202,7 @@ void SV_ReadClientMove (usercmd_t *move)
 		PR_ExecuteProgram(pr_global_struct->PlayerPostThink);
 		SV_CigarettePostThink(host_client, host_client->edict, saved_button0, equip_cigarette);
 		SV_SkateUpdate(host_client);
+		SV_UpdateCrouchAnimation(host_client, host_client->edict);
 		SV_ClampCrouchSpeed(host_client, host_client->edict);
 	}
 }

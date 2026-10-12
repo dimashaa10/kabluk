@@ -117,8 +117,25 @@ typedef struct
 
 #define	NUM_PING_TIMES		16
 #define	NUM_BASIC_SPAWN_PARMS		16
-#define	NUM_TOTAL_SPAWN_PARMS		64
+#define NUM_TOTAL_SPAWN_PARMS		64
 #define SV_CROUCH_MAX_SPEED		160.0f
+#define SV_CROUCH_TRANSITION_TIME	0.6f
+#define SV_CROUCH_ANIM_FRAME_TIME	0.1f
+#define SV_CROUCH_DOWN_FIRST_FRAME	143
+#define SV_CROUCH_DOWN_LAST_FRAME	148
+#define SV_STAND_UP_FIRST_FRAME		183
+#define SV_STAND_UP_LAST_FRAME		188
+#define SV_CROUCH_MELEE_IDLE_FIRST	189
+#define SV_CROUCH_MELEE_IDLE_LAST	194
+#define SV_CROUCH_SHOOT_IDLE_FIRST	195
+#define SV_CROUCH_SHOOT_IDLE_LAST	199
+#define SV_CROUCH_IDLE_FRAME		200
+#define SV_CROUCH_WALK_FIRST_FRAME	201
+#define SV_CROUCH_WALK_LAST_FRAME	206
+#define SV_CROUCH_MELEE_WALK_FIRST	207
+#define SV_CROUCH_MELEE_WALK_LAST	213
+#define SV_CROUCH_SHOOT_WALK_FIRST	214
+#define SV_CROUCH_SHOOT_WALK_LAST	220
 
 typedef struct client_s
 {
@@ -221,10 +238,19 @@ typedef struct client_s
 	int lastmovemessage;
 	double lastmovetime;
 	qboolean usingpmove;	//using the SV_RunClientCommand entrypoint, or getting pmove thrust upon them serverside (disables sv_user.c+movetype stuff, enables provides pmove hints to the client)
-	qboolean crouched;		// engine-managed crouch state
-	float crouch_stand_mins_z;	// bounds/view height saved on first crouch
+	qboolean crouched;		// crouch hull active during crouching/standing transition
+	qboolean crouch_wanted;	// current +movedown target
+	qboolean crouch_bounds_saved;
+	qboolean crouch_stand_blocked;
+	qboolean crouch_time_initialized;
+	float crouch_amount;		// 0 = standing, 1 = fully crouched
+	double crouch_last_update_time;
+	float crouch_stand_mins_z;	// standing bounds/view height saved on first crouch
 	float crouch_stand_maxs_z;
 	float crouch_stand_viewheight;
+	int crouch_anim_state;
+	int crouch_anim_frame;
+	double crouch_anim_next_frame_time;
 
 	char userinfo[1024];	//spike -- for csqc to (ab)use.
 	client_voip_t voip;	//spike -- for voip
@@ -381,6 +407,7 @@ void SV_AddUpdates (void);
 
 void SV_ClientThink (void);
 void SV_UpdateCrouch (client_t *client, edict_t *ent, float upmove);
+void SV_UpdateCrouchAnimation (client_t *client, edict_t *ent);
 void SV_AddClientToServer (struct qsocket_s	*ret);
 
 void SV_ClientPrintf (const char *fmt, ...) FUNC_PRINTF(1,2);

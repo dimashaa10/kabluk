@@ -291,7 +291,7 @@ static void TestCrouchMovementSpeed (void)
 	assert(client.crouched && fabsf(speed - SV_CROUCH_MAX_SPEED) < 0.01f);
 
 	client.cmd.upmove = 0;
-	for (i = 0; i < 3; i++) Step(0.05);
+	for (i = 0; i < 12; i++) Step(0.05); // the 0.6-second stand animation completes smoothly
 	speed = sqrtf(client.edict->v.velocity[0] * client.edict->v.velocity[0] +
 		client.edict->v.velocity[1] * client.edict->v.velocity[1]);
 	assert(!client.crouched && speed > SV_CROUCH_MAX_SPEED);
