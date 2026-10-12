@@ -119,7 +119,7 @@ typedef struct
 #define	NUM_BASIC_SPAWN_PARMS		16
 #define NUM_TOTAL_SPAWN_PARMS		64
 #define SV_CROUCH_MAX_SPEED		160.0f
-#define SV_CROUCH_TRANSITION_TIME	0.6f
+#define SV_CROUCH_TRANSITION_TIME	0.3f // quicker first-person crouch/stand movement
 #define SV_CROUCH_ANIM_FRAME_TIME	0.1f
 #define SV_CROUCH_DOWN_FIRST_FRAME	143
 #define SV_CROUCH_DOWN_LAST_FRAME	148
