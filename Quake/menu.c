@@ -1780,7 +1780,7 @@ void M_Main_Draw (void) // woods #modsmenu #demosmenu (iw)
 	M_DrawLogo();
 
 
-	p = Draw_CachePic(va("gfx/a_mmenu/mainmenu%i.lmp", (int)(realtime * 1) % 2 + 1));
+	p = Draw_CachePic(va("gfx/a_mmenu/mainmenu%i.png", (int)(realtime * 1) % 2 + 1));
 	int split = 60;
 	int offset = 0;
 
@@ -1809,7 +1809,7 @@ void M_Main_Draw (void) // woods #modsmenu #demosmenu (iw)
 	}
 
 	else
-		Draw_CachePic(va("gfx/a_mmenu/mainmenu%i.lmp", (int)(realtime * 1) % 2 + 1));
+		Draw_CachePic(va("gfx/a_mmenu/mainmenu%i.png", (int)(realtime * 1) % 2 + 1));
 	f = (int)(realtime * 10) % 6;
 	cursor = m_main_cursor;
 
@@ -2963,7 +2963,7 @@ void M_Skill_Draw(void)
 
 	if (m_skill_usegfx)
 	{
-		M_DrawTransPic(x, y, Draw_CachePic(va("gfx/skillmenu.lmp", (int)(realtime * 1) % 2 + 1 )));
+		M_DrawTransPic(x, y, Draw_CachePic(va("gfx/a_skm/askm%i.lmp", (int)(realtime * 1) % 2 + 1 )));
 		if (m_skill_cursor < 4)
 			M_DrawQuakeCursor(x - 18, y + m_skill_cursor * 20);
 		y += 4 * 20;
