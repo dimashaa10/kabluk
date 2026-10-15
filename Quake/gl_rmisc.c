@@ -55,6 +55,7 @@ extern cvar_t r_remove_collinear_vertices;
 //johnfitz
 extern cvar_t r_scenecache;
 extern cvar_t r_bumpmapping;
+extern cvar_t r_bumpmapping_debug;
 extern cvar_t gl_zfix; // QuakeSpasm z-fighting fix
 cvar_t r_brokenturbbias = {"r_brokenturbbias", "1", CVAR_ARCHIVE}; //replicates QS's bug where it ignores texture coord offsets for water (breaking curved water volumes). we do NOT ignore scales though.
 
@@ -415,6 +416,7 @@ void R_Init (void)
 	//spike -- new cvars...
 	Cvar_RegisterVariable (&r_scenecache);
 	Cvar_RegisterVariable (&r_bumpmapping);
+	Cvar_RegisterVariable (&r_bumpmapping_debug);
 	//spike
 
 	Cvar_RegisterVariable (&cl_damagehue);   // woods #damage
