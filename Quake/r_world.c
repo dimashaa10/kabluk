@@ -2379,12 +2379,15 @@ static void RSceneCache_Draw(qboolean water)
 	int mode;
 	int lastprog = -1;
 	float alpha = 0;
+	qboolean allowNormalMaps;
 
 	if (!cache)
 	{
 		skipsubmodels = NULL;
 		return;
 	}
+	allowNormalMaps = !water && cache->worldmodel == cl.worldmodel &&
+		r_bumpmapping.value != 0 && gl_max_texture_units >= 5 && gl_bmodel_tangent_vbo != 0;
 	RSceneCache_Finish(cache);
 	skipsubmodels = cache->cachedsubmodels;
 
@@ -2407,6 +2410,15 @@ static void RSceneCache_Draw(qboolean water)
 	GL_VertexAttribPointerFunc (vertAttrIndex,      3, GL_FLOAT, GL_FALSE, VERTEXSIZE * sizeof(float), ((float *)0));
 	GL_VertexAttribPointerFunc (texCoordsAttrIndex, 2, GL_FLOAT, GL_FALSE, VERTEXSIZE * sizeof(float), ((float *)0) + 3);
 	GL_VertexAttribPointerFunc (LMCoordsAttrIndex,  2, GL_FLOAT, GL_FALSE, VERTEXSIZE * sizeof(float), ((float *)0) + 5);
+	// Scene-cache batches share the world VBO vertex indices; bind the matching tangent frames too.
+	GL_EnableVertexAttribArrayFunc (surfaceNormalAttrIndex);
+	GL_EnableVertexAttribArrayFunc (surfaceTangentAttrIndex);
+	GL_EnableVertexAttribArrayFunc (surfaceTangentSignAttrIndex);
+	GL_BindBuffer (GL_ARRAY_BUFFER, gl_bmodel_tangent_vbo);
+	GL_VertexAttribPointerFunc (surfaceNormalAttrIndex, 3, GL_FLOAT, GL_FALSE, TANGENT_VERTEXSIZE * sizeof(float), ((float *)0));
+	GL_VertexAttribPointerFunc (surfaceTangentAttrIndex, 3, GL_FLOAT, GL_FALSE, TANGENT_VERTEXSIZE * sizeof(float), ((float *)0) + 3);
+	GL_VertexAttribPointerFunc (surfaceTangentSignAttrIndex, 1, GL_FLOAT, GL_FALSE, TANGENT_VERTEXSIZE * sizeof(float), ((float *)0) + 6);
+	GL_BindBuffer (GL_ARRAY_BUFFER, gl_bmodel_vbo);
 
 	rs_brushpolys += cache->brushpolys; //for r_speeds.;
 
@@ -2549,6 +2561,15 @@ static void RSceneCache_Draw(qboolean water)
 						GL_Uniform1iFunc (useFullbrightTexLoc, 0);
 						//don't bother unbinding. the glsl won't use it anyway.
 					}
+
+					if (allowNormalMaps && tex->normalmap)
+					{
+						GL_SelectTexture (GL_TEXTURE0 + 4);
+						GL_Bind (tex->normalmap);
+						GL_Uniform1iFunc (useNormalMapLoc, 1);
+					}
+					else
+						GL_Uniform1iFunc (useNormalMapLoc, 0);
 				}
 			}
 
@@ -2583,6 +2604,9 @@ static void RSceneCache_Draw(qboolean water)
 	GL_DisableVertexAttribArrayFunc (vertAttrIndex);
 	GL_DisableVertexAttribArrayFunc (texCoordsAttrIndex);
 	GL_DisableVertexAttribArrayFunc (LMCoordsAttrIndex);
+	GL_DisableVertexAttribArrayFunc (surfaceNormalAttrIndex);
+	GL_DisableVertexAttribArrayFunc (surfaceTangentAttrIndex);
+	GL_DisableVertexAttribArrayFunc (surfaceTangentSignAttrIndex);
 	GL_SelectTexture (GL_TEXTURE0);
 
 	GL_BindBuffer (GL_ARRAY_BUFFER, 0);
