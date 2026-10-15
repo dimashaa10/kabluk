@@ -623,6 +623,12 @@ static int r_bumpmapping_usage_frame = -1;
 static unsigned int r_bumpmapping_usage_count;
 static qboolean r_bumpmapping_status_registered;
 
+/* GL_MAX_TEXTURE_UNITS counts fixed-function units, not GLSL sampler units. */
+static qboolean R_BumpmappingTextureUnitsAvailable(void)
+{
+	return gl_max_texture_image_units >= 5 && gl_max_combined_texture_image_units >= 5;
+}
+
 static void R_BumpmappingNoteUse(void)
 {
 	if (r_bumpmapping_usage_frame != r_framecount)
@@ -640,13 +646,16 @@ static void R_BumpmappingStatus_f(void)
 	int total = 0;
 	unsigned int used = r_bumpmapping_usage_frame == r_framecount ? r_bumpmapping_usage_count : 0;
 	qboolean ready = r_bumpmapping.value != 0 && r_world_program != 0 &&
-		gl_max_texture_units >= 5 && gl_bmodel_tangent_vbo != 0;
+		R_BumpmappingTextureUnitsAvailable() && gl_bmodel_tangent_vbo != 0;
 
 	Con_Printf("BSP normal mapping prerequisites: %s\n", ready ? "ready" : "not ready");
 	Con_Printf("  r_bumpmapping=%s, debug=%s (1=raw map, 2=world normal)\n",
 		r_bumpmapping.string, r_bumpmapping_debug.string);
-	Con_Printf("  world GLSL program=%u, texture units=%d/5, tangent VBO=%u\n",
-		(unsigned int)r_world_program, gl_max_texture_units, (unsigned int)gl_bmodel_tangent_vbo);
+	Con_Printf("  world GLSL program=%u, fixed-function texture units=%d\n",
+		(unsigned int)r_world_program, gl_max_texture_units);
+	Con_Printf("  fragment samplers=%d/5, combined samplers=%d/5, tangent VBO=%u\n",
+		gl_max_texture_image_units, gl_max_combined_texture_image_units,
+		(unsigned int)gl_bmodel_tangent_vbo);
 	Con_Printf("  normal-mapped material batches in frame %d: %u\n",
 		r_bumpmapping_usage_frame, used);
 
@@ -1283,7 +1292,7 @@ void GLWorld_CreateShaders (void)
 		GL_Uniform1iFunc (texLoc, 0);
 		GL_Uniform1iFunc (LMTexLoc, 1);
 		GL_Uniform1iFunc (fullbrightTexLoc, 2);
-		GL_Uniform1iFunc (normalMapTexLoc, gl_max_texture_units >= 5 ? 4 : 0);
+		GL_Uniform1iFunc (normalMapTexLoc, R_BumpmappingTextureUnitsAvailable() ? 4 : 0);
 		GL_Uniform1iFunc (bumpDebugModeLoc, (int)r_bumpmapping_debug.value);
 		GL_UseProgramFunc (0);
 	}
@@ -1314,7 +1323,8 @@ void R_DrawTextureChains_GLSL (qmodel_t *model, entity_t *ent, texchain_t chain)
 	entalpha = (ent != NULL) ? ENTALPHA_DECODE(ent->alpha) : 1.0f;
 	enteffects = (ent != NULL) ? ent->effects : 0;
 	allowNormalMaps = r_bumpmapping.value != 0 && r_world_program != 0 &&
-		model == cl.worldmodel && ent == NULL && gl_max_texture_units >= 5 && gl_bmodel_tangent_vbo != 0;
+		model == cl.worldmodel && ent == NULL && R_BumpmappingTextureUnitsAvailable() &&
+		gl_bmodel_tangent_vbo != 0;
 
 // enable blending / disable depth writes
 	if (enteffects & EF_ADDITIVE)
@@ -2457,7 +2467,8 @@ static void RSceneCache_Draw(qboolean water)
 		return;
 	}
 	allowNormalMaps = !water && cache->worldmodel == cl.worldmodel && r_world_program != 0 &&
-		r_bumpmapping.value != 0 && gl_max_texture_units >= 5 && gl_bmodel_tangent_vbo != 0;
+		r_bumpmapping.value != 0 && R_BumpmappingTextureUnitsAvailable() &&
+		gl_bmodel_tangent_vbo != 0;
 	RSceneCache_Finish(cache);
 	skipsubmodels = cache->cachedsubmodels;
 

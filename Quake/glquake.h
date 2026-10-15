@@ -210,7 +210,9 @@ extern	qboolean	gl_mtexable;
 extern PFNGLMULTITEXCOORD2FARBPROC  GL_MTexCoord2fFunc;
 extern PFNGLACTIVETEXTUREARBPROC    GL_SelectTextureFunc;
 extern PFNGLCLIENTACTIVETEXTUREARBPROC	GL_ClientActiveTextureFunc;
-extern GLint		gl_max_texture_units; //ericw
+extern GLint		gl_max_texture_units; // fixed-function texture units
+extern GLint		gl_max_texture_image_units; // fragment shader texture samplers
+extern GLint		gl_max_combined_texture_image_units; // valid glActiveTexture units
 
 //johnfitz -- anisotropic filtering
 #define	GL_TEXTURE_MAX_ANISOTROPY_EXT		0x84FE
