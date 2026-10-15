@@ -28,6 +28,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 extern cvar_t gl_fullbrights, r_drawflat, gl_overbright, r_oldskyleaf, r_showtris; //johnfitz
 cvar_t r_scenecache = {"r_scenecache",""};	//spike, an attempt to cope with abusive maps a bit better.
 cvar_t r_bumpmapping = {"r_bumpmapping", "1", CVAR_ARCHIVE};	// optional external normal maps for BSP world textures
+cvar_t r_bumpmapping_strength = {"r_bumpmapping_strength", "4", CVAR_ARCHIVE}; // tangent-space normal strength, doubled from the previous default
 cvar_t r_bumpmapping_debug = {"r_bumpmapping_debug", "0"}; // 1 = raw normal map, 2 = transformed normal
 
 
@@ -612,6 +613,7 @@ static GLuint fullbrightTexLoc;
 static GLuint normalMapTexLoc;
 static GLuint useNormalMapLoc;
 static GLuint bumpDebugModeLoc;
+static GLuint bumpStrengthLoc;
 static GLuint useFullbrightTexLoc;
 static GLuint useOverbrightLoc;
 static GLuint useAlphaTestLoc;
@@ -627,6 +629,11 @@ static qboolean r_bumpmapping_status_registered;
 static qboolean R_BumpmappingTextureUnitsAvailable(void)
 {
 	return gl_max_texture_image_units >= 5 && gl_max_combined_texture_image_units >= 5;
+}
+
+static float R_BumpmappingStrength(void)
+{
+	return CLAMP(0.0f, r_bumpmapping_strength.value, 8.0f);
 }
 
 static void R_BumpmappingNoteUse(void)
@@ -649,8 +656,8 @@ static void R_BumpmappingStatus_f(void)
 		R_BumpmappingTextureUnitsAvailable() && gl_bmodel_tangent_vbo != 0;
 
 	Con_Printf("BSP normal mapping prerequisites: %s\n", ready ? "ready" : "not ready");
-	Con_Printf("  r_bumpmapping=%s, debug=%s (1=raw map, 2=world normal)\n",
-		r_bumpmapping.string, r_bumpmapping_debug.string);
+	Con_Printf("  r_bumpmapping=%s, strength=%s, debug=%s (1=raw map, 2=world normal)\n",
+		r_bumpmapping.string, r_bumpmapping_strength.string, r_bumpmapping_debug.string);
 	Con_Printf("  world GLSL program=%u, fixed-function texture units=%d\n",
 		(unsigned int)r_world_program, gl_max_texture_units);
 	Con_Printf("  fragment samplers=%d/5, combined samplers=%d/5, tangent VBO=%u\n",
@@ -1178,6 +1185,7 @@ void GLWorld_CreateShaders (void)
 		"uniform bool UseCausticsTex;\n"
 		"uniform bool UseNormalMap;\n"
 		"uniform int BumpDebugMode;\n"
+		"uniform float BumpStrength;\n"
 		"uniform float Alpha;\n"
 		"uniform float ClTime;\n"
 		"uniform float CausticsOpacity;\n"
@@ -1204,7 +1212,7 @@ void GLWorld_CreateShaders (void)
 		"\t{\n"
 		"\t\tvec4 normalSample = texture2D(NormalMap, tc_tex.xy);\n"
 		"\t\tvec3 tangentNormal = normalize(normalSample.xyz * 2.0 - 1.0);\n"
-		"\t\ttangentNormal.xy *= 2.0; // double the normal-map strength\n"
+		"\t\ttangentNormal.xy *= BumpStrength;\n"
 		"\t\ttangentNormal = normalize(tangentNormal);\n"
 		"\t\tvec3 N = normalize(frameNormal);\n"
 		"\t\tvec3 T = normalize(frameTangent - N * dot(N, frameTangent));\n"
@@ -1284,6 +1292,7 @@ void GLWorld_CreateShaders (void)
 		normalMapTexLoc = GL_GetUniformLocation(&r_world_program, "NormalMap");
 		useNormalMapLoc = GL_GetUniformLocation(&r_world_program, "UseNormalMap");
 		bumpDebugModeLoc = GL_GetUniformLocation(&r_world_program, "BumpDebugMode");
+		bumpStrengthLoc = GL_GetUniformLocation(&r_world_program, "BumpStrength");
 		useFullbrightTexLoc = GL_GetUniformLocation (&r_world_program, "UseFullbrightTex");
 		useOverbrightLoc = GL_GetUniformLocation (&r_world_program, "UseOverbright");
 		useAlphaTestLoc = GL_GetUniformLocation (&r_world_program, "UseAlphaTest");
@@ -1298,6 +1307,7 @@ void GLWorld_CreateShaders (void)
 		GL_Uniform1iFunc (fullbrightTexLoc, 2);
 		GL_Uniform1iFunc (normalMapTexLoc, R_BumpmappingTextureUnitsAvailable() ? 4 : 0);
 		GL_Uniform1iFunc (bumpDebugModeLoc, (int)r_bumpmapping_debug.value);
+		GL_Uniform1fFunc (bumpStrengthLoc, R_BumpmappingStrength());
 		GL_UseProgramFunc (0);
 	}
 
@@ -1375,6 +1385,7 @@ void R_DrawTextureChains_GLSL (qmodel_t *model, entity_t *ent, texchain_t chain)
 	GL_Uniform1iFunc(useCausticsTexLoc, 0); // woods #caustics
 	GL_Uniform1iFunc (useNormalMapLoc, 0);
 	GL_Uniform1iFunc (bumpDebugModeLoc, (int)r_bumpmapping_debug.value);
+	GL_Uniform1fFunc (bumpStrengthLoc, R_BumpmappingStrength());
 	GL_Uniform1iFunc (useAlphaTestLoc, 0);
 	GL_Uniform1fFunc (alphaLoc, entalpha);
 	GL_Uniform1fFunc(clTimeLoc, cl.time); // woods #caustics
@@ -2622,6 +2633,7 @@ static void RSceneCache_Draw(qboolean water)
 						GL_UseProgramFunc (r_world_program);
 						GL_Uniform1iFunc (useOverbrightLoc, (int)gl_overbright.value);
 						GL_Uniform1iFunc (bumpDebugModeLoc, (int)r_bumpmapping_debug.value);
+						GL_Uniform1fFunc (bumpStrengthLoc, R_BumpmappingStrength());
 						GL_Uniform1fFunc (alphaLoc, 1);			//worldmodel is never translucent.
 
 						GL_Uniform1fFunc(clTimeLoc, cl.time);
