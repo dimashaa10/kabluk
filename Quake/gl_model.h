@@ -81,6 +81,7 @@ typedef struct texture_s
 	unsigned			shift;		// Q64
 	struct gltexture_s	*gltexture; //johnfitz -- pointer to gltexture
 	struct gltexture_s	*fullbright; //johnfitz -- fullbright mask texture
+	struct gltexture_s	*normalmap; // optional external tangent-space normal map
 	struct msurface_s	*texturechains[2];	// for texture chains
 	int					anim_total;				// total tenths in sequence ( 0 = no)
 	int					anim_min, anim_max;		// time for this frame min <=time< max
@@ -119,6 +120,7 @@ typedef struct
 } mtexinfo_t;
 
 #define	VERTEXSIZE	7
+#define	TANGENT_VERTEXSIZE	7
 
 typedef struct glpoly_s
 {

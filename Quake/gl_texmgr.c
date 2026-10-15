@@ -2028,7 +2028,11 @@ struct gltexture_s* TexMgr_ColormapTexture(struct gltexture_s* basetex, plcolour
 ================================================================================
 */
 
-static GLuint	currenttexture[4] = { GL_UNUSED_TEXTURE, GL_UNUSED_TEXTURE, GL_UNUSED_TEXTURE, GL_UNUSED_TEXTURE }; // to avoid unnecessary texture sets
+#define TEXTURE_BINDING_UNITS 8
+static GLuint	currenttexture[TEXTURE_BINDING_UNITS] = {
+	GL_UNUSED_TEXTURE, GL_UNUSED_TEXTURE, GL_UNUSED_TEXTURE, GL_UNUSED_TEXTURE,
+	GL_UNUSED_TEXTURE, GL_UNUSED_TEXTURE, GL_UNUSED_TEXTURE, GL_UNUSED_TEXTURE
+}; // cached texture bindings for the units used by the renderer
 static GLenum	currenttarget = GL_TEXTURE0_ARB;
 qboolean	mtexenabled = false;
 

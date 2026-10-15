@@ -1126,6 +1126,7 @@ static void Mod_LoadTextures (lump_t *l)
 			source_in_memory = has_custom_palette;
 		}
 		loadmodel->textures[i] = tx;
+		tx->normalmap = NULL;
 
 		mipend = m->dataofs[i];
 		texture_source = source_in_memory ? "" : loadmodel->name;
@@ -1305,6 +1306,17 @@ static void Mod_LoadTextures (lump_t *l)
 					free(data);
 				Hunk_FreeToLowMark (mark);
 			}
+		}
+		// Load optional BSP texture normal maps from the active game's loose/pak search path.
+		// Image_LoadImage resolves this to textures/<texture-name>_n.png (among its supported formats).
+		if (tx->name[0] && tx->name[0] != '*' && q_strncasecmp(tx->name, "sky", 3))
+		{
+			char normalmap_path[MAX_OSPATH];
+			char normalmap_name[MAX_QPATH];
+			q_snprintf(normalmap_path, sizeof(normalmap_path), "textures/%s_n", tx->name);
+			q_snprintf(normalmap_name, sizeof(normalmap_name), "normal:%s", tx->name);
+			tx->normalmap = TexMgr_LoadImage(loadmodel, normalmap_name, 0, 0, SRC_EXTERNAL,
+				NULL, normalmap_path, 0, TEXPREF_ALLOWMISSING | TEXPREF_MIPMAP);
 		}
 		//johnfitz
 	}
