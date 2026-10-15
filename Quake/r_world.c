@@ -1204,6 +1204,8 @@ void GLWorld_CreateShaders (void)
 		"\t{\n"
 		"\t\tvec4 normalSample = texture2D(NormalMap, tc_tex.xy);\n"
 		"\t\tvec3 tangentNormal = normalize(normalSample.xyz * 2.0 - 1.0);\n"
+		"\t\ttangentNormal.xy *= 2.0; // double the normal-map strength\n"
+		"\t\ttangentNormal = normalize(tangentNormal);\n"
 		"\t\tvec3 N = normalize(frameNormal);\n"
 		"\t\tvec3 T = normalize(frameTangent - N * dot(N, frameTangent));\n"
 		"\t\tvec3 B = normalize(cross(N, T)) * tangentSign;\n"
