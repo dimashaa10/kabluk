@@ -102,26 +102,26 @@ static void TestSmoothCrouchAndRelease (void)
 	{
 		StepCrouch(-200);
 		assert(player.v.maxs[2] < previous_maxs);
-		assert(player.v.maxs[2] > 8 || i == 2);
+		assert(player.v.maxs[2] > 4 || i == 2);
 		assert(player.v.view_ofs[2] < 22);
 		previous_maxs = player.v.maxs[2];
 	}
 	assert(client.crouched && fabsf(client.crouch_amount - 1.0f) < 0.001f);
-	assert(player.v.mins[2] == -24 && player.v.maxs[2] == 8);
-	assert(player.v.size[2] == 32 && player.v.view_ofs[2] == 8);
+	assert(player.v.mins[2] == -24 && player.v.maxs[2] == 4);
+	assert(player.v.size[2] == 28 && player.v.view_ofs[2] == 4);
 
 	// Repeated down input must retain the original standing hull for release,
 	// even if QuakeC tries to restore it while the animation is in progress.
 	player.v.maxs[2] = 32;
 	player.v.view_ofs[2] = 22;
 	SV_UpdateCrouch(&client, &player, -200);
-	assert(client.crouched && player.v.maxs[2] == 8 && player.v.view_ofs[2] == 8);
+	assert(client.crouched && player.v.maxs[2] == 4 && player.v.view_ofs[2] == 4);
 
 	for (i = 0; i < 2; i++)
 	{
 		StepCrouch(0);
 		assert(client.crouched);
-		assert(player.v.maxs[2] > 8 && player.v.maxs[2] < 32);
+		assert(player.v.maxs[2] > 4 && player.v.maxs[2] < 32);
 	}
 	StepCrouch(0);
 	assert(!client.crouched && !client.crouch_wanted);
@@ -130,26 +130,49 @@ static void TestSmoothCrouchAndRelease (void)
 	assert(links == 7 && traces == 3);
 }
 
+static void TestCrouchHullIsHalfStandingHeight (void)
+{
+	int i;
+
+	Reset();
+	player.v.mins[2] = -16;
+	player.v.maxs[2] = 48;
+	player.v.size[2] = 64;
+	player.v.view_ofs[2] = 32;
+	FinishCrouch();
+
+	assert(client.crouched);
+	assert(player.v.mins[2] == -16 && player.v.maxs[2] == 16);
+	assert(player.v.size[2] == 32 && player.v.size[2] * 2 == 64);
+	assert(player.v.view_ofs[2] == 8);
+
+	for (i = 0; i < 3; i++)
+		StepCrouch(0);
+	assert(!client.crouched);
+	assert(player.v.mins[2] == -16 && player.v.maxs[2] == 48);
+	assert(player.v.size[2] == 64 && player.v.view_ofs[2] == 32);
+}
+
 static void TestBlockedStand (void)
 {
 	int i;
 
 	Reset();
 	FinishCrouch();
-	assert(player.v.maxs[2] == 8 && client.crouched);
+	assert(player.v.maxs[2] == 4 && client.crouched);
 
 	block_standing = true;
 	StepCrouch(0);
 	assert(client.crouched && !client.crouch_wanted && client.crouch_stand_blocked);
 	assert(fabsf(client.crouch_amount - 1.0f) < 0.001f);
-	assert(player.v.maxs[2] == 8 && player.v.view_ofs[2] == 8);
+	assert(player.v.maxs[2] == 4 && player.v.view_ofs[2] == 4);
 	assert(links == 3 && traces == 1);
 
 	block_standing = false;
 	for (i = 0; i < 2; i++)
 	{
 		StepCrouch(0);
-		assert(client.crouched && player.v.maxs[2] > 8 && player.v.maxs[2] < 32);
+		assert(client.crouched && player.v.maxs[2] > 4 && player.v.maxs[2] < 32);
 	}
 	StepCrouch(0);
 	assert(!client.crouched && player.v.maxs[2] == 32);
@@ -329,6 +352,7 @@ static void TestExpansionMeleeIds (void)
 int main (void)
 {
 	TestSmoothCrouchAndRelease();
+	TestCrouchHullIsHalfStandingHeight();
 	TestBlockedStand();
 	TestCrouchSpeed();
 	TestMovementModes();
@@ -336,7 +360,7 @@ int main (void)
 	TestSeatedIdleAndWalk();
 	TestSeatedAttacks();
 	TestExpansionMeleeIds();
-	puts("PASS: crouch/stand smoothly interpolate hull and view height, while standing remains collision-safe.");
+	puts("PASS: crouch hull is half the saved standing height, transitions stay smooth, and standing remains collision-safe.");
 	puts("PASS: seated idle, walk, melee and shooting use the requested frames and Rogue/Hipnotic melee IDs.");
 	puts("PASS: crouch speed cap remains active through transitions without changing vertical velocity.");
 	puts("PASS: swimming down, noclip, ladder and skate mode do not enter crouch.");

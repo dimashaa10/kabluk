@@ -409,7 +409,7 @@ void SV_AirMove (void)
 	}
 }
 
-#define SV_CROUCH_HEIGHT		32
+#define SV_CROUCH_HEIGHT_RATIO	0.5f
 #define SV_CROUCH_VIEWHEIGHT	8
 #define SV_CROUCH_MOVE_EPSILON	4.0f
 
@@ -463,11 +463,13 @@ static float SV_CrouchDeltaTime (client_t *client)
 static void SV_CrouchBoundsForAmount (const client_t *client, float amount,
 	float *mins_z, float *maxs_z, float *viewheight)
 {
-	float crouch_maxs, crouch_viewheight;
+	float crouch_maxs, crouch_viewheight, crouch_height;
 
 	amount = q_min(q_max(amount, 0.0f), 1.0f);
+	crouch_height = q_max(client->crouch_stand_maxs_z -
+		client->crouch_stand_mins_z, 0.0f) * SV_CROUCH_HEIGHT_RATIO;
 	crouch_maxs = q_min(client->crouch_stand_maxs_z,
-		client->crouch_stand_mins_z + SV_CROUCH_HEIGHT);
+		client->crouch_stand_mins_z + crouch_height);
 	crouch_viewheight = q_min(client->crouch_stand_viewheight,
 		q_min((float)SV_CROUCH_VIEWHEIGHT, crouch_maxs));
 	*mins_z = client->crouch_stand_mins_z;
