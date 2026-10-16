@@ -419,7 +419,7 @@ void CL_FinishDemoFrame(void)
 
 		cl.faceanimtime = 0; // woods
 		CL_SetStati(STAT_VIEWHEIGHT, DEFAULT_VIEWHEIGHT); // woods
-		CL_UpdateViewHeightLerp((float)DEFAULT_VIEWHEIGHT);
+		cl.viewoffset_smooth_initialized = false;
 		memset(cl_dlights, 0, sizeof(cl_dlights)); // woods
 		//memset(cl_temp_entities, 0, sizeof(cl_temp_entities));
 

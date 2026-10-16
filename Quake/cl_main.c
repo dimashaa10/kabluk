@@ -1129,7 +1129,6 @@ void CL_RelinkEntities (void)
 
 // determine partial update time
 	frac = CL_LerpPoint ();
-	cl.lerpfrac = frac; // V_CalcRefdef reuses this for viewheight interpolation.
 
 	frametime = cl.time - cl.oldtime;
 	if (frametime < 0)

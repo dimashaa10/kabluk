@@ -1940,16 +1940,9 @@ static void CL_ParseClientdata (void)
 		bits |= SU_ITEMS;
 
 	if (bits & SU_VIEWHEIGHT)
-	{
-		int viewheight = MSG_ReadChar();
-		CL_SetStati(STAT_VIEWHEIGHT, viewheight);
-		CL_UpdateViewHeightLerp((float)viewheight);
-	}
+		CL_SetStati(STAT_VIEWHEIGHT, MSG_ReadChar ());
 	else if (cl.protocol != PROTOCOL_VERSION_DP7)
-	{
 		CL_SetStati(STAT_VIEWHEIGHT, DEFAULT_VIEWHEIGHT);
-		CL_UpdateViewHeightLerp((float)DEFAULT_VIEWHEIGHT);
-	}
 
 	if (bits & SU_IDEALPITCH)
 		CL_SetStati(STAT_IDEALPITCH, MSG_ReadChar ());
@@ -2734,25 +2727,6 @@ static void CL_DumpPacket (void)
 
 #define SHOWNET(x) if(cl_shownet.value==2)Con_Printf ("%3i:%s\n", msg_readcount-1, x);
 
-void CL_UpdateViewHeightLerp (float viewheight)
-{
-	if (!cl.viewheight_lerp_initialized)
-	{
-		cl.viewheight_lerp[0] = cl.viewheight_lerp[1] = viewheight;
-		cl.viewheight_lerp_mtime = cl.mtime[0];
-		cl.viewheight_lerp_initialized = true;
-	}
-	else
-	{
-		if (cl.viewheight_lerp_mtime != cl.mtime[0])
-		{
-			cl.viewheight_lerp[1] = cl.viewheight_lerp[0];
-			cl.viewheight_lerp_mtime = cl.mtime[0];
-		}
-		cl.viewheight_lerp[0] = viewheight;
-	}
-}
-
 static void CL_ParseStatNumeric(int stat, int ival, float fval)
 {
 	if (stat < 0 || stat >= MAX_CL_STATS)
@@ -2760,9 +2734,6 @@ static void CL_ParseStatNumeric(int stat, int ival, float fval)
 		Con_DWarning ("svc_updatestat: %i is invalid\n", stat);
 		return;
 	}
-
-	if (stat == STAT_VIEWHEIGHT)
-		CL_UpdateViewHeightLerp(fval);
 
 	if (stat == STAT_HEALTH) // woods #cdead
 	{

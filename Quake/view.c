@@ -151,6 +151,45 @@ float V_CalcBob (void)
 	return bob;
 }
 
+/*
+==================
+V_SmoothViewOffset
+
+Filter the complete vertical eye offset (viewheight plus bob) in render time
+instead of relying on the network snapshot fraction. This suppresses small
+packet/stat and velocity fluctuations without overshooting crouch transitions.
+==================
+*/
+static float V_SmoothViewOffset (float target)
+{
+	float dt, alpha;
+
+	if (!cl.viewoffset_smooth_initialized || cls.signon != SIGNONS)
+	{
+		cl.viewoffset_smooth = target;
+		cl.viewoffset_smooth_initialized = (cls.signon == SIGNONS);
+		return target;
+	}
+
+	dt = host_frametime;
+	if (dt < 0)
+		dt = 0;
+	else if (dt > 0.1f)
+		dt = 0.1f;
+
+	if (dt > 0)
+	{
+		// A 55 ms time constant is frame-rate independent and never overshoots.
+		alpha = 1.0f - expf(-dt / 0.055f);
+		cl.viewoffset_smooth += (target - cl.viewoffset_smooth) * alpha;
+	}
+
+	if (fabsf(target - cl.viewoffset_smooth) < 0.01f)
+		cl.viewoffset_smooth = target;
+
+	return cl.viewoffset_smooth;
+}
+
 
 //=============================================================================
 
@@ -907,7 +946,7 @@ void V_CalcRefdef (void)
 	vec3_t		forward, right, up;
 	vec3_t		angles;
 	float		bob;
-	float		viewheight;
+	float		viewoffset;
 	static float oldz = 0;
 	static vec3_t punch = {0,0,0}; //johnfitz -- v_gunkick
 	float delta; //johnfitz -- v_gunkick
@@ -932,16 +971,8 @@ void V_CalcRefdef (void)
 
 // refresh position
 	VectorCopy (ent->origin, r_refdef.vieworg);
-	viewheight = cl.statsf[STAT_VIEWHEIGHT];
-	if (cl.viewheight_lerp_initialized)
-	{
-		// Reuse the entity snapshot fraction; don't recalculate it here and risk
-		// moving cl.time twice during a rendered frame.
-		float frac = q_min(q_max(cl.lerpfrac, 0.0f), 1.0f);
-		viewheight = cl.viewheight_lerp[1] +
-			frac * (cl.viewheight_lerp[0] - cl.viewheight_lerp[1]);
-	}
-	r_refdef.vieworg[2] += viewheight + bob;
+	viewoffset = V_SmoothViewOffset(cl.statsf[STAT_VIEWHEIGHT] + bob);
+	r_refdef.vieworg[2] += viewoffset;
 
 // never let it sit exactly on a node line, because a water plane can
 // dissapear when viewed with the eye exactly on it.
