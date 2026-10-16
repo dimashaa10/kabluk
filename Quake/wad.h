@@ -38,7 +38,11 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define	TYP_QTEX		65
 #define	TYP_QPIC		66
 #define	TYP_SOUND		67
-#define	TYP_MIPTEX		68
+#define	TYP_MIPTEX		68			// WAD2 miptex
+#define	TYP_WAD3_MIPTEX	67			// WAD3 miptex
+
+#define	WAD_VERSION_2	2
+#define	WAD_VERSION_3	3
 
 #define	WADFILENAME "gfx.wad" //johnfitz -- filename is now hard-coded for honesty
 
@@ -50,7 +54,7 @@ typedef struct
 
 typedef struct
 {
-	char			identification[4];		// should be WAD2 or 2DAW
+	char			identification[4];		// WAD2 or WAD3
 	unsigned int	numlumps;
 	unsigned int	infotableofs;
 } wadinfo_t;
@@ -66,12 +70,42 @@ typedef struct
 	char			name[16];				// must be null terminated
 } lumpinfo_t;
 
+typedef struct wadarchive_s
+{
+	byte			*data;
+	size_t			file_size;
+	unsigned int	num_lumps;
+	lumpinfo_t	*lumps;
+	int			version;
+	unsigned int	path_id;
+} wadarchive_t;
+
+typedef struct wadmiptex_s
+{
+	char			name[16];
+	unsigned int	width, height;
+	const byte		*pixels;
+	size_t			pixel_count;
+	const byte		*palette;	// RGB triples, NULL for a WAD2/Quake texture
+	unsigned int	palette_colors;
+} wadmiptex_t;
+
 extern unsigned int	wad_numlumps;
 extern lumpinfo_t	*wad_lumps;
 extern byte			*wad_base;
+extern int				wad_version;
 
 void	W_LoadWadFile (void); //johnfitz -- filename is now hard-coded for honesty
 void	*W_GetLumpName (const char *name, lumpinfo_t **out_info);
+
+qboolean WAD_ArchiveLoad (wadarchive_t *archive, const char *filename);
+void	WAD_ArchiveFree (wadarchive_t *archive);
+qboolean WAD_ArchiveFindMipTex (const wadarchive_t *archive, const char *name, wadmiptex_t *miptex);
+qboolean WAD_ExtractMipTex (const byte *data, size_t data_size, wadmiptex_t *miptex);
+qboolean WAD_ParsePalette (const byte *data, size_t data_size, size_t palette_offset,
+	const byte **palette, unsigned int *palette_colors);
+void	WAD_ConvertIndexedToRGBA (const byte *indices, size_t pixel_count,
+	const byte *palette, unsigned int palette_colors, int transparent_index, byte *rgba);
 
 void SwapPic (qpic_t *pic);
 

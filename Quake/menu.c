@@ -23,8 +23,6 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "quakedef.h"
 #include "bgmusic.h"
 #include "q_ctype.h" // woods #modsmenu (iw)
-#include <curl/curl.h> // woods #serversmenu
-#include "json.h" // woods #serversmenu
 #include <sys/stat.h>
 
 #ifdef _WIN32
@@ -653,12 +651,7 @@ void M_DrawArrowCursor(int cx, int cy) // woods #skillmenu (iw)
 
 void M_Print (int cx, int cy, const char *str)
 {
-	while (*str)
-	{
-		M_DrawCharacter (cx, cy, (*str)+128);
-		str++;
-		cx += 8;
-	}
+	Draw_StringMasked(cx, cy, str);
 }
 
 void M_DrawCharacterRGBA (int cx, int line, int num, plcolour_t c, float alpha) // woods
@@ -668,15 +661,10 @@ void M_DrawCharacterRGBA (int cx, int line, int num, plcolour_t c, float alpha) 
 
 void M_PrintRGBA (int cx, int cy, const char* str, plcolour_t c, float alpha, qboolean mask) // woods
 {
-	while (*str)
-	{
-		if (mask)
-			M_DrawCharacterRGBA(cx, cy, (*str) + 128, c, alpha);  // Add 128 for masked version
-		else
-			M_DrawCharacterRGBA(cx, cy, (*str), c, alpha);
-		str++;
-		cx += 8;
-	}
+	if (mask)
+		Draw_StringMaskedRGBA(cx, cy, str, c, alpha);
+	else
+		Draw_StringRGBA(cx, cy, str, c, alpha);
 }
 
 void M_Print2 (int cx, int cy, const char* str) // woods #speed yellow/gold numbers
@@ -691,12 +679,7 @@ void M_Print2 (int cx, int cy, const char* str) // woods #speed yellow/gold numb
 
 void M_PrintWhite (int cx, int cy, const char *str)
 {
-	while (*str)
-	{
-		M_DrawCharacter (cx, cy, *str);
-		str++;
-		cx += 8;
-	}
+	Draw_String(cx, cy, str);
 }
 
 void M_DrawTransPic (int x, int y, qpic_t *pic)
@@ -914,6 +897,13 @@ static qboolean M_Ticker_Key(menuticker_t* ticker, int key)
 
 void M_PrintHighlight(int x, int y, const char* str, const char* search, int searchlen)
 {
+	const char *translated = LOC_TranslateText(str);
+	if (translated && strcmp(translated, str))
+	{
+		M_Print(x, y, translated);
+		return;
+	}
+
 	if (!searchlen)
 	{
 		M_Print(x, y, str);
@@ -943,33 +933,62 @@ void M_PrintHighlight(int x, int y, const char* str, const char* search, int sea
 // TODO: smooth scrolling
 void M_PrintScroll(int x, int y, int maxwidth, const char* str, double time, qboolean color) // woods #modsmenu (iw)
 {
+	char display[1024];
+	static const char gap[] = " /// ";
 	int maxchars = maxwidth / 8;
-	int len = strlen(str);
-	int i, ofs;
-	char mask = color ? 128 : 0;
+	int len, scroll_len, ofs;
+	size_t written = 0;
+	const char *translated;
 
+	if (!str || maxchars <= 0)
+		return;
+
+	translated = LOC_TranslateText(str);
+	len = Draw_StringWidth(translated) / 8;
 	if (len <= maxchars)
 	{
 		if (color)
-			M_Print(x, y, str);
+			M_Print(x, y, translated);
 		else
-			M_PrintWhite(x, y, str);
+			M_PrintWhite(x, y, translated);
 		return;
 	}
 
+	// The buffer can hold four UTF-8 bytes per visible character.
+	maxchars = q_min(maxchars, (int)(sizeof(display) - 1) / 4);
+	scroll_len = len + (int)sizeof(gap) - 1;
 	ofs = (int)floor(time * 4.0);
-	ofs %= len + 5;
+	ofs %= scroll_len;
 	if (ofs < 0)
-		ofs += len + 5;
+		ofs += scroll_len;
 
-	for (i = 0; i < maxchars; i++)
+	for (int i = 0; i < maxchars; i++)
 	{
-		char c = (ofs < len) ? str[ofs] : " /// "[ofs - len];
-		M_DrawCharacter(x, y, c ^ mask);
-		x += 8;
-		if (++ofs >= len + 5)
-			ofs = 0;
+		int pos = (ofs + i) % scroll_len;
+		if (pos < len)
+		{
+			const char *start = translated;
+			const char *end;
+			int skip;
+			for (skip = 0; skip < pos && *start; skip++)
+				start = Draw_UTF8NextChar(start);
+			end = Draw_UTF8NextChar(start);
+			if (end > start && written + (size_t)(end - start) < sizeof(display))
+			{
+				size_t bytes = (size_t)(end - start);
+				memcpy(display + written, start, bytes);
+				written += bytes;
+			}
+		}
+		else if (written + 1 < sizeof(display))
+			display[written++] = gap[pos - len];
 	}
+	display[written] = '\0';
+
+	if (color)
+		M_Print(x, y, display);
+	else
+		M_PrintWhite(x, y, display);
 }
 
 void M_PrintScroll2(int x, int y, int maxwidth, const char* str, const char* str2, double time)
@@ -1761,7 +1780,7 @@ void M_Main_Draw (void) // woods #modsmenu #demosmenu (iw)
 	M_DrawLogo();
 
 
-	p = Draw_CachePic(va("gfx/a_mmenu/mainmenu%i.lmp", (int)(realtime * 1) % 2 + 1));
+	p = Draw_CachePic(va("gfx/a_mmenu/mainmenu%i.png", (int)(realtime * 1) % 2 + 1));
 	int split = 60;
 	int offset = 0;
 
@@ -1769,7 +1788,7 @@ void M_Main_Draw (void) // woods #modsmenu #demosmenu (iw)
 	{
 		M_DrawSubpic(72, 32, p, 0, 0, p->width, split);
 		M_DrawTransPic(74, 92, Draw_CachePic(va("gfx/a_mods/amods%i.lmp", (int)(realtime * 1) % 2 + 1)));
-		M_DrawTransPic(72, 52 + split, Draw_CachePic(va("gfx/a_demos/ademos%i.lmp", (int)(realtime * 1) % 2 + 1)));
+		M_DrawTransPic(72, 52 + split, Draw_CachePic(va("gfx/a_demos/ademos%i.png", (int)(realtime * 1) % 2 + 1)));
 		M_DrawSubpic(72, 72 + split, p, 0, split, p->width, p->height - split);
 	}
 	
@@ -1784,13 +1803,13 @@ void M_Main_Draw (void) // woods #modsmenu #demosmenu (iw)
 	else if (m_main_demos && !m_main_mods) // only demos
 	{
 		M_DrawSubpic(72, 32 + offset, p, 0, 0, p->width, split);
-		M_DrawTransPic(72, 32 + offset + split, Draw_CachePic(va("gfx/a_demos/ademos%i.lmp", (int)(realtime * 1) % 2 + 1)));
+		M_DrawTransPic(72, 32 + offset + split, Draw_CachePic(va("gfx/a_demos/ademos%i.png", (int)(realtime * 1) % 2 + 1)));
 		M_DrawSubpic(72, 32 + offset + split + 20, p, 0, split, p->width, p->height - split);
 		offset += split + 20; // Adjust offset if needed for further items
 	}
 
 	else
-		Draw_CachePic(va("gfx/a_mmenu/mainmenu%i.lmp", (int)(realtime * 1) % 2 + 1));
+		Draw_CachePic(va("gfx/a_mmenu/mainmenu%i.png", (int)(realtime * 1) % 2 + 1));
 	f = (int)(realtime * 10) % 6;
 	cursor = m_main_cursor;
 
@@ -1995,7 +2014,7 @@ void M_SinglePlayer_Draw(void)
 {
 	qpic_t* p;
 
-	p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.bmp", (int)(realtime * 8) % 24 + 1));
+	p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.png", (int)(realtime * 8) % 24 + 1));
 	M_DrawPic((320 - p->width) / 2, -64, p);
 
 	M_DrawTransPic(16, 4, Draw_CachePic("gfx/qplaque.pcx"));
@@ -2944,7 +2963,7 @@ void M_Skill_Draw(void)
 
 	if (m_skill_usegfx)
 	{
-		M_DrawTransPic(x, y, Draw_CachePic(va("gfx/skillmenu.lmp", (int)(realtime * 1) % 2 + 1 )));
+		M_DrawTransPic(x, y, Draw_CachePic(va("gfx/a_skm/askm%i.lmp", (int)(realtime * 1) % 2 + 1 )));
 		if (m_skill_cursor < 4)
 			M_DrawQuakeCursor(x - 18, y + m_skill_cursor * 20);
 		y += 4 * 20;
@@ -3122,7 +3141,10 @@ void M_MultiPlayer_Draw (void)
 
 	if (ipxAvailable || ipv4Available || ipv6Available)
 		return;
-	M_PrintWhite ((320/2) - ((27*8)/2), 148, "No Communications Available");
+	{
+		const char *message = LOC_TranslateText("No Communications Available");
+		M_PrintWhite((320 - Draw_StringWidth(message)) / 2, 148, message);
+	}
 }
 
 
@@ -4121,6 +4143,7 @@ enum
 	OPT_EXTRAS,
 	OPT_SPACE,       // Spacer
 	OPT_MENUSCALE,
+	OPT_LANGUAGE,
 	OPT_CONSOLE,
 	OPT_RESETCONFIG,
 	OPTIONS_ITEMS
@@ -4181,6 +4204,13 @@ void M_AdjustSliders (int dir)
 		if (f > 6) f = 6;
 		else if (f < 1) f = 1;
 		Cvar_SetValue("scr_menuscale", f);
+		break;
+	case OPT_LANGUAGE:
+		if (!q_strcasecmp(Cvar_VariableString("language"), "russian") ||
+			!q_strcasecmp(Cvar_VariableString("language"), "ru"))
+			Cvar_Set("language", "english");
+		else
+			Cvar_Set("language", "russian");
 		break;
 	}
 }
@@ -4340,9 +4370,14 @@ void M_Options_Draw (void)
 				M_DrawSlider(220, y, r, scr_menuscale.value, "%.0f");
 			}
 			break;
-		case OPT_CONSOLE:
-			text = "          Goto Console";
-			break;
+			case OPT_LANGUAGE:
+				text = "             Language";
+				M_Print(220, y, (!q_strcasecmp(Cvar_VariableString("language"), "russian") ||
+					!q_strcasecmp(Cvar_VariableString("language"), "ru")) ? "Russian" : "English");
+				break;
+			case OPT_CONSOLE:
+				text = "          Goto Console";
+				break;
 		case OPT_RESETCONFIG:
 			text = "          Reset Config   ...";
 			break;
@@ -4409,6 +4444,8 @@ static const char* M_Options_GetItemText(int index)
 		return "                  Misc   ...";
 	case OPT_MENUSCALE:
 		return "            Menu Scale";
+	case OPT_LANGUAGE:
+		return "Language";
 	case OPT_CONSOLE:
 		return "          Goto Console";
 	case OPT_RESETCONFIG:
@@ -4641,8 +4678,9 @@ const char *quakebindnames[][2] = // woods use iw quake bind names
 	{"+moveleft",		"Move left"},
 	{"+moveright",		"Move right"},
 	{"+jump",			"Jump / swim up"},
+	{"+skate_slide",		"Skate slide"},
 	{"+moveup",			"Swim up"},
-	{"+movedown",		"Swim down"},
+	{"+movedown",			"Crouch / swim down"},
 	{"+speed",			"Run"},
 	{"+strafe",			"Sidestep"},
 	{"+left",			"Turn left"},
@@ -4737,6 +4775,24 @@ void M_Keys_Populate(void) // woods #mousemenu -- modified
 			strcpy(bindnames[i].desc, quakebindnames[i][1]);
 		}
 		numbindnames = NUMQUAKECOMMANDS;
+	}
+
+	// Keep the engine skateboard action available even when an external
+	// bindlist.lst supplies the rest of the controls.
+	{
+		int i;
+		for (i = 0; i < numbindnames; i++)
+			if (!strcmp(bindnames[i].cmd, "+skate_slide"))
+				break;
+		if (i == numbindnames)
+		{
+			bindnames = (bindname_t*)Z_Realloc(bindnames, sizeof(bindname_t) * (numbindnames + 1));
+			bindnames[numbindnames].cmd = (char*)Z_Malloc(sizeof("+skate_slide"));
+			strcpy(bindnames[numbindnames].cmd, "+skate_slide");
+			bindnames[numbindnames].desc = (char*)Z_Malloc(sizeof("Skate slide"));
+			strcpy(bindnames[numbindnames].desc, "Skate slide");
+			numbindnames++;
+		}
 	}
 }
 
@@ -5348,7 +5404,7 @@ void M_Mouse_Draw(void)
 	M_DrawPic((320 - p->width) / 2, 4, p);
 
 	const char* title = "Mouse Options";
-	M_PrintWhite((320 - 8 * strlen(title)) / 2, 32, title);
+	M_PrintWhite((320 - Draw_StringWidth(title)) / 2, 32, title);
 
 	for (i = 0; i < MOUSE_ITEMS; i++)
 	{
@@ -5949,7 +6005,7 @@ void M_Graphics_Draw(void)
 	M_DrawPic((320 - p->width) / 2, 4, p);
 
 	const char* title = "Graphics Options";
-	M_PrintWhite((320 - 8 * strlen(title)) / 2, 32, title);
+	M_PrintWhite((320 - Draw_StringWidth(title)) / 2, 32, title);
 
 	for (i = 0; i < GRAPHICS_ITEMS; i++)
 	{
@@ -6579,7 +6635,7 @@ void M_Sound_Draw(void)
 	M_DrawPic((320 - p->width) / 2, 4, p);
 
 	const char* title = "Sound Options";
-	M_PrintWhite((320 - 8 * strlen(title)) / 2, 32, title);
+	M_PrintWhite((320 - Draw_StringWidth(title)) / 2, 32, title);
 
 	for (i = 0; i < SOUND_ITEMS; i++)
 	{
@@ -8015,7 +8071,7 @@ void M_HUD_Draw(void)
 	M_DrawPic((320 - p->width) / 2, 4, p);
 
 	const char* title = "HUD Options";
-	M_PrintWhite((320 - 8 * strlen(title)) / 2, 32, title);
+	M_PrintWhite((320 - Draw_StringWidth(title)) / 2, 32, title);
 
 	for (int i = 0; i < HUD_ITEMS; i++)
 	{
@@ -8927,7 +8983,7 @@ void M_Crosshair_Draw(void)
 	M_DrawPic((320 - p->width) / 2, 4, p);
 
 	const char* title = "Crosshair Options";
-	M_PrintWhite((320 - 8 * strlen(title)) / 2, 32, title);
+	M_PrintWhite((320 - Draw_StringWidth(title)) / 2, 32, title);
 
 	for (i = 0; i < CROSSHAIR_ITEMS; i++)
 	{
@@ -9361,7 +9417,7 @@ void M_Console_Draw(void)
 	M_DrawPic((320 - p->width) / 2, 4, p);
 
 	const char* title = "Console Options";
-	M_PrintWhite((320 - 8 * strlen(title)) / 2, 32, title);
+	M_PrintWhite((320 - Draw_StringWidth(title)) / 2, 32, title);
 
 	for (i = 0; i < CONSOLE_ITEMS; i++)
 	{
@@ -9882,7 +9938,7 @@ void M_Extras_Draw(void)
 	M_DrawPic((320 - p->width) / 2, 4, p);
 
 	const char* title = "Miscellaneous Options";
-	M_PrintWhite((320 - 8 * strlen(title)) / 2, 32, title);
+	M_PrintWhite((320 - Draw_StringWidth(title)) / 2, 32, title);
 
 	for (i = 0; i < EXTRAS_ITEMS; i++)
 	{
@@ -11152,7 +11208,7 @@ void M_LanConfig_Draw (void)
 		}
 		else 
 		{
-		M_Print(basex + (9 * 8) + 10, y, va("local: %s", cached_addresses[0]));
+		M_Print(basex + (9 * 8) + 10, y, va(LOC_GetStringOr("$LAN_LOCAL_ADDRESS", "local: %s"), cached_addresses[0]));
 		}
 		y += 8;
 
@@ -11171,7 +11227,7 @@ void M_LanConfig_Draw (void)
 		}
 		else 
 		{
-		M_Print(basex + (9 * 8) + 10, y, va("ext:   %s", my_public_ip));
+		M_Print(basex + (9 * 8) + 10, y, va(LOC_GetStringOr("$LAN_EXTERNAL_ADDRESS", "ext:   %s"), my_public_ip));
 		}
 		y += 8;
 	}
@@ -12674,14 +12730,14 @@ void M_GameOptions_Draw (void)
 	if (fraglimit.value == 0)
 		M_Print (160, y, "none");
 	else
-		M_Print (160, y, va("%i frags", (int)fraglimit.value));
+		M_Print(160, y, va(LOC_GetStringOr("$GAME_FRAG_LIMIT", "%i frags"), (int)fraglimit.value));
 	y+=8;
 
 	M_Print (0, y, "       Time Limit");
 	if (timelimit.value == 0)
 		M_Print (160, y, "none");
 	else
-		M_Print (160, y, va("%i minutes", (int)timelimit.value));
+		M_Print(160, y, va(LOC_GetStringOr("$GAME_TIME_LIMIT", "%i minutes"), (int)timelimit.value));
 	y+=8;
 
 	y+=8;
@@ -12944,6 +13000,28 @@ double		searchCompleteTime;
 enum slistScope_e searchLastScope = SLIST_LAN;
 void ResetHostlist (void); // woods #resethostlist
 
+static qboolean M_SearchResultMatchesGame(size_t index)
+{
+	const char *engine = NET_SlistPrintServerInfo(index, SERVER_GAMENAME);
+	const char *game = NET_SlistPrintServerInfo(index, SERVER_GAMEDIR);
+
+	if (searchLastScope == SLIST_INTERNET)
+		return q_strcasecmp(engine, KABLUK_PROTOCOL_NAME) == 0 &&
+			q_strcasecmp(game, GAMENAME) == 0;
+
+	// Internet responses carry the game directory; the compact LAN reply does not.
+	return !*game || q_strcasecmp(game, GAMENAME) == 0;
+}
+
+static qboolean M_SearchHasMatchingResults(void)
+{
+	size_t i;
+	for (i = 0; i < hostCacheCount; i++)
+		if (M_SearchResultMatchesGame(i))
+			return true;
+	return false;
+}
+
 void M_Menu_Search_f (enum slistScope_e scope)
 {
 	key_dest = key_menu;
@@ -12982,13 +13060,16 @@ void M_Search_Draw (void)
 		searchCompleteTime = realtime;
 	}
 
-	if (hostCacheCount)
+	if (M_SearchHasMatchingResults())
 	{
 		M_Menu_ServerList_f ();
 		return;
 	}
 
-	M_PrintWhite ((320/2) - ((22*8)/2), 64, "No Kuzba$$ servers found");
+	{
+		const char *message = LOC_TranslateText("No Kabluk/Kuzbass servers found");
+		M_PrintWhite((320 - Draw_StringWidth(message)) / 2, 64, message);
+	}
 	if ((realtime - searchCompleteTime) < 3.0)
 		return;
 
@@ -13042,7 +13123,7 @@ static struct {
 } serversmenu;
 
 //=============================================================================
-// woods servers.quakeone.com support curl+json parsing #serversmenu
+// Kabluk/Kuzbass master-server browser and ping support
 //=============================================================================
 
 static volatile qboolean pingThreadsShouldExit = false;
@@ -13261,147 +13342,6 @@ void PingAllServers(void)
 		Con_DPrintf("SDL_CreateThread failed: %s\n", SDL_GetError());
 }
 
-struct MemoryStruct
-{
-	char* memory;
-	size_t size;
-};
-
-static size_t WriteMemoryCallback (void* contents, size_t size, size_t nmemb, void* userp)
-{
-	size_t realSize = size * nmemb;
-	struct MemoryStruct* mem = (struct MemoryStruct*)userp;
-
-	char* ptr = realloc(mem->memory, mem->size + realSize + 1);
-	if (!ptr) {
-		Con_DPrintf("not enough memory (realloc returned NULL)\n");
-		return 0;
-	}
-
-	mem->memory = ptr;
-	memcpy(&(mem->memory[mem->size]), contents, realSize);
-	mem->size += realSize;
-	mem->memory[mem->size] = 0;
-
-	return realSize;
-}
-
-void setStatusFlagBasedOnTimestamp (const char* timestamp, const char* lastQuery, qboolean* status)
-{
-	char bufTimestamp[20], bufLastQuery[20]; // Extract time components up to seconds
-	Q_strncpy(bufTimestamp, timestamp, 19);
-	bufTimestamp[19] = '\0';
-	Q_strncpy(bufLastQuery, lastQuery, 19);
-	bufLastQuery[19] = '\0';
-
-	if (Q_strcmp(bufTimestamp, bufLastQuery) == 0) // Compare the timestamp and lastQuery to the second
-		*status = true;
-	else
-		*status = false;
-}
-
-void populateServersFromJSON (const char* jsonText, servertitem_t** items, int* actualServerCount)
-{
-	json_t* json = JSON_Parse(jsonText);
-	if (!json || !json->root || json->root->type != JSON_ARRAY) 
-	{
-		Con_DPrintf("Failed to parse JSON or JSON is not an array.\n");
-		if (json) JSON_Free(json);
-		return;
-	}
-
-	const jsonentry_t* serverEntry;
-	for (serverEntry = json->root->firstchild; serverEntry; serverEntry = serverEntry->next)
-	{
-		const char* name = JSON_FindString(serverEntry, "hostname");
-		const char* address = JSON_FindString(serverEntry, "address");
-		const double* maxPlayers = JSON_FindNumber(serverEntry, "maxPlayers");
-		const char* map = JSON_FindString(serverEntry, "map");
-		const char* parameters = JSON_FindString(serverEntry, "parameters");
-		const double* gameId = JSON_FindNumber(serverEntry, "gameId");
-		const double* port = JSON_FindNumber(serverEntry, "port");
-		const char* timestamp = JSON_FindString(serverEntry, "timestamp");
-		const char* lastQuery = JSON_FindString(serverEntry, "lastQuery");
-
-		const jsonentry_t* playersArray = JSON_Find(serverEntry, "players", JSON_ARRAY);
-
-		int numPlayers = 0;
-		if (playersArray)
-		{
-			const jsonentry_t* playerEntry;
-			for (playerEntry = playersArray->firstchild; playerEntry; playerEntry = playerEntry->next) 
-			{
-				numPlayers++;
-			}
-		}
-
-		qboolean status;
-		setStatusFlagBasedOnTimestamp(timestamp, lastQuery, &status);
-
-		if (!status || !name || !address || !port || !gameId || (*gameId != 0 && (*gameId != 5 || !parameters || !strstr(parameters, "fte")))) continue; // Skip if essential info is missing or server is down
-
-		*items = realloc(*items, sizeof(servertitem_t) * (*actualServerCount + 1));
-		if (!*items) {
-			Con_DPrintf("Memory allocation failed.\n");
-			break;
-		}
-
-		size_t addressLength = strlen(address) + 1 /* colon */ + 6 /* max length of port number */ + 1 /* null terminator */;
-		char* addressWithPort = malloc(addressLength);
-		if (!addressWithPort) {
-			Con_DPrintf("Memory allocation for address with port failed.\n");
-			break;
-		}
-		q_snprintf(addressWithPort, addressLength, "%s:%d", address, (int)*port);
-
-		servertitem_t* newItem = &(*items)[*actualServerCount];
-		newItem->name = strdup(name ? name : "Unknown");
-		newItem->ip = strdup(addressWithPort);
-		free(addressWithPort);
-		newItem->users = numPlayers;
-		newItem->maxusers = maxPlayers ? (int)*maxPlayers : 0;
-		newItem->map = strdup(map ? map : "Unknown");
-		newItem->active = true;
-		newItem->ping = -1;
-
-		(*actualServerCount)++;
-	}
-
-	JSON_Free(json);
-}
-
-void CurlServerList (servertitem_t** items, int* actualServerCount) 
-{
-	CURL* curl;
-	CURLcode res;
-	struct MemoryStruct chunk;
-
-	chunk.memory = malloc(1);  // Initial allocation
-	chunk.size = 0;    // No data at this point
-
-	curl_global_init(CURL_GLOBAL_ALL);
-	curl = curl_easy_init();
-
-	if (curl) 
-	{
-		curl_easy_setopt(curl, CURLOPT_URL, "https://servers.quakeone.com/api/servers/status");
-		curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteMemoryCallback);
-		curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void*)&chunk);
-		curl_easy_setopt(curl, CURLOPT_USERAGENT, "libcurl-agent/1.0");
-
-		res = curl_easy_perform(curl);
-		if (res != CURLE_OK)
-			Con_DPrintf("curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
-		else
-			populateServersFromJSON(chunk.memory, items, actualServerCount);
-
-		free(chunk.memory);
-		curl_easy_cleanup(curl);
-	}
-
-	curl_global_cleanup();
-}
-
 int compareServerUsers (const void* a, const void* b) 
 {
 	const servertitem_t* serverA = (const servertitem_t*)a;
@@ -13442,8 +13382,12 @@ void FetchAndSortServers (void)
 	serversmenu.items = NULL;
 	int actualServerCount = 0;
 
-	for (int i = 0; i < HOSTCACHESIZE; i++) // Fetch and add servers from the dp list
+	for (int i = 0; i < (int)hostCacheCount; i++) // Add results from the current network search
 	{
+		// LAN's compact reply has no game metadata; its query uses a private tag.
+		if (!M_SearchResultMatchesGame((size_t)i))
+			continue;
+
 		const char* serverName = NET_SlistPrintServerInfo(i, SERVER_NAME);
 		const char* serverIP = NET_SlistPrintServerInfo(i, SERVER_CNAME);
 		int users = atoi(NET_SlistPrintServerInfo(i, SERVER_USERS));
@@ -13471,8 +13415,6 @@ void FetchAndSortServers (void)
 		}
 	}
 
-	if (searchLastScope == SLIST_INTERNET)
-	CurlServerList (&serversmenu.items, &actualServerCount);// fetch and add servers from the server.quakeone.com json API
 
 	RemoveDuplicateServers(&serversmenu.items, &actualServerCount);
 
@@ -14537,12 +14479,12 @@ void M_Demos_Draw (void)
         
         if (di->map[0] && di->duration[0] && di->filesize[0])
         {
-            M_Print(x, current_y, va("%s (%s) - %s", di->map, di->duration, di->filesize));
+            M_Print(x, current_y, va(LOC_GetStringOr("$DEMO_MAP_DURATION_SIZE", "%s (%s) - %s"), di->map, di->duration, di->filesize));
             current_y += 8;
         }
         else if (di->map[0] && di->duration[0])
         {
-            M_Print(x, current_y, va("%s (%s)", di->map, di->duration));
+            M_Print(x, current_y, va(LOC_GetStringOr("$DEMO_MAP_DURATION", "%s (%s)"), di->map, di->duration));
             current_y += 8;
         }
         else if (di->map[0])
@@ -14552,7 +14494,7 @@ void M_Demos_Draw (void)
         }
         else if (di->duration[0])
         {
-            M_Print(x, current_y, va("Duration: %s", di->duration));
+            M_Print(x, current_y, va(LOC_GetStringOr("$DEMO_DURATION", "Duration: %s"), di->duration));
             current_y += 8;
         }
         
@@ -15676,7 +15618,7 @@ void M_CheckMods(void) // woods #modsmenu (iw)
 		sgl_hashes[] = { 0x7bba813d }
 	;
 
-	m_main_mods = M_CheckCustomGfx("gfx/a_mods/amods1.png",
+	m_main_mods = M_CheckCustomGfx("gfx/a_mods/amods1.lmp",
 		"gfx/mainmenu.lmp", 26888, main_hashes, countof(main_hashes));
 
 	m_main_demos = M_CheckCustomGfx("gfx/a_demos/ademos1.lmp", // woods #demosmenu

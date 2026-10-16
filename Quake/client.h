@@ -233,6 +233,8 @@ typedef struct
 // information for local display
 	int			stats[MAX_CL_STATS];	// health, etc
 	float		statsf[MAX_CL_STATS];
+	float		viewoffset_smooth;	// filtered first-person vertical eye offset
+	qboolean	viewoffset_smooth_initialized;
 	char		*statss[MAX_CL_STATS];
 	int			items;			// inventory bit flags
 	float	item_gettime[32];	// cl.time of aquiring item, for blinking

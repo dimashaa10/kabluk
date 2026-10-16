@@ -16,7 +16,7 @@ static char default_cfg[] =
 "bind e +moveup\n"
 "bind c +movedown\n"
 "bind SHIFT +speed\n"
-"bind CTRL +attack\n"
+"bind CTRL +movedown\n"
 "bind UPARROW +forward\n"
 "bind w +forward\n"
 "bind DOWNARROW +back\n"
@@ -25,6 +25,7 @@ static char default_cfg[] =
 "bind RIGHTARROW +right\n"
 
 "bind SPACE +jump\n"
+"bind x +skate_slide\n"
 
 "bind TAB +showscores\n"
 

@@ -23,7 +23,7 @@ compile() {
         -I"$repo/Quake" -I"$repo/Windows/SDL2/include" -I"$repo/Windows/zlib/include" \
         -I"$repo/Windows/curl/include" -I"$work" -ffunction-sections -fdata-sections "$@"
 }
-for source in sv_user mathlib chase gl_rmain; do
+for source in sv_user sv_phys mathlib chase gl_rmain; do
     compile -c "$repo/Quake/$source.c" -o "$work/$source.o"
 done
 compile "$repo/tests/test_cigarette_impulse.c" "$work/sv_user.o" "$work/mathlib.o" \
@@ -32,10 +32,17 @@ compile "$repo/tests/test_cigarette_impulse.c" "$work/sv_user.o" "$work/mathlib.
 compile "$repo/tests/test_cigarette_smoke.c" "$work/chase.o" \
     ${LDFLAGS:-} -Wl,--gc-sections -lm -o "$work/cigarette_smoke"
 "$work/cigarette_smoke"
-compile "$repo/tests/test_skate_server.c" "$work/sv_user.o" "$work/mathlib.o" \
+compile "$repo/tests/test_skate_server.c" "$work/sv_user.o" "$work/sv_phys.o" "$work/mathlib.o" \
     ${LDFLAGS:-} -Wl,--gc-sections -lm -o "$work/skate_server"
 "$work/skate_server"
+compile "$repo/tests/test_crouch_server.c" "$work/sv_user.o" \
+    ${LDFLAGS:-} -Wl,--gc-sections -lm -o "$work/crouch_server"
+"$work/crouch_server"
 # The pre-existing renderer has an unused model_matrix local unrelated to these tests.
 compile -Wno-unused-variable "$repo/tests/test_skate_client.c" "$work/chase.o" "$work/mathlib.o" "$work/gl_rmain.o" \
     ${LDFLAGS:-} -Wl,--gc-sections -lm -o "$work/skate_client"
 "$work/skate_client"
+compile -c "$repo/Quake/wad.c" -o "$work/wad.o"
+compile "$repo/tests/test_wad3.c" "$work/wad.o" \
+    ${LDFLAGS:-} -Wl,--gc-sections -o "$work/wad3"
+"$work/wad3"

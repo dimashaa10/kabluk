@@ -36,6 +36,7 @@ qpic_t		*draw_backtile;
 qboolean	custom_conchars; // woods (iw) #democontrols
 
 gltexture_t *char_texture; //johnfitz
+gltexture_t *cyrillic_texture; // optional UTF-8 Cyrillic glyph atlas
 qpic_t		*pic_ovr, *pic_ins; //johnfitz -- new cursor handling
 qpic_t		*pic_nul; //johnfitz -- for missing gfx, don't crash
 
@@ -132,6 +133,8 @@ typedef struct cachepic_s
 #define	MAX_CACHED_PICS		512	//Spike -- increased to avoid csqc issues.
 cachepic_t	menu_cachepics[MAX_CACHED_PICS];
 int			menu_numcachepics;
+static qboolean draw_initialized;
+static qboolean draw_reloading_localized_pics;
 
 byte		menuplyr_pixels[4096];
 
@@ -231,8 +234,14 @@ qpic_t *Draw_PicFromWad2 (const char *name, unsigned int texflags)
 	glpic_t	gl;
 	src_offset_t offset; //johnfitz
 	lumpinfo_t *info;
+	const byte *wad_palette = NULL;
+	unsigned int wad_palette_colors = 0;
+	qboolean has_wad_palette = false;
+	size_t pixel_count;
 
 	texflags |= (premul_hud?TEXPREF_PREMULTIPLY:0);
+	if (draw_reloading_localized_pics)
+		texflags |= TEXPREF_OVERWRITE;
 
 	//Spike -- added cachepic stuff here, to avoid glitches if the function is called multiple times with the same image.
 	for (pic=menu_cachepics, i=0 ; i<menu_numcachepics ; pic++, i++)
@@ -251,8 +260,15 @@ qpic_t *Draw_PicFromWad2 (const char *name, unsigned int texflags)
 	}
 	if (info->type != TYP_QPIC) {Con_SafePrintf ("Draw_PicFromWad: lump \"%s\" is not a qpic\n", name); return pic_nul;}
 	if (info->size < sizeof(int)*2) {Con_SafePrintf ("Draw_PicFromWad: pic \"%s\" is too small for its qpic header (%u bytes)\n", name, info->size); return pic_nul;}
-	if (info->size < sizeof(int)*2+p->width*p->height) {Con_SafePrintf ("Draw_PicFromWad: pic \"%s\" truncated (%u*%u requires %u at least bytes)\n", name, p->width,p->height, 8+p->width*p->height); return pic_nul;}
-	if (info->size > sizeof(int)*2+p->width*p->height) Con_DPrintf ("Draw_PicFromWad: pic \"%s\" over-sized (%u*%u requires only %u bytes)\n", name, p->width,p->height, 8+p->width*p->height);
+	if (!p->width || !p->height || (size_t)p->width > (size_t)-1 / (size_t)p->height)
+	{ Con_SafePrintf ("Draw_PicFromWad: pic \"%s\" has invalid dimensions\n", name); return pic_nul; }
+	pixel_count = (size_t)p->width * p->height;
+	if (pixel_count > info->size - sizeof(int)*2)
+	{ Con_SafePrintf ("Draw_PicFromWad: pic \"%s\" truncated (%u*%u requires %u at least bytes)\n", name, p->width,p->height, (unsigned)(sizeof(int)*2+pixel_count)); return pic_nul; }
+	if (wad_version == WAD_VERSION_3)
+		has_wad_palette = WAD_ParsePalette((const byte *)p, info->size, sizeof(int)*2+pixel_count, &wad_palette, &wad_palette_colors);
+	if (info->size > sizeof(int)*2+pixel_count && !has_wad_palette)
+		Con_DPrintf ("Draw_PicFromWad: pic \"%s\" over-sized (%u*%u requires only %u bytes)\n", name, p->width,p->height, (unsigned)(sizeof(int)*2+pixel_count));
 
 	//Spike -- if we're loading external images, and one exists, then use that instead.
 	if (draw_load24bit && (gl.gltexture=TexMgr_LoadImage (NULL, name, 0, 0, SRC_EXTERNAL, NULL, va("gfx/%s", name), 0, texflags|TEXPREF_MIPMAP|TEXPREF_ALLOWMISSING)))
@@ -262,8 +278,8 @@ qpic_t *Draw_PicFromWad2 (const char *name, unsigned int texflags)
 		gl.tl = 0;
 		gl.th = (texflags&TEXPREF_PAD)?(float)gl.gltexture->source_height/(float)TexMgr_PadConditional(gl.gltexture->source_height):1;
 	}
-	// load little ones into the scrap
-	else if (p->width < 64 && p->height < 64 && texflags==((premul_hud?TEXPREF_PREMULTIPLY:0)|TEXPREF_ALPHA | TEXPREF_PAD | TEXPREF_NOPICMIP))
+	// load little ones into the scrap; WAD3 images need their own palette.
+	else if (!has_wad_palette && p->width < 64 && p->height < 64 && texflags==((premul_hud?TEXPREF_PREMULTIPLY:0)|TEXPREF_ALPHA | TEXPREF_PAD | TEXPREF_NOPICMIP))
 	{
 		int		x, y;
 		int		i, j, k;
@@ -289,10 +305,23 @@ qpic_t *Draw_PicFromWad2 (const char *name, unsigned int texflags)
 		char texturename[64]; //johnfitz
 		q_snprintf (texturename, sizeof(texturename), "%s:%s", WADFILENAME, name); //johnfitz
 
-		offset = (src_offset_t)p - (src_offset_t)wad_base + sizeof(int)*2; //johnfitz
-
-		gl.gltexture = TexMgr_LoadImage (NULL, texturename, p->width, p->height, SRC_INDEXED, p->data, WADFILENAME,
-										  offset, texflags); //johnfitz -- TexMgr
+		if (has_wad_palette)
+		{
+			byte *rgba;
+			if (pixel_count > (size_t)-1 / 4)
+				return pic_nul;
+			rgba = (byte *)Hunk_AllocName(pixel_count * 4, "wad3_pic");
+			WAD_ConvertIndexedToRGBA(p->data, pixel_count, wad_palette, wad_palette_colors,
+				(texflags & TEXPREF_ALPHA) ? 255 : -1, rgba);
+			gl.gltexture = TexMgr_LoadImage(NULL, texturename, p->width, p->height, SRC_RGBA,
+				rgba, "", (src_offset_t)rgba, texflags);
+		}
+		else
+		{
+			offset = (src_offset_t)p - (src_offset_t)wad_base + sizeof(int)*2; //johnfitz
+			gl.gltexture = TexMgr_LoadImage (NULL, texturename, p->width, p->height, SRC_INDEXED, p->data, WADFILENAME,
+											  offset, texflags); //johnfitz -- TexMgr
+		}
 		gl.sl = 0;
 		gl.sh = (texflags&TEXPREF_PAD)?(float)p->width/(float)TexMgr_PadConditional(p->width):1; //johnfitz
 		gl.tl = 0;
@@ -326,6 +355,37 @@ qpic_t	*Draw_GetCachedPic (const char *path)
 }
 
 /*
+=============
+Draw_GetLocalizedPicPath
+
+Maps gfx/foo/bar.ext to gfx/<language>/foo/bar.ext, e.g. gfx/a_cstm/acstm1.png to gfx/ru/a_cstm/acstm1.png.
+The localized file tree is rooted at the active game directory.
+=============
+*/
+static qboolean Draw_GetLocalizedPicPath(const char *path, char *localized_path, size_t path_size)
+{
+	const char *relative_path;
+	int len;
+
+	if (!path || !localized_path || !path_size || strncmp(path, "gfx/", 4))
+		return false;
+
+	relative_path = path + 4;
+	if (!*relative_path || strstr(relative_path, "..") ||
+		!strncmp(relative_path, "ru/", 3) || !strncmp(relative_path, "en/", 3))
+		return false;
+
+	len = q_snprintf(localized_path, path_size, "gfx/%s/%s", LOC_GetLanguageCode(), relative_path);
+	if (len < 0 || (size_t)len >= path_size)
+	{
+		localized_path[0] = 0;
+		return false;
+	}
+
+	return true;
+}
+
+/*
 ================
 Draw_CachePic
 ================
@@ -337,8 +397,21 @@ qpic_t	*Draw_TryCachePic (const char *path, unsigned int texflags)
 	qpic_t		*dat;
 	glpic_t		gl;
 	char newname[MAX_QPATH];
+	char localized_path[MAX_QPATH];
+	const char *picpath = path;
+	qboolean has_localized_path;
+	qboolean localized_file_exists = false;
 
 	texflags |= (premul_hud?TEXPREF_PREMULTIPLY:0);
+	if (draw_reloading_localized_pics)
+		texflags |= TEXPREF_OVERWRITE;
+
+	has_localized_path = Draw_GetLocalizedPicPath(path, localized_path, sizeof(localized_path));
+	if (has_localized_path && COM_FileExists(localized_path, NULL))
+	{
+		localized_file_exists = true;
+		picpath = localized_path;
+	}
 
 	for (pic=menu_cachepics, i=0 ; i<menu_numcachepics ; pic++, i++)
 	{
@@ -353,8 +426,20 @@ qpic_t	*Draw_TryCachePic (const char *path, unsigned int texflags)
 	if (strcmp("lmp", COM_FileGetExtension(path)))
 	{
 		char npath[MAX_QPATH];
-		COM_StripExtension(path, npath, sizeof(npath));
-		gl.gltexture = TexMgr_LoadImage (NULL, npath, 0, 0, SRC_EXTERNAL, NULL, npath, 0, texflags);
+		char localized_name[MAX_QPATH];
+
+		gl.gltexture = NULL;
+		if (has_localized_path)
+		{
+			COM_StripExtension(localized_path, localized_name, sizeof(localized_name));
+			gl.gltexture = TexMgr_LoadImage(NULL, localized_name, 0, 0, SRC_EXTERNAL, NULL,
+				localized_name, 0, texflags | TEXPREF_ALLOWMISSING);
+		}
+		if (!gl.gltexture)
+		{
+			COM_StripExtension(path, npath, sizeof(npath));
+			gl.gltexture = TexMgr_LoadImage(NULL, npath, 0, 0, SRC_EXTERNAL, NULL, npath, 0, texflags);
+		}
 
 		pic->pic.width = gl.gltexture->width;
 		pic->pic.height = gl.gltexture->height;
@@ -368,10 +453,17 @@ qpic_t	*Draw_TryCachePic (const char *path, unsigned int texflags)
 		return &pic->pic;
 	}
 
+	/* Quake LMP UI pictures use palette index 255 as transparency. Keep an
+	 * alpha-capable texture for gfx LMPs so that the palette key is preserved. */
+	if (!strncmp(path, "gfx/", 4))
+		texflags |= TEXPREF_ALPHA;
+
 //
-// load the pic from disk
+// load the pic from disk, preferring the language-specific loose/pack file
 //
-	dat = (qpic_t *)COM_LoadTempFile (path, NULL);
+	dat = (qpic_t *)COM_LoadTempFile (picpath, NULL);
+	if (!dat && picpath != path)
+		dat = (qpic_t *)COM_LoadTempFile(path, NULL);
 	if (!dat)
 		return NULL;
 	SwapPic (dat);
@@ -386,8 +478,21 @@ qpic_t	*Draw_TryCachePic (const char *path, unsigned int texflags)
 	pic->pic.height = dat->height;
 
 	//Spike -- if we're loading external images, and one exists, then use that instead (but with the sizes of the lmp).
-	COM_StripExtension(path, newname, sizeof(newname));
-	if (draw_load24bit && (gl.gltexture=TexMgr_LoadImage (NULL, path, 0, 0, SRC_EXTERNAL, NULL, newname, 0, texflags|TEXPREF_MIPMAP|TEXPREF_ALLOWMISSING|TEXPREF_CLAMP))) // woods iw add clamp
+	COM_StripExtension(picpath, newname, sizeof(newname));
+	gl.gltexture = NULL;
+	/* Localized external formats (PNG/BMP/TGA, etc.) can replace an LMP even when 24-bit HUD replacements are disabled. */
+	if (has_localized_path && (draw_load24bit || !localized_file_exists))
+	{
+		char localized_name[MAX_QPATH];
+		COM_StripExtension(localized_path, localized_name, sizeof(localized_name));
+		gl.gltexture = TexMgr_LoadImage(NULL, localized_name, 0, 0, SRC_EXTERNAL, NULL,
+			localized_name, 0, texflags | TEXPREF_MIPMAP | TEXPREF_ALLOWMISSING | TEXPREF_CLAMP);
+	}
+	if (!gl.gltexture && draw_load24bit)
+		gl.gltexture = TexMgr_LoadImage(NULL, picpath, 0, 0, SRC_EXTERNAL, NULL, newname, 0,
+			texflags | TEXPREF_MIPMAP | TEXPREF_ALLOWMISSING | TEXPREF_CLAMP);
+
+	if (gl.gltexture)
 	{
 		gl.sl = 0;
 		gl.sh = (texflags&TEXPREF_PAD)?(float)gl.gltexture->source_width/(float)TexMgr_PadConditional(gl.gltexture->source_width):1;
@@ -396,7 +501,7 @@ qpic_t	*Draw_TryCachePic (const char *path, unsigned int texflags)
 	}
 	else
 	{
-		gl.gltexture = TexMgr_LoadImage (NULL, path, dat->width, dat->height, SRC_INDEXED, dat->data, path,
+		gl.gltexture = TexMgr_LoadImage (NULL, picpath, dat->width, dat->height, SRC_INDEXED, dat->data, picpath,
 										  sizeof(int)*2, texflags | TEXPREF_NOPICMIP | TEXPREF_CLAMP); //johnfitz -- TexMgr -- woods iw add clamp
 		gl.sl = 0;
 		gl.sh = (texflags&TEXPREF_PAD)?(float)dat->width/(float)TexMgr_PadConditional(dat->width):1; //johnfitz
@@ -459,7 +564,8 @@ void Draw_LoadPics (void)
 	lumpinfo_t *info;
 	extern cvar_t gl_load24bit;
 
-	const unsigned int conchar_texflags = (premul_hud?TEXPREF_PREMULTIPLY:0)|TEXPREF_ALPHA | TEXPREF_NOPICMIP | TEXPREF_CONCHARS;	//Spike - we use nearest with 8bit, but not replacements. replacements also use mipmaps because they're just noise otherwise.
+	const unsigned int conchar_texflags = (premul_hud?TEXPREF_PREMULTIPLY:0)|TEXPREF_ALPHA | TEXPREF_NOPICMIP | TEXPREF_CONCHARS |
+		(draw_reloading_localized_pics ? TEXPREF_OVERWRITE : 0);	//Spike - we use nearest with 8bit, but not replacements. replacements also use mipmaps because they're just noise otherwise.
 
 	if (gl_load24bit.value > 0 && gl_load24bit_hud.value) // woods #24bithud
 		draw_load24bit = true;
@@ -480,13 +586,39 @@ void Draw_LoadPics (void)
 	if (!char_texture)
 	{
 		data = (byte *) W_GetLumpName ("conchars", &info);
-		if (!data || info->size < 128*128)	Sys_Error ("Draw_LoadPics: couldn't load conchars");
-		if (info->size != 128*128)			Con_Warning("Invalid size for gfx.wad conchars lump (%u, expected %u) - attempting to ignore for compat.\n", info->size, 128*128);
-		else if (info->type != TYP_MIPTEX)	Con_DWarning("Invalid type for gfx.wad conchars lump - attempting to ignore for compat.\n"); //not really a miptex, but certainly NOT a qpic.
-		offset = (src_offset_t)data - (src_offset_t)wad_base;
-		char_texture = TexMgr_LoadImage (NULL, WADFILENAME":conchars", 128, 128, SRC_INDEXED, data,
-			WADFILENAME, offset, conchar_texflags | TEXPREF_NEAREST);
+		if (!data)
+			Sys_Error ("Draw_LoadPics: couldn't load conchars");
+
+		if (wad_version == WAD_VERSION_3 && info->type == TYP_WAD3_MIPTEX)
+		{
+			wadmiptex_t miptex;
+			byte *rgba;
+			if (!WAD_ExtractMipTex(data, info->size, &miptex) ||
+				miptex.width != 128 || miptex.height != 128 || !miptex.palette)
+				Sys_Error("Draw_LoadPics: invalid WAD3 conchars texture");
+			rgba = (byte *)Hunk_AllocName(miptex.pixel_count * 4, "wad3_conchars");
+			WAD_ConvertIndexedToRGBA(miptex.pixels, miptex.pixel_count,
+				miptex.palette, miptex.palette_colors, 0, rgba);
+			char_texture = TexMgr_LoadImage(NULL, WADFILENAME":conchars", 128, 128, SRC_RGBA, rgba,
+				"", (src_offset_t)rgba, conchar_texflags | TEXPREF_NEAREST);
+		}
+		else
+		{
+			if (info->size < 128*128)	Sys_Error ("Draw_LoadPics: couldn't load conchars");
+			if (info->size != 128*128)			Con_Warning("Invalid size for gfx.wad conchars lump (%u, expected %u) - attempting to ignore for compat.\n", info->size, 128*128);
+			else if (info->type != TYP_MIPTEX)	Con_DWarning("Invalid type for gfx.wad conchars lump - attempting to ignore for compat.\n"); //not really a miptex, but certainly NOT a qpic.
+			offset = (src_offset_t)data - (src_offset_t)wad_base;
+			char_texture = TexMgr_LoadImage (NULL, WADFILENAME":conchars", 128, 128, SRC_INDEXED, data,
+				WADFILENAME, offset, conchar_texflags | TEXPREF_NEAREST);
+		}
 	}
+
+	// The separate atlas keeps the legacy 256 Quake conchars cells untouched.
+	cyrillic_texture = TexMgr_LoadImage(NULL, "gfx/conchars_ru", 0, 0, SRC_EXTERNAL, NULL,
+		"gfx/conchars_ru", 0,
+		(premul_hud ? TEXPREF_PREMULTIPLY : 0) | TEXPREF_ALPHA | TEXPREF_NOPICMIP |
+		TEXPREF_MIPMAP | TEXPREF_CLAMP | TEXPREF_ALLOWMISSING |
+		(draw_reloading_localized_pics ? TEXPREF_OVERWRITE : 0));
 
 	draw_disc = Draw_PicFromWad ("disc");
 	draw_backtile = Draw_PicFromWad2 ("backtile", TEXPREF_NOPICMIP);	//do NOT use PAD because that breaks wrapping. do NOT use alpha, because that could result in glitches.
@@ -519,6 +651,16 @@ void Draw_NewGame (void)
 	SCR_LoadPics ();
 	Sbar_LoadPics ();
 	PR_ReloadPics(false);
+}
+
+void Draw_ReloadLocalizedPics(void)
+{
+	if (!draw_initialized)
+		return;
+
+	draw_reloading_localized_pics = true;
+	Draw_NewGame();
+	draw_reloading_localized_pics = false;
 }
 
 qboolean Draw_ReloadTextures(qboolean force)
@@ -565,6 +707,7 @@ void Draw_Init (void)
 
 	// load game pics
 	Draw_LoadPics ();
+	draw_initialized = true;
 }
 
 //==============================================================================
@@ -578,13 +721,14 @@ void Draw_Init (void)
 Draw_CharacterQuad -- johnfitz -- seperate function to spit out verts
 ================
 */
-void Draw_CharacterQuad (int x, int y, char num)
+void Draw_CharacterQuad (int x, int y, int num)
 {
 	int				row, col;
 	float			frow, fcol, size;
 
-	row = num>>4;
-	col = num&15;
+	num &= 255;
+	row = num >> 4;
+	col = num & 15;
 
 	frow = row*0.0625;
 	fcol = col*0.0625;
@@ -724,70 +868,234 @@ void Draw_Character_Rotation (int x, int y, int num, int rotation) // woods #mov
 	glPopMatrix(); // Restore the previous transformation state
 }
 
-/*
-================
-Draw_String -- johnfitz -- modified to call Draw_CharacterQuad
-================
-*/
-void Draw_String (int x, int y, const char *str)
+#define DRAW_RAW_UTF8_BASE 0x110000u
+
+static uint32_t Draw_UTF8NextCodepoint(const char **text)
 {
-	//if (y <= -8) // woods enabled for more printing options #varmatchclock
-	//	return;			// totally off screen
+	const unsigned char *s = (const unsigned char *)*text;
+	uint32_t cp;
 
-	GL_Bind (char_texture);
-	glBegin (GL_QUADS);
-
-	while (*str)
+	if (!s || !*s)
+		return 0;
+	if (s[0] < 0x80)
 	{
-		if (*str != 32) //don't waste verts on spaces
-			Draw_CharacterQuad (x, y, *str);
-		str++;
-		x += 8;
+		*text += 1;
+		return s[0];
 	}
 
-	glEnd ();
+	if (s[0] >= 0xC2 && s[0] <= 0xDF && (s[1] & 0xC0) == 0x80)
+	{
+		cp = ((uint32_t)(s[0] & 0x1F) << 6) | (s[1] & 0x3F);
+		*text += 2;
+		return cp;
+	}
+	if (s[0] >= 0xE0 && s[0] <= 0xEF && s[1] && s[2] &&
+		(s[1] & 0xC0) == 0x80 && (s[2] & 0xC0) == 0x80 &&
+		!(s[0] == 0xE0 && s[1] < 0xA0) && !(s[0] == 0xED && s[1] >= 0xA0))
+	{
+		cp = ((uint32_t)(s[0] & 0x0F) << 12) | ((uint32_t)(s[1] & 0x3F) << 6) | (s[2] & 0x3F);
+		*text += 3;
+		return cp;
+	}
+	if (s[0] >= 0xF0 && s[0] <= 0xF4 && s[1] && s[2] && s[3] &&
+		(s[1] & 0xC0) == 0x80 && (s[2] & 0xC0) == 0x80 && (s[3] & 0xC0) == 0x80 &&
+		!(s[0] == 0xF0 && s[1] < 0x90) && !(s[0] == 0xF4 && s[1] > 0x8F))
+	{
+		cp = ((uint32_t)(s[0] & 0x07) << 18) | ((uint32_t)(s[1] & 0x3F) << 12) |
+			((uint32_t)(s[2] & 0x3F) << 6) | (s[3] & 0x3F);
+		*text += 4;
+		return cp;
+	}
+
+	// Preserve invalid/legacy high bytes as their original Quake glyph indices.
+	*text += 1;
+	return DRAW_RAW_UTF8_BASE + s[0];
 }
 
-/*
-================
-Draw_StringRGBA -- woods
-================
-*/
-void Draw_StringRGBA (int x, int y, const char* str, plcolour_t c, float alpha)
+const char *Draw_UTF8NextChar(const char *text)
 {
-	//if (y <= -8) // woods enabled for more printing options #varmatchclock
-	//	return;			// totally off screen
+	const char *next = text;
+	if (text && *text)
+		(void)Draw_UTF8NextCodepoint(&next);
+	return next;
+}
 
-	glEnable(GL_BLEND);
+static qboolean Draw_CyrillicGlyphIndex(uint32_t codepoint, int *glyph)
+{
+	if (codepoint >= 0x0410 && codepoint <= 0x042F)
+		*glyph = (int)(codepoint - 0x0410);
+	else if (codepoint >= 0x0430 && codepoint <= 0x044F)
+		*glyph = 32 + (int)(codepoint - 0x0430);
+	else if (codepoint == 0x0401)
+		*glyph = 64;
+	else if (codepoint == 0x0451)
+		*glyph = 65;
+	else
+		return false;
 
+	return true;
+}
+
+static void Draw_SetTextColour(plcolour_t c, float alpha)
+{
 	if (c.type == 2)
-		glColor4f(c.rgb[0] / 255.0, c.rgb[1] / 255.0, c.rgb[2] / 255.0, alpha);
+		glColor4f(c.rgb[0] / 255.0f, c.rgb[1] / 255.0f, c.rgb[2] / 255.0f, alpha);
 	else
 	{
-		byte* pal = (byte*)&d_8to24table[(c.basic << 4) + 8];
-		glColor4f(pal[0] / 255.0, pal[1] / 255.0, pal[2] / 255.0, alpha);
+		byte *pal = (byte *)&d_8to24table[(c.basic << 4) + 8];
+		glColor4f(pal[0] / 255.0f, pal[1] / 255.0f, pal[2] / 255.0f, alpha);
 	}
+}
 
+static void Draw_CyrillicGlyphRaw(int x, int y, int glyph)
+{
+	GL_Bind(cyrillic_texture);
+	glBegin(GL_QUADS);
+	Draw_CharacterQuad(x, y, glyph);
+	glEnd();
+}
+
+static void Draw_CyrillicGlyphTinted(int x, int y, int glyph, plcolour_t colour, float alpha)
+{
+	if (!cyrillic_texture)
+		return;
+
+	glEnable(GL_BLEND);
 	glDisable(GL_ALPHA_TEST);
 	glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
-
-	GL_Bind(char_texture);
+	Draw_SetTextColour(colour, alpha);
+	GL_Bind(cyrillic_texture);
 	glBegin(GL_QUADS);
-
-	while (*str)
-	{
-		if (*str != 32) //don't waste verts on spaces
-			Draw_CharacterQuad(x, y, *str);
-		str++;
-		x += 8;
-	}
-
+	Draw_CharacterQuad(x, y, glyph);
 	glEnd();
-
 	glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
 	glEnable(GL_ALPHA_TEST);
 	glDisable(GL_BLEND);
 	glColor4f(1, 1, 1, 1);
+	GL_Bind(char_texture);
+}
+
+static void Draw_StringInternal(int x, int y, const char *str, qboolean masked, qboolean coloured, plcolour_t colour, float alpha)
+{
+	const char *cursor;
+	plcolour_t masked_cyrillic_colour;
+
+	if (!str)
+		return;
+	str = LOC_TranslateText(str);
+	if (!str)
+		return;
+	cursor = str;
+	masked_cyrillic_colour = Draw_GetConcharsAccentColor();
+
+	if (coloured)
+	{
+		glEnable(GL_BLEND);
+		glDisable(GL_ALPHA_TEST);
+		glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+		Draw_SetTextColour(colour, alpha);
+	}
+
+	GL_Bind(char_texture);
+	glBegin(GL_QUADS);
+	while (*cursor)
+	{
+		uint32_t codepoint = Draw_UTF8NextCodepoint(&cursor);
+		int glyph;
+
+		if (Draw_CyrillicGlyphIndex(codepoint, &glyph) && cyrillic_texture)
+		{
+			glEnd();
+			if (masked && !coloured)
+				Draw_CyrillicGlyphTinted(x, y, glyph, masked_cyrillic_colour, 1.0f);
+			else
+				Draw_CyrillicGlyphRaw(x, y, glyph);
+
+			GL_Bind(char_texture);
+			if (coloured)
+			{
+				glEnable(GL_BLEND);
+				glDisable(GL_ALPHA_TEST);
+				glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+				Draw_SetTextColour(colour, alpha);
+			}
+			glBegin(GL_QUADS);
+		}
+		else
+		{
+			if (codepoint >= DRAW_RAW_UTF8_BASE)
+				glyph = (int)(codepoint - DRAW_RAW_UTF8_BASE);
+			else if (codepoint <= 0x7F)
+				glyph = (int)codepoint;
+			else
+				glyph = '?';
+
+			if (masked)
+				glyph = (glyph + 128) & 255;
+			if (glyph != 32)
+				Draw_CharacterQuad(x, y, glyph);
+		}
+
+		x += 8;
+	}
+	glEnd();
+
+	if (coloured)
+	{
+		glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+		glEnable(GL_ALPHA_TEST);
+		glDisable(GL_BLEND);
+		glColor4f(1, 1, 1, 1);
+	}
+}
+
+/*
+================
+Draw_String -- johnfitz -- UTF-8-aware UI text
+================
+*/
+void Draw_String(int x, int y, const char *str)
+{
+	plcolour_t white = { .type = 2, .rgb = { 255, 255, 255 }, .basic = 0 };
+	Draw_StringInternal(x, y, str, false, false, white, 1.0f);
+}
+
+void Draw_StringMasked(int x, int y, const char *str)
+{
+	plcolour_t white = { .type = 2, .rgb = { 255, 255, 255 }, .basic = 0 };
+	Draw_StringInternal(x, y, str, true, false, white, 1.0f);
+}
+
+/*
+================
+Draw_StringRGBA -- UTF-8-aware colored text
+================
+*/
+void Draw_StringRGBA(int x, int y, const char *str, plcolour_t c, float alpha)
+{
+	Draw_StringInternal(x, y, str, false, true, c, alpha);
+}
+
+void Draw_StringMaskedRGBA(int x, int y, const char *str, plcolour_t c, float alpha)
+{
+	Draw_StringInternal(x, y, str, true, true, c, alpha);
+}
+
+int Draw_StringWidth(const char *str)
+{
+	const char *cursor;
+	int width = 0;
+
+	if (!str)
+		return 0;
+	cursor = LOC_TranslateText(str);
+	while (cursor && *cursor)
+	{
+		(void)Draw_UTF8NextCodepoint(&cursor);
+		if (width <= 0x7FFFFFF7)
+			width += 8;
+	}
+	return width;
 }
 
 static void Draw_BoostAccentRGB(int* r, int* g, int* b) // woods #goldtext

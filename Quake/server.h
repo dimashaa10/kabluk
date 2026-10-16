@@ -117,7 +117,25 @@ typedef struct
 
 #define	NUM_PING_TIMES		16
 #define	NUM_BASIC_SPAWN_PARMS		16
-#define	NUM_TOTAL_SPAWN_PARMS		64
+#define NUM_TOTAL_SPAWN_PARMS		64
+#define SV_CROUCH_MAX_SPEED		160.0f
+#define SV_CROUCH_TRANSITION_TIME	0.3f // quicker first-person crouch/stand movement
+#define SV_CROUCH_ANIM_FRAME_TIME	0.1f
+#define SV_CROUCH_DOWN_FIRST_FRAME	143
+#define SV_CROUCH_DOWN_LAST_FRAME	148
+#define SV_STAND_UP_FIRST_FRAME		183
+#define SV_STAND_UP_LAST_FRAME		188
+#define SV_CROUCH_MELEE_IDLE_FIRST	189
+#define SV_CROUCH_MELEE_IDLE_LAST	194
+#define SV_CROUCH_SHOOT_IDLE_FIRST	195
+#define SV_CROUCH_SHOOT_IDLE_LAST	199
+#define SV_CROUCH_IDLE_FRAME		200
+#define SV_CROUCH_WALK_FIRST_FRAME	201
+#define SV_CROUCH_WALK_LAST_FRAME	206
+#define SV_CROUCH_MELEE_WALK_FIRST	207
+#define SV_CROUCH_MELEE_WALK_LAST	213
+#define SV_CROUCH_SHOOT_WALK_FIRST	214
+#define SV_CROUCH_SHOOT_WALK_LAST	220
 
 typedef struct client_s
 {
@@ -220,6 +238,19 @@ typedef struct client_s
 	int lastmovemessage;
 	double lastmovetime;
 	qboolean usingpmove;	//using the SV_RunClientCommand entrypoint, or getting pmove thrust upon them serverside (disables sv_user.c+movetype stuff, enables provides pmove hints to the client)
+	qboolean crouched;		// crouch hull active during crouching/standing transition
+	qboolean crouch_wanted;	// current +movedown target
+	qboolean crouch_bounds_saved;
+	qboolean crouch_stand_blocked;
+	qboolean crouch_time_initialized;
+	float crouch_amount;		// 0 = standing, 1 = fully crouched
+	double crouch_last_update_time;
+	float crouch_stand_mins_z;	// standing bounds/view height saved on first crouch
+	float crouch_stand_maxs_z;
+	float crouch_stand_viewheight;
+	int crouch_anim_state;
+	int crouch_anim_frame;
+	double crouch_anim_next_frame_time;
 
 	char userinfo[1024];	//spike -- for csqc to (ab)use.
 	client_voip_t voip;	//spike -- for voip
@@ -249,6 +280,15 @@ typedef struct client_s
 	float			skate_yaw;
 	float			skate_lift;
 	qboolean		skate_grounded;		// rearm a flip only after touching ground
+	qboolean		skate_jump_active;	// airborne after a real jump, independent of flip animation
+	qboolean		skate_slide_armed;	// slide mode toggled by press; key-up does not disarm it
+	qboolean		skate_sliding;		// grind-latched to a brush upper edge until its end or toggle-off
+	vec3_t			skate_slide_normal;
+	edict_t			*skate_slide_surface;
+	float			skate_slide_edge_height;
+	int				skate_anim_state;
+	int				skate_anim_frame;
+	double			skate_anim_next_frame_time;
 	qboolean		skate_flip_active;
 	double			skate_flip_start_time;
 } client_t;
@@ -366,6 +406,8 @@ void SV_SetIdealPitch (void);
 void SV_AddUpdates (void);
 
 void SV_ClientThink (void);
+void SV_UpdateCrouch (client_t *client, edict_t *ent, float upmove);
+void SV_UpdateCrouchAnimation (client_t *client, edict_t *ent);
 void SV_AddClientToServer (struct qsocket_s	*ret);
 
 void SV_ClientPrintf (const char *fmt, ...) FUNC_PRINTF(1,2);
@@ -394,9 +436,15 @@ void SV_ProcessTimerExecution(void); // woods #svtimer
 void SV_CleanupTimer(void); // woods #svtimer
 
 void SV_Skate_f (void);
+void SV_SkateSlide_f (void);
+void SV_SkateSlideDown_f (void);
+void SV_SkateSlideUp_f (void);
 void SV_SkateStop (client_t *client);
 void SV_SkateUpdate (client_t *client);
 void SV_SkateMove (client_t *client, edict_t *ent, const usercmd_t *move, double dt);
+qboolean SV_SkateWallSlideMove (edict_t *ent);
+qboolean SV_SkateWallSlide (edict_t *ent, edict_t *surface, const vec3_t normal, const vec3_t incoming_velocity);
+qboolean SV_SkateWallBounce (edict_t *ent, const vec3_t normal, const vec3_t incoming_velocity);
 int SV_SkateStat (const client_t *client);
 qboolean SV_IsSkateBoard (const edict_t *ent);
 
