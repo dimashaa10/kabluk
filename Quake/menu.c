@@ -1788,7 +1788,7 @@ void M_Main_Draw (void) // woods #modsmenu #demosmenu (iw)
 	{
 		M_DrawSubpic(72, 32, p, 0, 0, p->width, split);
 		M_DrawTransPic(74, 92, Draw_CachePic(va("gfx/a_mods/amods%i.lmp", (int)(realtime * 1) % 2 + 1)));
-		M_DrawTransPic(72, 52 + split, Draw_CachePic(va("gfx/a_demos/ademos%i.lmp", (int)(realtime * 1) % 2 + 1)));
+		M_DrawTransPic(72, 52 + split, Draw_CachePic(va("gfx/a_demos/ademos%i.png", (int)(realtime * 1) % 2 + 1)));
 		M_DrawSubpic(72, 72 + split, p, 0, split, p->width, p->height - split);
 	}
 	
@@ -1803,7 +1803,7 @@ void M_Main_Draw (void) // woods #modsmenu #demosmenu (iw)
 	else if (m_main_demos && !m_main_mods) // only demos
 	{
 		M_DrawSubpic(72, 32 + offset, p, 0, 0, p->width, split);
-		M_DrawTransPic(72, 32 + offset + split, Draw_CachePic(va("gfx/a_demos/ademos%i.lmp", (int)(realtime * 1) % 2 + 1)));
+		M_DrawTransPic(72, 32 + offset + split, Draw_CachePic(va("gfx/a_demos/ademos%i.png", (int)(realtime * 1) % 2 + 1)));
 		M_DrawSubpic(72, 32 + offset + split + 20, p, 0, split, p->width, p->height - split);
 		offset += split + 20; // Adjust offset if needed for further items
 	}
@@ -2014,7 +2014,7 @@ void M_SinglePlayer_Draw(void)
 {
 	qpic_t* p;
 
-	p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.bmp", (int)(realtime * 8) % 24 + 1));
+	p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.png", (int)(realtime * 8) % 24 + 1));
 	M_DrawPic((320 - p->width) / 2, -64, p);
 
 	M_DrawTransPic(16, 4, Draw_CachePic("gfx/qplaque.pcx"));

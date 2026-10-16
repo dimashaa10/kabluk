@@ -2839,7 +2839,7 @@ void Sbar_IntermissionOverlay (void)
 	pic = Draw_CachePic(va("gfx/a_cmplt/acmplt%i.bmp", (int)(realtime * 2) % 5 + 1));
 	Draw_Pic (64, 24, pic);
 
-	pic = Draw_CachePic(va("gfx/a_inter/ainter%i.bmp", (int)(realtime * 1) % 2 + 1));
+	pic = Draw_CachePic(va("gfx/a_inter/ainter%i.png", (int)(realtime * 1) % 2 + 1));
 	Draw_Pic (0, 56, pic);
 
 	dig = cl.completed_time/60;
