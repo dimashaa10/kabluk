@@ -1252,10 +1252,9 @@ void CL_RelinkEntities (void)
 			//johnfitz -- assume muzzle flash accompanied by muzzle flare, which looks bad when lerped
 			if (r_lerpmodels.value < 2) // woods #lerp3
 			{
-				if (ent == &cl.entities[cl.viewentity])
-					cl.viewent.lerpflags |= LERP_RESETANIM|LERP_RESETANIM2; //no lerping for two frames
-				else
-					ent->lerpflags |= LERP_RESETANIM|LERP_RESETANIM2; //no lerping for two frames
+				// Keep the first-person weapon in the normal animation-lerp path.
+				// The muzzle-flare exception is only needed for the world entity.
+				ent->lerpflags |= LERP_RESETANIM|LERP_RESETANIM2; //no lerping for two world frames
 			}
 
 			if (r_lerpmodels.value == 3) // woods #lerp3 adjusted lerping for smoother non overlapped frames
@@ -1268,14 +1267,12 @@ void CL_RelinkEntities (void)
 						&& strcmp(cl.viewent.model->name, "progs/v_rock2.mdl")  // rl
 						&& strcmp(cl.viewent.model->name, "progs/v_light.mdl")) // lg
 					{
-						if (ent == &cl.entities[cl.viewentity])
-							cl.viewent.lerpflags |= LERP_RESETANIM | LERP_RESETANIM2; //no lerping for two frames
-						else
-							ent->lerpflags |= LERP_RESETANIM | LERP_RESETANIM2; //no lerping for two frames
+						// Do not restart the first-person weapon's frame lerp on a muzzleflash.
+						ent->lerpflags |= LERP_RESETANIM | LERP_RESETANIM2; //no lerping for two world frames
 					}
 
-				if (cl.viewent.frame < 1)
-					cl.viewent.lerpflags |= LERP_RESETANIM;
+				if (ent == &cl.entities[cl.viewentity] && cl.viewent.frame < 1)
+					ent->lerpflags |= LERP_RESETANIM;
 			}
 			//johnfitz
 		}

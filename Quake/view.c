@@ -907,6 +907,7 @@ void V_CalcRefdef (void)
 	vec3_t		forward, right, up;
 	vec3_t		angles;
 	float		bob;
+	float		viewheight;
 	static float oldz = 0;
 	static vec3_t punch = {0,0,0}; //johnfitz -- v_gunkick
 	float delta; //johnfitz -- v_gunkick
@@ -931,7 +932,14 @@ void V_CalcRefdef (void)
 
 // refresh position
 	VectorCopy (ent->origin, r_refdef.vieworg);
-	r_refdef.vieworg[2] += cl.stats[STAT_VIEWHEIGHT] + bob;
+	viewheight = cl.statsf[STAT_VIEWHEIGHT];
+	if (cl.viewheight_lerp_initialized)
+	{
+		float frac = CL_LerpPoint();
+		viewheight = cl.viewheight_lerp[1] +
+			frac * (cl.viewheight_lerp[0] - cl.viewheight_lerp[1]);
+	}
+	r_refdef.vieworg[2] += viewheight + bob;
 
 // never let it sit exactly on a node line, because a water plane can
 // dissapear when viewed with the eye exactly on it.

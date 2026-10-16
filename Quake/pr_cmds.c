@@ -36,6 +36,8 @@ char *PR_GetTempString (void)
 
 #define	RETURN_EDICT(e) (((int *)qcvm->globals)[OFS_RETURN] = EDICT_TO_PROG(e))
 
+static client_t *PF_ClientForEntity (edict_t *ent);
+
 /*
 ===============================================================================
 
@@ -744,6 +746,8 @@ static void PF_traceline (void)
 	trace_t	trace;
 	int	nomonsters;
 	edict_t	*ent;
+	client_t	*client;
+	vec3_t	trace_start, trace_end;
 
 	v1 = G_VECTOR(OFS_PARM0);
 	v2 = G_VECTOR(OFS_PARM1);
@@ -764,7 +768,23 @@ static void PF_traceline (void)
 	if (IS_NAN(v2[0]) || IS_NAN(v2[1]) || IS_NAN(v2[2]))
 		v2[0] = v2[1] = v2[2] = 0;
 
-	trace = SV_Move (v1, vec3_origin, vec3_origin, v2, nomonsters, ent);
+	VectorCopy(v1, trace_start);
+	VectorCopy(v2, trace_end);
+	client = PF_ClientForEntity(ent);
+	if (!nomonsters && client && ent->v.view_ofs[2] < DEFAULT_VIEWHEIGHT &&
+		client->edict->v.button0 &&
+		trace_start[2] - ent->v.origin[2] > -4 &&
+		trace_start[2] - ent->v.origin[2] < 40)
+	{
+		float crouch_offset = ent->v.view_ofs[2] - DEFAULT_VIEWHEIGHT;
+
+		// Hitscan weapon traces use hard-coded standing muzzle heights in many
+		// progs.dat files. Preserve their muzzle-to-eye offset while crouching.
+		trace_start[2] += crouch_offset;
+		trace_end[2] += crouch_offset;
+	}
+
+	trace = SV_Move (trace_start, vec3_origin, vec3_origin, trace_end, nomonsters, ent);
 
 	pr_global_struct->trace_allsolid = trace.allsolid;
 	pr_global_struct->trace_startsolid = trace.startsolid;
@@ -801,12 +821,25 @@ static void PF_checkpos (void)
 static byte	*checkpvs;	//ericw -- changed to malloc
 static int	checkpvs_capacity;
 
+static client_t *PF_ClientForEntity (edict_t *ent)
+{
+	int i;
+
+	if (!ent || !svs.clients)
+		return NULL;
+	for (i = 0; i < svs.maxclients; i++)
+		if (svs.clients[i].active && svs.clients[i].edict == ent)
+			return &svs.clients[i];
+	return NULL;
+}
+
 static int PF_newcheckclient (int check)
 {
-	int		i;
+	int		i, j;
 	byte	*pvs;
 	edict_t	*ent;
 	mleaf_t	*leaf;
+	client_t	*client;
 	vec3_t	org;
 	int	pvsbytes;
 
@@ -857,6 +890,20 @@ static int PF_newcheckclient (int check)
 			Sys_Error ("PF_newcheckclient: realloc() failed on %d bytes", checkpvs_capacity);
 	}
 	memcpy (checkpvs, pvs, pvsbytes);
+
+	client = PF_ClientForEntity(ent);
+	if (client && ent->v.view_ofs[2] < DEFAULT_VIEWHEIGHT)
+	{
+		// Classic monster QC often tests the target's PVS from a fixed standing
+		// eye height. Keep that candidate during crouch; its own visibility and
+		// attack traces still decide whether it can actually see/hit the player.
+		VectorCopy(ent->v.origin, org);
+		org[2] += DEFAULT_VIEWHEIGHT;
+		leaf = Mod_PointInLeaf(org, qcvm->worldmodel);
+		pvs = Mod_LeafPVS(leaf, qcvm->worldmodel);
+		for (j = 0; j < pvsbytes; j++)
+			checkpvs[j] |= pvs[j];
+	}
 
 	return i;
 }
@@ -1502,18 +1549,23 @@ cvar_t	sv_aim = {"sv_aim", "1", CVAR_NONE}; // ericw -- turn autoaim off by defa
 static void PF_aim (void)
 {
 	edict_t	*ent, *check, *bestent;
+	client_t	*client;
 	vec3_t	start, dir, end, bestdir;
 	int		i, j;
 	trace_t	tr;
 	float	dist, bestdist;
-	float	speed;
+	float	speed, aim_offset;
 
 	ent = G_EDICT(OFS_PARM0);
 	speed = G_FLOAT(OFS_PARM1);
 	(void) speed; /* variable set but not used */
 
 	VectorCopy (ent->v.origin, start);
-	start[2] += 20;
+	aim_offset = 20; // preserve Quake's original standing aim point
+	client = PF_ClientForEntity(ent);
+	if (client && ent->v.view_ofs[2] < DEFAULT_VIEWHEIGHT)
+		aim_offset += ent->v.view_ofs[2] - DEFAULT_VIEWHEIGHT;
+	start[2] += aim_offset;
 
 // try sending a trace straight
 	VectorCopy (pr_global_struct->v_forward, dir);

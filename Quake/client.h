@@ -233,6 +233,9 @@ typedef struct
 // information for local display
 	int			stats[MAX_CL_STATS];	// health, etc
 	float		statsf[MAX_CL_STATS];
+	float		viewheight_lerp[2];	// [0] newest, [1] previous server samples
+	double		viewheight_lerp_mtime;
+	qboolean	viewheight_lerp_initialized;
 	char		*statss[MAX_CL_STATS];
 	int			items;			// inventory bit flags
 	float	item_gettime[32];	// cl.time of aquiring item, for blinking
@@ -546,6 +549,8 @@ void CL_SendMove (const usercmd_t *cmd);
 void CL_SendMove2 (const usercmd_t* cmd); // woods #pqlag
 void CL_SendLagMove (void); // JPG - synthetic lag // woods #pqlag
 int  CL_ReadFromServer (void);
+float CL_LerpPoint (void);
+void CL_UpdateViewHeightLerp (float viewheight);
 void CL_AdjustAngles (void);
 void CL_BaseMove (usercmd_t *cmd, qboolean isfinal);
 void CL_FinishMove(usercmd_t *cmd, qboolean isfinal);
