@@ -274,6 +274,7 @@ typedef struct
 	int			completed_time;	// latched at intermission start
 
 	double		mtime[2];		// the timestamp of last two messages
+	float		lerpfrac;		// shared snapshot interpolation fraction
 	double		time;			// clients view of time, should be between
 								// servertime and oldservertime to generate
 								// a lerp point for other data
@@ -549,7 +550,6 @@ void CL_SendMove (const usercmd_t *cmd);
 void CL_SendMove2 (const usercmd_t* cmd); // woods #pqlag
 void CL_SendLagMove (void); // JPG - synthetic lag // woods #pqlag
 int  CL_ReadFromServer (void);
-float CL_LerpPoint (void);
 void CL_UpdateViewHeightLerp (float viewheight);
 void CL_AdjustAngles (void);
 void CL_BaseMove (usercmd_t *cmd, qboolean isfinal);

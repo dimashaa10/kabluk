@@ -935,7 +935,9 @@ void V_CalcRefdef (void)
 	viewheight = cl.statsf[STAT_VIEWHEIGHT];
 	if (cl.viewheight_lerp_initialized)
 	{
-		float frac = CL_LerpPoint();
+		// Reuse the entity snapshot fraction; don't recalculate it here and risk
+		// moving cl.time twice during a rendered frame.
+		float frac = q_min(q_max(cl.lerpfrac, 0.0f), 1.0f);
 		viewheight = cl.viewheight_lerp[1] +
 			frac * (cl.viewheight_lerp[0] - cl.viewheight_lerp[1]);
 	}
