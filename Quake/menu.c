@@ -1728,7 +1728,7 @@ void M_DrawLogo (void)
 	glDisable(GL_SCISSOR_TEST); // Отключаем clipping, если он включён
 	GL_SetCanvas(CANVAS_DEFAULT); // Переключаемся на полный экран (0,0 = верхний левый угол)
 
-	p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.bmp", (int)(realtime * 8) % 24 + 1));
+	p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.png", (int)(realtime * 8) % 24 + 1));
 
 	// Рисуем в центре экрана (пример)
 	int logo_x = (glwidth - p->width) / 2;
@@ -1773,7 +1773,7 @@ void M_Main_Draw (void) // woods #modsmenu #demosmenu (iw)
 	//qpic_t* pic = Draw_CachePic(va("gfx/david/tanec%i.lmp", (int)(realtime * 10) % 29 + 1));
 	//M_DrawTransPic(320, 2, pic);
 
-	p = Draw_CachePic(va("gfx/a_main/amain%i.lmp", (int)(realtime * 2) % 3 + 1));
+	p = Draw_CachePic(va("gfx/a_main/amain%i.bmp", (int)(realtime * 2) % 3 + 1));
 	M_DrawPic((320 - p->width) / 2, 4, p);
 	//p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.bmp", (int)(realtime * 8) % 24 + 1));
 	//M_DrawPic((320 - p->width) / 2, -64, p);
@@ -2020,7 +2020,7 @@ void M_SinglePlayer_Draw(void)
 	M_DrawTransPic(16, 4, Draw_CachePic("gfx/qplaque.pcx"));
 	p = Draw_CachePic(va("gfx/a_sgl/asgl%i.bmp", (int)(realtime * 2) % 3 + 1));
 	M_DrawPic((320 - p->width) / 2, 4, p);
-	M_DrawTransPic(72, 32, Draw_CachePic(va("gfx/a_spmenu/aspm%i.bmp", (int)(realtime * 1) % 2 + 1)));
+	M_DrawTransPic(72, 32, Draw_CachePic(va("gfx/a_spmenu/aspm%i.png", (int)(realtime * 1) % 2 + 1)));
 	if (m_singleplayer_showlevels)
 		M_DrawTransPic(72, 92, Draw_CachePic(va("gfx/a_levels/alev%i.lmp", (int)(realtime * 1) % 2 + 1)));
 
@@ -2963,7 +2963,7 @@ void M_Skill_Draw(void)
 
 	if (m_skill_usegfx)
 	{
-		M_DrawTransPic(x, y, Draw_CachePic(va("gfx/a_skm/askm%i.lmp", (int)(realtime * 1) % 2 + 1 )));
+		M_DrawTransPic(x, y, Draw_CachePic(va("gfx/a_skm/askm%i.png", (int)(realtime * 1) % 2 + 1 )));
 		if (m_skill_cursor < 4)
 			M_DrawQuakeCursor(x - 18, y + m_skill_cursor * 20);
 		y += 4 * 20;
@@ -3116,7 +3116,7 @@ void M_MultiPlayer_Draw (void)
 	M_DrawTransPic (16, 4, Draw_CachePic ("gfx/qplaque.pcx") );
 	p = Draw_CachePic(va("gfx/a_mp/amp%i.bmp", (int)(realtime * 2) % 3 + 1));
 	M_DrawPic ( (320-p->width)/2, 4, p);
-	M_DrawTransPic(72, 32, Draw_CachePic(va("gfx/a_mpmenu/ampmenu%i.bmp", (int)(realtime * 1) % 2 + 1)));
+	M_DrawTransPic(72, 32, Draw_CachePic(va("gfx/a_mpmenu/ampmenu%i.png", (int)(realtime * 1) % 2 + 1)));
 
 	f = (int)(realtime * 10)%6;
 	i = 24;

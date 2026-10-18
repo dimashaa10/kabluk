@@ -2552,6 +2552,11 @@ void Sbar_DeathmatchOverlay (void)
 	//pic = Draw_CachePic ("gfx/ranking.lmp"); //woods #scoreboard (remove rankings logo)
 	//M_DrawPic ((320-pic->width)/2, 8, pic); woods #scoreboard
 
+	qpic_t* p;
+	
+
+	p = Draw_CachePic(va("gfx/a_rank/rankings%i.png", (int)(realtime * 2) % 3 + 1));
+	M_DrawPic((320 - p->width) / 2, 4, p);
 // scores
 	if (scr_scoreboard_teamsort.value && Sbar_ShouldSortByTeam()) // woods #teamscoreboard
 	{
