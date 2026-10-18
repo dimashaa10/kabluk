@@ -39,6 +39,7 @@ void Mod_LoadIQMModel (qmodel_t *mod, const void *buffer);
 static qmodel_t *Mod_LoadModel (qmodel_t *mod, qboolean crash);
 
 static void Mod_Print (void);
+static const char *Mod_ParseWorldspawnKey(qmodel_t *mod, const char *wantkey, char *buffer, size_t sizeofbuffer);
 
 static cvar_t	external_ents = {"external_ents", "1", CVAR_ARCHIVE};
 static cvar_t	external_ents_dir = {"external_ents_dir", "", CVAR_ARCHIVE};
@@ -662,36 +663,84 @@ static qboolean Mod_CheckFullbrights (byte *pixels, int count)
 	return false;
 }
 
-static texture_t *Mod_LoadMipTex(miptex_t *mt, byte *lumpend, enum srcformat *fmt, unsigned int *width, unsigned int *height, unsigned int *pixelbytes)
+static int Mod_WadTransparentIndex (const char *name)
+{
+	if (!name)
+		return -1;
+	if (name[0] == '{')
+		return 255; // Quake fence textures
+	if (!q_strncasecmp(name, "sky", 3))
+		return 0; // the classic Quake sky overlay uses palette index 0 as its mask
+	return -1;
+}
+
+static texture_t *Mod_LoadMipTex(miptex_t *mt, byte *lumpend, enum srcformat *fmt,
+	unsigned int *width, unsigned int *height, unsigned int *pixelbytes,
+	qboolean *has_source_pixels, qboolean *has_custom_palette)
 {
 	//if offsets[0] is 0, then we've no legacy data (offsets[3] signifies the end of the extension data.
 	byte *extdata;
 	texture_t *tx;
 	byte *srcdata = NULL;
+	const byte *palette = NULL;
+	unsigned int palette_colors = 0;
 	size_t sz;
+	size_t allocbytes;
+	qboolean convert_palette = false;
 	int shift = 0;
+
+	*has_source_pixels = false;
+	*has_custom_palette = false;
 
 	if (loadmodel->bspversion == BSPVERSION_QUAKE64)
 		extdata = lumpend;	//don't bother, I'm too lazy to validate offsets.
 	else if (!mt->offsets[0])	//the legacy data was omitted. we may still have block-compression though.
 		extdata = (byte*)(mt+1);
-	else if (mt->offsets[0] == sizeof(miptex_t) &&
-			 mt->offsets[1] == mt->offsets[0]+(mt->width>>0)*(mt->height>>0) &&
-			 mt->offsets[2] == mt->offsets[1]+(mt->width>>1)*(mt->height>>1) &&
-			 mt->offsets[3] == mt->offsets[2]+(mt->width>>2)*(mt->height>>2))
-	{	//miptex makes sense and matches the standard 4-mip-levels.
-		extdata = (byte*)mt + mt->offsets[3]+(mt->width>>3)*(mt->height>>3);
-		//FIXME: halflife - leshort=256, palette[256][3].
-		//extdata += 2+256*3;
+	else if (mt->width > 0 && mt->height > 0 && mt->offsets[0] == sizeof(miptex_t))
+	{	// Check the standard four-mip layout without trusting unvalidated offsets.
+		size_t palette_offset = sizeof(miptex_t);
+		qboolean standard_layout = true;
+		int level;
+		for (level = 0; level < MIPLEVELS; level++)
+		{
+			size_t mipwidth = (size_t)((unsigned int)mt->width >> level);
+			size_t mipheight = (size_t)((unsigned int)mt->height >> level);
+			size_t level_size;
+			if (mt->offsets[level] < 0 || (size_t)mt->offsets[level] != palette_offset ||
+				(mipwidth && mipheight > (size_t)-1 / mipwidth))
+			{
+				standard_layout = false;
+				break;
+			}
+			level_size = mipwidth * mipheight;
+			if (palette_offset > (size_t)-1 - level_size)
+			{
+				standard_layout = false;
+				break;
+			}
+			palette_offset += level_size;
+		}
+		if (standard_layout && lumpend >= (byte*)mt &&
+			palette_offset <= (size_t)(lumpend - (byte*)mt))
+		{
+			extdata = (byte*)mt + palette_offset;
+			WAD_ParsePalette((byte*)mt, (size_t)(lumpend - (byte*)mt), palette_offset, &palette, &palette_colors);
+			// WAD3 stores a per-texture palette after the last mip level.
+		}
+		else
+			extdata = lumpend;
 	}
 	else	//the numbers don't match what we expect... something weird is going on here... don't misinterpret it.
 		extdata = lumpend;
 
-	if (extdata+4 <= lumpend && extdata[0] == 0 && extdata[1]==0xfb && extdata[2]==0x2b && extdata[3]==0xaf)
-	for (extdata+=4; extdata+8 < lumpend; extdata += sz)
+	if (extdata <= lumpend && (size_t)(lumpend - extdata) >= 4 &&
+		extdata[0] == 0 && extdata[1] == 0xfb && extdata[2] == 0x2b && extdata[3] == 0xaf)
+	for (extdata += 4; extdata <= lumpend && (size_t)(lumpend - extdata) > 8; extdata += sz)
 	{
-		sz = (extdata[0]<<0)|(extdata[1]<<8)|(extdata[2]<<16)|(extdata[3]<<24);
-		if (sz < 8 || sz >(size_t)(lumpend-extdata))	break;	//bad! bad! bad!
+		size_t remaining = (size_t)(lumpend - extdata);
+		sz = (size_t)extdata[0] | ((size_t)extdata[1] << 8) |
+			((size_t)extdata[2] << 16) | ((size_t)extdata[3] << 24);
+		if (sz < 8 || sz > remaining)	break;	//bad! bad! bad!
 		else if (sz <= 16)	continue;	//nope, no idea
 
 		*fmt = TexMgr_FormatForCode((char*)extdata+4);
@@ -701,11 +750,12 @@ static texture_t *Mod_LoadMipTex(miptex_t *mt, byte *lumpend, enum srcformat *fm
 		*width = (extdata[8]<<0)|(extdata[9]<<8)|(extdata[10]<<16)|(extdata[11]<<24);
 		*height = (extdata[12]<<0)|(extdata[13]<<8)|(extdata[14]<<16)|(extdata[15]<<24);
 
-		if (*width != TexMgr_SafeTextureSize(*width) || *width != TexMgr_SafeTextureSize(*width))
+		if (*width != (unsigned int)TexMgr_SafeTextureSize(*width) ||
+			*height != (unsigned int)TexMgr_SafeTextureSize(*height))
 			continue;	//nope, can't use that. drivers are too lame (or gl_max_size is too low).
 
 		*pixelbytes = TexMgr_ImageSize(*width, *height, *fmt);
-		if (16+*pixelbytes == sz)
+		if ((size_t)*pixelbytes <= (size_t)-1 - 16 && 16 + (size_t)*pixelbytes == sz)
 			srcdata = extdata+16;
 		break;
 	}
@@ -723,19 +773,12 @@ static texture_t *Mod_LoadMipTex(miptex_t *mt, byte *lumpend, enum srcformat *fm
 			srcdata = (byte*)(mt64 + 1);	//revert to lameness
 			shift = mt64->shift;
 		}
-		else
+		else if (mt->offsets[0] > 0 && lumpend >= (byte*)mt &&
+			(size_t)mt->offsets[0] <= (size_t)(lumpend - (byte*)mt))
 		{
-			if (LittleLong (mt->offsets[0]))
-				srcdata = (byte*)mt+LittleLong(mt->offsets[0]);
+			srcdata = (byte*)mt + (size_t)mt->offsets[0];
 		}
 	}
-
-	tx = (texture_t *) Hunk_AllocName (sizeof(texture_t) + *pixelbytes, loadname );
-	memcpy (tx->name, mt->name, sizeof(tx->name));
-	tx->name[sizeof(tx->name)-1] = 0;	//just in case...
-	tx->width = mt->width;
-	tx->height = mt->height;
-	tx->shift = shift;
 
 	if (srcdata)
 	{
@@ -743,23 +786,202 @@ static texture_t *Mod_LoadMipTex(miptex_t *mt, byte *lumpend, enum srcformat *fm
 		// appears in the wild; e.g. jam2_tronyn.bsp (func_mapjam2),
 		// kellbase1.bsp (quoth), and can lead to a segfault if we read past
 		// the end of the .bsp file buffer
-		if ((srcdata + *pixelbytes) > lumpend)
+		if (srcdata > lumpend || (size_t)*pixelbytes > (size_t)(lumpend - srcdata))
 		{
 			Con_DPrintf("Texture %s extends past end of lump\n", mt->name);
-			*pixelbytes = q_max((ptrdiff_t)0, lumpend - srcdata);
+			srcdata = NULL;
+			*fmt = SRC_INDEXED;
+			*width = mt->width;
+			*height = mt->height;
+			*pixelbytes = mt->width * mt->height;
 		}
+		else
+			*has_source_pixels = true;
+	}
 
-		memcpy ( tx+1, srcdata, *pixelbytes);
+	if (srcdata && *has_source_pixels && palette && *fmt == SRC_INDEXED &&
+		mt->offsets[0] == sizeof(miptex_t))
+		convert_palette = true;
+
+	allocbytes = *pixelbytes;
+	if (convert_palette)
+	{
+		*fmt = SRC_RGBA;
+		*pixelbytes = TexMgr_ImageSize(*width, *height, SRC_RGBA);
+		allocbytes = *pixelbytes;
+		*has_custom_palette = true;
+	}
+
+	tx = (texture_t *) Hunk_AllocName (sizeof(texture_t) + allocbytes, loadname );
+	memcpy (tx->name, mt->name, sizeof(tx->name));
+	tx->name[sizeof(tx->name)-1] = 0;	//just in case...
+	tx->width = mt->width;
+	tx->height = mt->height;
+	tx->shift = shift;
+
+	if (srcdata && *has_source_pixels)
+	{
+		if (convert_palette)
+			WAD_ConvertIndexedToRGBA(srcdata, (size_t)*width * *height, palette, palette_colors,
+				Mod_WadTransparentIndex(tx->name), (byte *)(tx+1));
+		else
+			memcpy (tx+1, srcdata, *pixelbytes);
 	}
 	else
 	{
 		size_t x,y;
-		for(y=0;y<tx->width;y++)
+		for(y=0;y<tx->height;y++)
 			for(x=0;x<tx->width;x++)
 				((byte*)(tx+1))[y*tx->width+x] = (((x>>2)^(y>>2))&1)?6:2;
 	}
 	return tx;
 }
+
+#define MAX_MAP_WADS 32
+
+static qboolean Mod_LoadMapWadArchive (wadarchive_t *archive, const char *path, const char *basename, const char *mapname)
+{
+	char candidate[MAX_OSPATH];
+	qboolean absolute_path;
+
+	if (!path || !path[0])
+		return false;
+
+	absolute_path = path[0] == '/' || (path[0] && path[1] == ':');
+	if (!absolute_path && WAD_ArchiveLoad(archive, path))
+		return true;
+	if (basename && basename[0] && strcmp(path, basename) && WAD_ArchiveLoad(archive, basename))
+		return true;
+	if (mapname && mapname[0] && basename && basename[0])
+	{
+		q_snprintf(candidate, sizeof(candidate), "maps/%s/%s", mapname, basename);
+		if (WAD_ArchiveLoad(archive, candidate))
+			return true;
+		q_snprintf(candidate, sizeof(candidate), "maps/%s", basename);
+		if (WAD_ArchiveLoad(archive, candidate))
+			return true;
+	}
+	return false;
+}
+
+static int Mod_LoadMapWads (wadarchive_t *archives, int max_archives)
+{
+	char wadlist[2048];
+	char mapname[MAX_QPATH];
+	char *entry;
+	const char *parsed;
+	int count = 0;
+
+	if (!archives || max_archives <= 0 || !loadmodel->entities)
+		return 0;
+	parsed = Mod_ParseWorldspawnKey(loadmodel, "wad", wadlist, sizeof(wadlist));
+	if (!parsed || !wadlist[0])
+		return 0;
+
+	COM_FileBase(loadmodel->name, mapname, sizeof(mapname));
+	entry = wadlist;
+	while (*entry && count < max_archives)
+	{
+		char *next = strchr(entry, ';');
+		char normalized[MAX_OSPATH];
+		char basename[MAX_OSPATH];
+		size_t i;
+		char *begin;
+		char *end;
+
+		if (next)
+			*next = '\0';
+		begin = entry;
+		while (*begin == ' ' || *begin == '\t')
+			begin++;
+		end = begin + strlen(begin);
+		while (end > begin && (end[-1] == ' ' || end[-1] == '\t'))
+			*--end = '\0';
+		q_strlcpy(normalized, begin, sizeof(normalized));
+		for (i = 0; normalized[i]; i++)
+			if (normalized[i] == '\\')
+				normalized[i] = '/';
+		q_strlcpy(basename, COM_SkipPath(normalized), sizeof(basename));
+
+		if (normalized[0] && Mod_LoadMapWadArchive(&archives[count], normalized, basename, mapname))
+		{
+			Con_DPrintf("Loaded map WAD %s (WAD%d)\n", basename, archives[count].version);
+			count++;
+		}
+		else if (normalized[0])
+			Con_DPrintf("Couldn't load map WAD %s\n", basename[0] ? basename : normalized);
+
+		if (!next)
+			break;
+		entry = next + 1;
+	}
+	return count;
+}
+
+static texture_t *Mod_LoadWadMipTex (const wadmiptex_t *miptex, const char *name,
+	enum srcformat *fmt, unsigned int *width, unsigned int *height, unsigned int *pixelbytes)
+{
+	texture_t *tx;
+	size_t bytes;
+
+	if (!miptex || !miptex->pixels || !miptex->width || !miptex->height ||
+		miptex->pixel_count != (size_t)miptex->width * miptex->height)
+		return NULL;
+
+	*width = miptex->width;
+	*height = miptex->height;
+	if (miptex->palette && miptex->palette_colors)
+	{
+		*fmt = SRC_RGBA;
+		bytes = TexMgr_ImageSize(*width, *height, SRC_RGBA);
+	}
+	else
+	{
+		*fmt = SRC_INDEXED;
+		bytes = miptex->pixel_count;
+	}
+	if (bytes > UINT_MAX)
+		return NULL;
+	*pixelbytes = (unsigned int)bytes;
+
+	tx = (texture_t *)Hunk_AllocName(sizeof(texture_t) + bytes, loadname);
+	memset(tx, 0, sizeof(*tx));
+	q_strlcpy(tx->name, name && name[0] ? name : miptex->name, sizeof(tx->name));
+	tx->width = *width;
+	tx->height = *height;
+	if (*fmt == SRC_RGBA)
+		WAD_ConvertIndexedToRGBA(miptex->pixels, miptex->pixel_count,
+			miptex->palette, miptex->palette_colors, Mod_WadTransparentIndex(tx->name), (byte *)(tx+1));
+	else
+		memcpy(tx+1, miptex->pixels, miptex->pixel_count);
+	return tx;
+}
+
+static texture_t *Mod_ApplyWadPalette (texture_t *indexed_texture, const wadmiptex_t *miptex,
+	enum srcformat *fmt, unsigned int *pixelbytes)
+{
+	texture_t *rgba_texture;
+	size_t pixel_count, bytes;
+
+	if (!indexed_texture || !miptex || !miptex->palette || !miptex->palette_colors || *fmt != SRC_INDEXED)
+		return indexed_texture;
+	pixel_count = (size_t)indexed_texture->width * indexed_texture->height;
+	if (pixel_count > (size_t)-1 / 4)
+		return indexed_texture;
+	bytes = pixel_count * 4;
+	if (bytes > UINT_MAX)
+		return indexed_texture;
+
+	rgba_texture = (texture_t *)Hunk_AllocName(sizeof(texture_t) + bytes, loadname);
+	memcpy(rgba_texture, indexed_texture, sizeof(*rgba_texture));
+	WAD_ConvertIndexedToRGBA((byte *)(indexed_texture+1), pixel_count,
+		miptex->palette, miptex->palette_colors,
+		Mod_WadTransparentIndex(indexed_texture->name), (byte *)(rgba_texture+1));
+	*fmt = SRC_RGBA;
+	*pixelbytes = (unsigned int)bytes;
+	return rgba_texture;
+}
+
 /*
 =================
 Mod_CheckAnimTextureArrayQ64
@@ -805,6 +1027,10 @@ static void Mod_LoadTextures (lump_t *l)
 	enum srcformat fmt;	//spike
 	unsigned int imgwidth, imgheight, imgpixels;
 	unsigned int mipend;
+	src_offset_t texture_offset;
+	const char *texture_source;
+	int num_map_wads;
+	wadarchive_t map_wads[MAX_MAP_WADS];
 
 	//johnfitz -- don't return early if no textures; still need to create dummy texture
 	if (!l->filelen)
@@ -823,10 +1049,19 @@ static void Mod_LoadTextures (lump_t *l)
 
 	loadmodel->numtextures = nummiptex + 2; //johnfitz -- need 2 dummy texture chains for missing textures
 	loadmodel->textures = (texture_t **) Hunk_AllocName (loadmodel->numtextures * sizeof(*loadmodel->textures) , loadname);
+	memset(map_wads, 0, sizeof(map_wads));
+	num_map_wads = (nummiptex && loadmodel->bspversion != BSPVERSION_QUAKE64) ?
+		Mod_LoadMapWads(map_wads, MAX_MAP_WADS) : 0;
 
 	//spike -- rewrote this loop to run backwards (to make it easier to track the end of the miptex) and added handling for extra texture block compression.
 	for (i = nummiptex, mipend=l->filelen; i --> 0; )
 	{
+		qboolean has_source_pixels = false;
+		qboolean has_custom_palette = false;
+		qboolean source_in_memory = false;
+		qboolean found_wad_texture = false;
+		wadmiptex_t wad_texture;
+
 		m->dataofs[i] = LittleLong(m->dataofs[i]);
 		if (m->dataofs[i] == -1)
 			continue;
@@ -838,6 +1073,22 @@ static void Mod_LoadTextures (lump_t *l)
 		for (j=0 ; j<MIPLEVELS ; j++)
 			mt->offsets[j] = LittleLong (mt->offsets[j]);
 
+		memset(&wad_texture, 0, sizeof(wad_texture));
+		if (num_map_wads)
+		{
+			for (j = 0; j < num_map_wads; j++)
+				if (WAD_ArchiveFindMipTex(&map_wads[j], mt->name, &wad_texture))
+				{
+					found_wad_texture = true;
+					break;
+				}
+		}
+
+		if ((!mt->width || !mt->height) && !mt->offsets[0] && found_wad_texture)
+		{
+			mt->width = wad_texture.width;
+			mt->height = wad_texture.height;
+		}
 		if (mt->width == 0 || mt->height == 0)
 		{
 			Con_Warning ("Zero sized texture %s in %s!\n", mt->name, loadmodel->name);
@@ -850,10 +1101,37 @@ static void Mod_LoadTextures (lump_t *l)
 				Con_Warning ("Texture %s (%d x %d) is not 16 aligned\n", mt->name, mt->width, mt->height);
 		}
 
-		tx = Mod_LoadMipTex(mt, (mod_base + l->fileofs + mipend), &fmt, &imgwidth, &imgheight, &imgpixels);
+		if (!mt->offsets[0] && found_wad_texture)
+		{
+			tx = Mod_LoadWadMipTex(&wad_texture, mt->name, &fmt, &imgwidth, &imgheight, &imgpixels);
+			if (tx)
+			{
+				has_source_pixels = true;
+				has_custom_palette = fmt == SRC_RGBA;
+				source_in_memory = true;
+			}
+		}
+		else
+			tx = NULL;
+
+		if (!tx)
+			tx = Mod_LoadMipTex(mt, (mod_base + l->fileofs + mipend), &fmt, &imgwidth, &imgheight,
+				&imgpixels, &has_source_pixels, &has_custom_palette);
+		if (has_custom_palette)
+			source_in_memory = true;
+		if (!has_custom_palette && has_source_pixels && fmt == SRC_INDEXED && found_wad_texture && wad_texture.palette)
+		{
+			tx = Mod_ApplyWadPalette(tx, &wad_texture, &fmt, &imgpixels);
+			has_custom_palette = fmt == SRC_RGBA;
+			source_in_memory = has_custom_palette;
+		}
 		loadmodel->textures[i] = tx;
+		tx->normalmap = NULL;
 
 		mipend = m->dataofs[i];
+		texture_source = source_in_memory ? "" : loadmodel->name;
+		texture_offset = source_in_memory ? (src_offset_t)(tx+1) :
+			(src_offset_t)(mt+1) - (src_offset_t)mod_base;
 
 		if (!tx->name[0]) // woods (aerowalk.bsp)
 		{
@@ -929,9 +1207,9 @@ static void Mod_LoadTextures (lump_t *l)
 				else //use the texture from the bsp file
 				{
 					q_snprintf (texturename, sizeof(texturename), "%s:%s", loadmodel->name, tx->name);
-					offset = (src_offset_t)(mt+1) - (src_offset_t)mod_base;
+					offset = texture_offset;
 					tx->gltexture = TexMgr_LoadImage (loadmodel, texturename, imgwidth, imgheight,
-						fmt, (byte *)(tx+1), loadmodel->name, offset, TEXPREF_MIPMAP); // woods #watermip
+						fmt, (byte *)(tx+1), texture_source, offset, TEXPREF_MIPMAP); // woods #watermip
 				}
 
 				Hunk_FreeToLowMark (mark);
@@ -1009,25 +1287,36 @@ static void Mod_LoadTextures (lump_t *l)
 				else //use the texture from the bsp file
 				{
 					q_snprintf (texturename, sizeof(texturename), "%s:%s", loadmodel->name, tx->name);
-					offset = (src_offset_t)(mt+1) - (src_offset_t)mod_base;
+					offset = texture_offset;
 					if (fmt == SRC_INDEXED && Mod_CheckFullbrights ((byte *)(tx+1), imgpixels))
 					{
 						tx->gltexture = TexMgr_LoadImage (loadmodel, texturename, imgwidth, imgheight,
-							fmt, (byte *)(tx+1), loadmodel->name, offset, TEXPREF_MIPMAP | TEXPREF_NOBRIGHT | extraflags);
+							fmt, (byte *)(tx+1), texture_source, offset, TEXPREF_MIPMAP | TEXPREF_NOBRIGHT | extraflags);
 						q_snprintf (texturename, sizeof(texturename), "%s:%s_glow", loadmodel->name, tx->name);
 						tx->fullbright = TexMgr_LoadImage (loadmodel, texturename, imgwidth, imgheight,
-							fmt, (byte *)(tx+1), loadmodel->name, offset, TEXPREF_MIPMAP | TEXPREF_FULLBRIGHT | extraflags);
+							fmt, (byte *)(tx+1), texture_source, offset, TEXPREF_MIPMAP | TEXPREF_FULLBRIGHT | extraflags);
 					}
 					else
 					{
 						tx->gltexture = TexMgr_LoadImage (loadmodel, texturename, imgwidth, imgheight,
-							fmt, (byte *)(tx+1), loadmodel->name, offset, TEXPREF_MIPMAP | extraflags);
+							fmt, (byte *)(tx+1), texture_source, offset, TEXPREF_MIPMAP | extraflags);
 					}
 				}
 				if (malloced)
 					free(data);
 				Hunk_FreeToLowMark (mark);
 			}
+		}
+		// Load optional BSP texture normal maps from the active game's loose/pak search path.
+		// Image_LoadImage resolves this to textures/<texture-name>_n.png (among its supported formats).
+		if (tx->name[0] && tx->name[0] != '*' && q_strncasecmp(tx->name, "sky", 3))
+		{
+			char normalmap_path[MAX_OSPATH];
+			char normalmap_name[MAX_QPATH];
+			q_snprintf(normalmap_path, sizeof(normalmap_path), "textures/%s_n", tx->name);
+			q_snprintf(normalmap_name, sizeof(normalmap_name), "normal:%s", tx->name);
+			tx->normalmap = TexMgr_LoadImage(loadmodel, normalmap_name, 0, 0, SRC_EXTERNAL,
+				NULL, normalmap_path, 0, TEXPREF_ALLOWMISSING | TEXPREF_MIPMAP);
 		}
 		//johnfitz
 	}
@@ -1131,6 +1420,9 @@ static void Mod_LoadTextures (lump_t *l)
 				tx2->alternate_anims = anims[0];
 		}
 	}
+
+	for (i = 0; i < num_map_wads; i++)
+		WAD_ArchiveFree(&map_wads[i]);
 }
 
 /*
@@ -1417,7 +1709,7 @@ Mod_ParseWorldspawnKey
 This just quickly scans the worldspawn entity for a single key. Returning both _prefixed and non prefixed keys.
 (wantkey argument should not have a _prefix.)
 */
-const char *Mod_ParseWorldspawnKey(qmodel_t *mod, const char *wantkey, char *buffer, size_t sizeofbuffer)
+static const char *Mod_ParseWorldspawnKey(qmodel_t *mod, const char *wantkey, char *buffer, size_t sizeofbuffer)
 {
 	char foundkey[128];
 	const char *data = COM_Parse(mod->entities);
@@ -1432,9 +1724,9 @@ const char *Mod_ParseWorldspawnKey(qmodel_t *mod, const char *wantkey, char *buf
 			if (com_token[0] == '}')
 				break; // end of worldspawn
 			if (com_token[0] == '_')
-				strcpy(foundkey, com_token + 1);
+				q_strlcpy(foundkey, com_token + 1, sizeof(foundkey));
 			else
-				strcpy(foundkey, com_token);
+				q_strlcpy(foundkey, com_token, sizeof(foundkey));
 			data = COM_Parse(data);
 			if (!data)
 				break; // error
@@ -2960,6 +3252,9 @@ static void Mod_LoadBrushModel (qmodel_t *mod, void *buffer)
 
 	Q1BSPX_Setup(mod, buffer, com_filesize, header->lumps, HEADER_LUMPS);
 
+// Load entities before textures so worldspawn WAD paths are available to the texture loader.
+	Mod_LoadEntities (&header->lumps[LUMP_ENTITIES]);
+
 // load into heap
 
 	Mod_LoadVertexes (&header->lumps[LUMP_VERTEXES]);
@@ -2969,7 +3264,6 @@ static void Mod_LoadBrushModel (qmodel_t *mod, void *buffer)
 	Mod_LoadLighting (&header->lumps[LUMP_LIGHTING]);
 	Mod_LoadPlanes (&header->lumps[LUMP_PLANES]);
 	Mod_LoadTexinfo (&header->lumps[LUMP_TEXINFO]);
-	Mod_LoadEntities (&header->lumps[LUMP_ENTITIES]);	//Spike: moved this earlier, so that we can parse worldspawn keys earlier.
 	Mod_LoadFaces (&header->lumps[LUMP_FACES], bsp2);
 	Mod_LoadMarksurfaces (&header->lumps[LUMP_MARKSURFACES], bsp2);
 

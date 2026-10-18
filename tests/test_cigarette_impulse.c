@@ -16,6 +16,8 @@ server_t sv;
 client_t *host_client;
 qcvm_t *qcvm;
 globalvars_t *pr_global_struct;
+double host_frametime;
+qboolean rogue, hipnotic;
 cvar_t deathmatch = {"deathmatch", "0", CVAR_NONE};
 
 static client_t client;

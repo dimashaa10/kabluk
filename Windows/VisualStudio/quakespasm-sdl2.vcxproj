@@ -359,6 +359,7 @@ copy "$(SolutionDir)..\zlib\$(PlatformShortName)\*.dll" "$(TargetDir)"</Command>
     <ClInclude Include="..\..\Quake\sbar.h" />
     <ClInclude Include="..\..\Quake\screen.h" />
     <ClInclude Include="..\..\Quake\server.h" />
+    <ClInclude Include="..\..\Quake\skate.h" />
     <ClInclude Include="..\..\Quake\snd_codec.h" />
     <ClInclude Include="..\..\Quake\snd_codeci.h" />
     <ClInclude Include="..\..\Quake\snd_flac.h" />

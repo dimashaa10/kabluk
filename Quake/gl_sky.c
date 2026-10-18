@@ -139,6 +139,13 @@ void Sky_LoadTexture (qmodel_t *mod, texture_t *mt, enum srcformat fmt, unsigned
 // extract back layer and upload
 	for (i=0 ; i<rows ; i++)
 		memcpy(back_data+bb*i*columns, src+bb*(i*columns*2 + columns), columns*bb);
+	if (fmt == SRC_RGBA)
+	{
+		// WAD3 sky palettes are converted before this split. Keep the solid
+		// background opaque even when palette index 0 is the front-layer mask.
+		for (i = 0; i < columns * rows; i++)
+			back_data[i * bb + 3] = 255;
+	}
 
 	q_snprintf(texturename, sizeof(texturename), "%s:%s_back", mod->name, mt->name);
 	mt->gltexture = solidskytexture = TexMgr_LoadImage (mod, texturename, width, height, fmt, back_data, "", (src_offset_t)back_data, TEXPREF_NONE);

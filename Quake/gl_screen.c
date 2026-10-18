@@ -164,10 +164,10 @@ cvar_t		scr_autoid = {"scr_autoid","1",CVAR_ARCHIVE}; // woods #autoid
 cvar_t		scr_scoreboard_teamsort = {"scr_scoreboard_teamsort","0",CVAR_ARCHIVE}; // woods #teamscoreboard
 cvar_t		gl_triplebuffer = {"gl_triplebuffer", "1", CVAR_ARCHIVE};
 
-cvar_t		cl_gun_fovscale = {"cl_gun_fovscale","1",CVAR_ARCHIVE}; // Qrack
+cvar_t		cl_gun_fovscale = {"cl_gun_fovscale","0",CVAR_ARCHIVE}; // Qrack
 cvar_t		cl_menucrosshair = { "cl_menucrosshair","0",CVAR_ARCHIVE}; // woods #menucrosshair
 cvar_t		cl_pong = {"cl_pong","2",CVAR_ARCHIVE}; // woods #pong -- 0 = disabled, >0 = enabled with speed multiplier
-cvar_t		cl_gun_x = { "cl_gun_x","0",CVAR_ARCHIVE };
+cvar_t		cl_gun_x = { "cl_gun_x","50",CVAR_ARCHIVE };
 cvar_t		cl_gun_y = { "cl_gun_y","0",CVAR_ARCHIVE };
 cvar_t		cl_gun_z = { "cl_gun_z","0",CVAR_ARCHIVE };
 
@@ -4369,9 +4369,9 @@ void SCR_ScreenShot_f (void)
 	}
 	
 	if (cl.mapname[0] == '\0' || cls.state == ca_disconnected)
-		q_snprintf(imagename, sizeof(imagename), "screenshots/qssm_%s.%s", str, ext); // woods #screenshots time and date support
+		q_snprintf(imagename, sizeof(imagename), "screenshots/kabluk_%s.%s", str, ext); // woods #screenshots time and date support
 	else
-		q_snprintf(imagename, sizeof(imagename), "screenshots/qssm_%s_%s.%s", cl.mapname, str, ext);
+		q_snprintf(imagename, sizeof(imagename), "screenshots/kabluk_%s_%s.%s", cl.mapname, str, ext);
 
 	q_snprintf(checkname, sizeof(checkname), "%s/%s", com_gamedir, imagename);
 

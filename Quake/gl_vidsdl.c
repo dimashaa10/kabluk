@@ -126,7 +126,9 @@ float gl_max_anisotropy; //johnfitz
 qboolean gl_texture_NPOT = false; //ericw
 qboolean gl_vbo_able = false; //ericw
 qboolean gl_glsl_able = false; //ericw
-GLint gl_max_texture_units = 0; //ericw
+GLint gl_max_texture_units = 0; // fixed-function texture units
+GLint gl_max_texture_image_units = 0; // fragment shader texture samplers
+GLint gl_max_combined_texture_image_units = 0; // valid glActiveTexture units
 qboolean gl_glsl_gamma_able = false; //ericw
 qboolean gl_glsl_alias_able = false; //ericw
 qboolean gl_glsl_water_able = false; //Spoike
@@ -1382,6 +1384,15 @@ static void GL_CheckExtensions (void)
 	else
 	{
 		Con_Warning ("OpenGL version < 2, GLSL not available\n");
+	}
+
+	// GLSL has independent limits from the legacy GL_MAX_TEXTURE_UNITS value above.
+	gl_max_texture_image_units = 0;
+	gl_max_combined_texture_image_units = 0;
+	if (gl_glsl_able)
+	{
+		glGetIntegerv(GL_MAX_TEXTURE_IMAGE_UNITS, &gl_max_texture_image_units);
+		glGetIntegerv(GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS, &gl_max_combined_texture_image_units);
 	}
 	
 	// GLSL gamma

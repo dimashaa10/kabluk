@@ -365,7 +365,7 @@ static void PrintSlistTrailer(void)
 	if (hostCacheCount)
 		Con_Printf("== end list ==\n\n");
 	else
-		Con_Printf("No Quake servers found.\n\n");
+		Con_Printf("No Kabluk/Kuzbass servers found.\n\n");
 }
 
 
@@ -376,7 +376,7 @@ void NET_Slist_f (void)
 
 	if (! slistSilent)
 	{
-		Con_Printf("Looking for Quake servers...\n");
+		Con_Printf("Looking for Kabluk/Kuzbass servers...\n");
 		PrintSlistHeader();
 	}
 
@@ -462,6 +462,10 @@ const char* NET_SlistPrintServerInfo (size_t idx, ServerInfoType type) // woods 
 	case SERVER_MAX_USERS:
 		snprintf(buf, sizeof(buf), "%d", hostcache[idx].maxusers);
 		return buf;
+	case SERVER_GAMENAME:
+		return hostcache[idx].gamename;
+	case SERVER_GAMEDIR:
+		return hostcache[idx].gamedir;
 	default:
 		return "";
 	}

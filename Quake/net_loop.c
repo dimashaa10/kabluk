@@ -59,6 +59,8 @@ qboolean Loop_SearchForHosts (qboolean xmit)
 	else
 		Q_strcpy(hostcache[0].name, hostname.string);
 	Q_strcpy(hostcache[0].map, sv.name);
+	q_strlcpy(hostcache[0].gamedir, COM_GetGameNames(true), sizeof(hostcache[0].gamedir));
+	hostcache[0].gamename[0] = '\0';
 	hostcache[0].users = net_activeconnections;
 	hostcache[0].maxusers = svs.maxclients;
 	hostcache[0].driver = net_driverlevel;

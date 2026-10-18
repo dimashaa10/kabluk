@@ -423,7 +423,8 @@ void Sbar_DrawScrollString (int x, int y, int width, const char *str)
 	glEnable (GL_SCISSOR_TEST);
 	glScissor (left, 0, (width - 10) * scale, glheight);
 
-	strLen = strlen(str) * 8;
+	str = LOC_TranslateText(str);
+	strLen = Draw_StringWidth(str);
 	totalLen = strLen + 2 * 8;  // text width + " - " divider width
 
 	ofs = ((int)(realtime * 30)) % totalLen;
@@ -841,11 +842,11 @@ void Sbar_SoloScoreboard (void)
 
 	if (cl.gametype != GAME_DEATHMATCH)  // woods only in singleplayer
 	{
-		sprintf(str, "Kills: %i/%i", cl.stats[STAT_MONSTERS], cl.stats[STAT_TOTALMONSTERS]);
+		q_snprintf(str, sizeof(str), LOC_GetStringOr("$HUD_KILLS", "Kills: %i/%i"), cl.stats[STAT_MONSTERS], cl.stats[STAT_TOTALMONSTERS]);
 		Sbar_DrawString(8, 12, str);
 
-		sprintf(str, "Secrets: %i/%i", cl.stats[STAT_SECRETS], cl.stats[STAT_TOTALSECRETS]);
-		Sbar_DrawString(312 - strlen(str) * 8, 12, str);
+		q_snprintf(str, sizeof(str), LOC_GetStringOr("$HUD_SECRETS", "Secrets: %i/%i"), cl.stats[STAT_SECRETS], cl.stats[STAT_TOTALSECRETS]);
+		Sbar_DrawString(312 - Draw_StringWidth(str), 12, str);
 	}
 
 	else // woods add various times + PL
@@ -861,9 +862,9 @@ void Sbar_SoloScoreboard (void)
 		smin = st / 60000;
 		cmin = mpc / 60;
 
-		sprintf(str, "Map %i  Server %i  QSSM %i  PL %i", min, smin, cmin, pl);
+		q_snprintf(str, sizeof(str), LOC_GetStringOr("$HUD_MAPTIME", "Map %i  Server %i  QSSM %i  PL %i"), min, smin, cmin, pl);
 
-		len = strlen(str);
+		len = Draw_StringWidth(str) / 8;
 		if (len > 40)
 			Sbar_DrawScrollString(0, 12, 320, str);
 		else
@@ -874,8 +875,8 @@ void Sbar_SoloScoreboard (void)
 	{ /* QuakeSpasm customization: */
 		if (cl.gametype != GAME_DEATHMATCH) // woods only in singleplayer
 		{
-			q_snprintf(str, sizeof(str), "skill %i", (int)(skill.value + 0.5));
-			Sbar_DrawString(160 - strlen(str) * 4, 12, str);
+			q_snprintf(str, sizeof(str), LOC_GetStringOr("$HUD_SKILL", "skill %i"), (int)(skill.value + 0.5));
+			Sbar_DrawString(160 - Draw_StringWidth(str) / 2, 12, str);
 		}
 
 		if (cl.maxclients > 1)
@@ -895,11 +896,11 @@ void Sbar_SoloScoreboard (void)
 				q_snprintf (str, sizeof(str), "%s", cl.mapname);
 		}
 
-		len = strlen (str);
+		len = Draw_StringWidth(str) / 8;
 		if (len > 40)
 			Sbar_DrawScrollString (0, 4, 320, str);
 		else
-			Sbar_DrawString (160 - len*4, 4, str);
+			Sbar_DrawString (160 - len * 4, 4, str);
 		return;
 	}
 	minutes = cl.time / 60;
@@ -909,11 +910,12 @@ void Sbar_SoloScoreboard (void)
 	sprintf (str,"%i:%i%i", minutes, tens, units);
 	Sbar_DrawString (160 - strlen(str)*4, 12, str);
 
-	len = q_strlcpy (str, cl.levelname[0] ? cl.levelname : cl.mapname, sizeof(str)); // woods iw
+	q_strlcpy(str, cl.levelname[0] ? cl.levelname : cl.mapname, sizeof(str)); // woods iw
+	len = Draw_StringWidth(str) / 8;
 	if (len > 40)
-		Sbar_DrawScrollString (0, 4, 320, str); // woods iw
+		Sbar_DrawScrollString(0, 4, 320, str); // woods iw
 	else
-		Sbar_DrawString (160 - len*4, 4, str); // woods iw
+		Sbar_DrawString(160 - len * 4, 4, str); // woods iw
 }
 
 /*
@@ -2550,6 +2552,11 @@ void Sbar_DeathmatchOverlay (void)
 	//pic = Draw_CachePic ("gfx/ranking.lmp"); //woods #scoreboard (remove rankings logo)
 	//M_DrawPic ((320-pic->width)/2, 8, pic); woods #scoreboard
 
+	qpic_t* p;
+	
+
+	p = Draw_CachePic(va("gfx/a_rank/rankings%i.png", (int)(realtime * 2) % 3 + 1));
+	M_DrawPic((320 - p->width) / 2, 4, p);
 // scores
 	if (scr_scoreboard_teamsort.value && Sbar_ShouldSortByTeam()) // woods #teamscoreboard
 	{
@@ -2837,7 +2844,7 @@ void Sbar_IntermissionOverlay (void)
 	pic = Draw_CachePic(va("gfx/a_cmplt/acmplt%i.bmp", (int)(realtime * 2) % 5 + 1));
 	Draw_Pic (64, 24, pic);
 
-	pic = Draw_CachePic(va("gfx/a_inter/ainter%i.bmp", (int)(realtime * 1) % 2 + 1));
+	pic = Draw_CachePic(va("gfx/a_inter/ainter%i.png", (int)(realtime * 1) % 2 + 1));
 	Draw_Pic (0, 56, pic);
 
 	dig = cl.completed_time/60;

@@ -16,6 +16,7 @@ make -f Makefile.w32 clean
 ./build_cross_win32-sdl2.sh $MAKEARGS
 mv quakespasm.exe QSS-M-w32.exe
 zip -9j QSS-M-w32.zip ../Windows/codecs/x86/*.dll ../Windows/curl/lib/x86/libcurl.dll ../Windows/zlib/x86/zlib1.dll ../LICENSE.txt ../Quakespasm.html quakespasm.pak ../Quakespasm.txt ../Quakespasm-Spiked.txt ../Quakespasm-Music.txt ../Windows/SDL2/lib/SDL2.dll ../QSS-M-Revision.txt QSS-M-w32.exe
+zip -9 -r QSS-M-w32.zip kuzbass/
 make -f Makefile.w32 clean
 
 # Make win64
@@ -25,6 +26,7 @@ make -f Makefile.w64 clean
 ./build_cross_win64-sdl2.sh $MAKEARGS
 mv quakespasm.exe QSS-M-w64.exe
 zip -9j QSS-M-w64.zip ../Windows/codecs/x64/*.dll ../Windows/curl/lib/x64/libcurl.dll ../Windows/zlib/x64/zlib1.dll ../LICENSE.txt ../Quakespasm.html quakespasm.pak ../Quakespasm.txt ../Quakespasm-Spiked.txt ../Quakespasm-Music.txt ../Windows/SDL2/lib64/SDL2.dll ../QSS-M-Revision.txt QSS-M-w64.exe
+zip -9 -r QSS-M-w64.zip kuzbass/
 make -f Makefile.w64 clean
 
 # Make Linux64
@@ -34,4 +36,5 @@ make clean
 make USE_SDL2=1 $MAKEARGS
 mv quakespasm QSS-M-l64
 zip -9j QSS-M-l64.zip ../LICENSE.txt ../Quakespasm.html quakespasm.pak ../Quakespasm.txt ../Quakespasm-Spiked.txt ../Quakespasm-Music.txt ../QSS-M-Revision.txt QSS-M-l64
+zip -9 -r QSS-M-l64.zip kuzbass/
 make clean

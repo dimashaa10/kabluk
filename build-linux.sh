@@ -16,4 +16,5 @@ make clean
 make USE_SDL2=1 $MAKEARGS
 mv quakespasm QSS-M-l64
 zip -9j QSS-M-l64.zip ../LICENSE.txt ../Quakespasm.html quakespasm.pak qssm.pak ../Quakespasm.txt ../Quakespasm-Spiked.txt ../Quakespasm-Music.txt ../QSS-M-Revision.txt QSS-M-l64
+zip -9 -r QSS-M-l64.zip kuzbass/
 make clean

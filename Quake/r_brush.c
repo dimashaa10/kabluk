@@ -1176,6 +1176,74 @@ void GL_BuildLightmaps (void)
 */
 
 GLuint gl_bmodel_vbo = 0;
+GLuint gl_bmodel_tangent_vbo = 0;
+
+static void GL_BuildSurfaceTangentFrame(const msurface_t *surf, float frame[TANGENT_VERTEXSIZE])
+{
+	vec3_t normal, tangent, bitangent, cross, axis;
+	float d;
+
+	if (surf->plane)
+		VectorCopy(surf->plane->normal, normal);
+	else
+	{
+		normal[0] = 0.0f;
+		normal[1] = 0.0f;
+		normal[2] = 1.0f;
+	}
+	if (surf->flags & SURF_PLANEBACK)
+	{
+		normal[0] = -normal[0];
+		normal[1] = -normal[1];
+		normal[2] = -normal[2];
+	}
+	if (VectorNormalize(normal) == 0.0f)
+	{
+		normal[0] = 0.0f;
+		normal[1] = 0.0f;
+		normal[2] = 1.0f;
+	}
+
+	if (surf->texinfo)
+		VectorCopy(surf->texinfo->vecs[0], tangent);
+	else
+	{
+		tangent[0] = 1.0f;
+		tangent[1] = 0.0f;
+		tangent[2] = 0.0f;
+	}
+	d = DotProduct(tangent, normal);
+	VectorMA(tangent, -d, normal, tangent);
+	if (VectorNormalize(tangent) == 0.0f)
+	{
+		axis[0] = 0.0f;
+		axis[1] = (normal[2] > 0.9f || normal[2] < -0.9f) ? 1.0f : 0.0f;
+		axis[2] = (normal[2] > 0.9f || normal[2] < -0.9f) ? 0.0f : 1.0f;
+		CrossProduct(axis, normal, tangent);
+		VectorNormalize(tangent);
+	}
+
+	if (surf->texinfo)
+		VectorCopy(surf->texinfo->vecs[1], bitangent);
+	else
+		CrossProduct(normal, tangent, bitangent);
+	d = DotProduct(bitangent, normal);
+	VectorMA(bitangent, -d, normal, bitangent);
+	if (VectorNormalize(bitangent) == 0.0f)
+	{
+		CrossProduct(normal, tangent, bitangent);
+		VectorNormalize(bitangent);
+	}
+
+	CrossProduct(normal, tangent, cross);
+	frame[0] = normal[0];
+	frame[1] = normal[1];
+	frame[2] = normal[2];
+	frame[3] = tangent[0];
+	frame[4] = tangent[1];
+	frame[5] = tangent[2];
+	frame[6] = DotProduct(cross, bitangent) < 0.0f ? -1.0f : 1.0f;
+}
 
 void GL_DeleteBModelVertexBuffer (void)
 {
@@ -1183,7 +1251,9 @@ void GL_DeleteBModelVertexBuffer (void)
 		return;
 
 	GL_DeleteBuffersFunc (1, &gl_bmodel_vbo);
+	GL_DeleteBuffersFunc (1, &gl_bmodel_tangent_vbo);
 	gl_bmodel_vbo = 0;
+	gl_bmodel_tangent_vbo = 0;
 
 	GL_ClearBufferBindings ();
 }
@@ -1192,23 +1262,26 @@ void GL_DeleteBModelVertexBuffer (void)
 ==================
 GL_BuildBModelVertexBuffer
 
-Deletes gl_bmodel_vbo if it already exists, then rebuilds it with all
-surfaces from world + all brush models
+Deletes the brush-model VBOs if they already exist, then rebuilds them with
+all surfaces from world + all brush models
 ==================
 */
 void GL_BuildBModelVertexBuffer (void)
 {
-	unsigned int	numverts, varray_bytes, varray_index;
-	int		i, j;
+	unsigned int	numverts, varray_bytes, tangent_bytes, varray_index;
+	int		i, j, k;
 	qmodel_t	*m;
-	float		*varray;
+	float		*varray, *tangentarray;
+	float		tangentframe[TANGENT_VERTEXSIZE];
 
 	if (!(gl_vbo_able && gl_mtexable && gl_max_texture_units >= 3))
 		return;
 
 // ask GL for a name for our VBO
 	GL_DeleteBuffersFunc (1, &gl_bmodel_vbo);
+	GL_DeleteBuffersFunc (1, &gl_bmodel_tangent_vbo);
 	GL_GenBuffersFunc (1, &gl_bmodel_vbo);
+	GL_GenBuffersFunc (1, &gl_bmodel_tangent_vbo);
 	
 // count all verts in all models
 	numverts = 0;
@@ -1235,9 +1308,24 @@ void GL_BuildBModelVertexBuffer (void)
 		}
 	}
 	
-// build vertex array
+// build vertex and tangent-frame arrays
 	varray_bytes = VERTEXSIZE * sizeof(float) * numverts;
+	tangent_bytes = TANGENT_VERTEXSIZE * sizeof(float) * numverts;
+	if (!numverts)
+	{
+		GL_ClearBufferBindings();
+		return;
+	}
 	varray = (float *) malloc (varray_bytes);
+	tangentarray = (float *) malloc (tangent_bytes);
+	if (!varray || !tangentarray)
+	{
+		free(varray);
+		free(tangentarray);
+		Con_Printf("GL_BuildBModelVertexBuffer: unable to allocate surface VBO data\n");
+		GL_ClearBufferBindings();
+		return;
+	}
 	varray_index = 0;
 	
 	for (j=1 ; j<MAX_MODELS ; j++)
@@ -1251,6 +1339,9 @@ void GL_BuildBModelVertexBuffer (void)
 			msurface_t *s = &m->surfaces[i];
 			s->vbo_firstvert = varray_index;
 			memcpy (&varray[VERTEXSIZE * varray_index], s->polys->verts, VERTEXSIZE * sizeof(float) * s->numedges);
+			GL_BuildSurfaceTangentFrame(s, tangentframe);
+			for (k = 0; k < s->numedges; k++)
+				memcpy(&tangentarray[TANGENT_VERTEXSIZE * (varray_index + k)], tangentframe, sizeof(tangentframe));
 			varray_index += s->numedges;
 		}
 	}
@@ -1265,6 +1356,9 @@ void GL_BuildBModelVertexBuffer (void)
 			msurface_t *s = &m->surfaces[i];
 			s->vbo_firstvert = varray_index;
 			memcpy (&varray[VERTEXSIZE * varray_index], s->polys->verts, VERTEXSIZE * sizeof(float) * s->numedges);
+			GL_BuildSurfaceTangentFrame(s, tangentframe);
+			for (k = 0; k < s->numedges; k++)
+				memcpy(&tangentarray[TANGENT_VERTEXSIZE * (varray_index + k)], tangentframe, sizeof(tangentframe));
 			varray_index += s->numedges;
 		}
 	}
@@ -1272,7 +1366,10 @@ void GL_BuildBModelVertexBuffer (void)
 // upload to GPU
 	GL_BindBufferFunc (GL_ARRAY_BUFFER, gl_bmodel_vbo);
 	GL_BufferDataFunc (GL_ARRAY_BUFFER, varray_bytes, varray, GL_STATIC_DRAW);
+	GL_BindBufferFunc (GL_ARRAY_BUFFER, gl_bmodel_tangent_vbo);
+	GL_BufferDataFunc (GL_ARRAY_BUFFER, tangent_bytes, tangentarray, GL_STATIC_DRAW);
 	free (varray);
+	free (tangentarray);
 	
 // invalidate the cached bindings
 	GL_ClearBufferBindings ();

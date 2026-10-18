@@ -73,9 +73,10 @@ static inline int Buf_GetC(stdio_buffer_t *buf)
 
 /*small function to read files with stb_image - single-file image loader library.
 ** downloaded from: https://raw.githubusercontent.com/nothings/stb/master/stb_image.h
-** only use jpeg+png formats, because tbh there's not much need for the others.
+** use JPEG, PNG and BMP formats for external UI images.
 ** */
 #define STB_IMAGE_IMPLEMENTATION
+#define STBI_ONLY_BMP
 #define STBI_ONLY_JPEG
 #ifdef LODEPNG_NO_COMPILE_DECODER
 	#define STBI_ONLY_PNG
@@ -94,6 +95,142 @@ static byte *Image_LoadSTBI(FILE *f, int *width, int *height)
 		free(heap);
 		return hunk;
 	}
+	return NULL;
+}
+
+static unsigned int Image_ReadLE32(const byte *p)
+{
+	return (unsigned int)p[0] | ((unsigned int)p[1] << 8) |
+		((unsigned int)p[2] << 16) | ((unsigned int)p[3] << 24);
+}
+
+static unsigned short Image_ReadLE16(const byte *p)
+{
+	return (unsigned short)(p[0] | ((unsigned short)p[1] << 8));
+}
+
+/*
+================
+Image_LoadBMP
+
+Quake UI bitmaps use palette index 255 as their transparent color. STB converts
+indexed BMPs to opaque RGBA, so expand 8-bit BMPs here and retain that key.
+================
+*/
+static byte *Image_LoadBMP(FILE *f, int *width, int *height, qboolean *malloced, qboolean quake_transparency)
+{
+	long file_start = ftell(f);
+	byte file_header[14], dib_header[40], palette[256][4];
+	unsigned int dib_size, pixel_offset, colors_used, palette_count, compression;
+	int32_t bmp_width, bmp_signed_height;
+	int bmp_height, top_down;
+	size_t row_stride, image_size, pixel_count, output_size;
+	byte *row = NULL, *rgba = NULL;
+	unsigned int i;
+
+	if (file_start < 0)
+		goto fail;
+	if (fread(file_header, 1, sizeof(file_header), f) != sizeof(file_header))
+		goto fail;
+	if (file_header[0] != 'B' || file_header[1] != 'M')
+		goto fallback;
+	if (fread(dib_header, 1, 4, f) != 4)
+		goto fail;
+
+	dib_size = Image_ReadLE32(dib_header);
+	if (dib_size < sizeof(dib_header) || com_filesize < 14 ||
+		dib_size > (unsigned int)(com_filesize - 14))
+		goto fallback;
+	if (fread(dib_header + 4, 1, sizeof(dib_header) - 4, f) != sizeof(dib_header) - 4)
+		goto fail;
+
+	bmp_width = (int32_t)Image_ReadLE32(dib_header + 4);
+	bmp_signed_height = (int32_t)Image_ReadLE32(dib_header + 8);
+	pixel_offset = Image_ReadLE32(file_header + 10);
+	compression = Image_ReadLE32(dib_header + 16);
+	colors_used = Image_ReadLE32(dib_header + 32);
+	if (bmp_width <= 0 || bmp_signed_height == 0 || bmp_signed_height == INT32_MIN ||
+		Image_ReadLE16(dib_header + 12) != 1 || Image_ReadLE16(dib_header + 14) != 8 || compression != 0)
+		goto fallback;
+
+	bmp_height = bmp_signed_height < 0 ? -bmp_signed_height : bmp_signed_height;
+	top_down = bmp_signed_height < 0;
+	palette_count = colors_used ? colors_used : 256;
+	if (palette_count > 256 || (size_t)bmp_width > (size_t)-1 - 3)
+		goto fallback;
+	row_stride = ((size_t)bmp_width + 3) & ~(size_t)3;
+	if ((size_t)bmp_height > (size_t)-1 / row_stride ||
+		(size_t)bmp_width > (size_t)-1 / (size_t)bmp_height)
+		goto fallback;
+	image_size = row_stride * (size_t)bmp_height;
+	pixel_count = (size_t)bmp_width * (size_t)bmp_height;
+	if (pixel_count > (size_t)-1 / 4)
+		goto fallback;
+	output_size = pixel_count * 4;
+
+	if (pixel_offset < 14 + dib_size + palette_count * 4 ||
+		com_filesize < 0 || pixel_offset > (unsigned int)com_filesize ||
+		image_size > (size_t)(com_filesize - (int)pixel_offset))
+		goto fallback;
+
+	memset(palette, 0, sizeof(palette));
+	if (fseek(f, file_start + 14 + (long)dib_size, SEEK_SET) != 0)
+		goto fail;
+	for (i = 0; i < palette_count; i++)
+	{
+		byte entry[4];
+		if (fread(entry, 1, sizeof(entry), f) != sizeof(entry))
+			goto fail;
+		palette[i][0] = entry[2];
+		palette[i][1] = entry[1];
+		palette[i][2] = entry[0];
+		palette[i][3] = 255;
+	}
+
+	row = (byte *)malloc(row_stride);
+	rgba = (byte *)malloc(output_size);
+	if (!row || !rgba)
+		goto fail;
+	if (fseek(f, file_start + (long)pixel_offset, SEEK_SET) != 0)
+		goto fail;
+
+	for (i = 0; i < (unsigned int)bmp_height; i++)
+	{
+		size_t x;
+		unsigned int output_y = top_down ? i : (unsigned int)bmp_height - 1 - i;
+		byte *dst = rgba + (size_t)output_y * (size_t)bmp_width * 4;
+		if (fread(row, 1, row_stride, f) != row_stride)
+			goto fail;
+		for (x = 0; x < (size_t)bmp_width; x++)
+		{
+			unsigned int color = row[x];
+			if (color >= palette_count)
+				goto fallback;
+			*dst++ = palette[color][0];
+			*dst++ = palette[color][1];
+			*dst++ = palette[color][2];
+			*dst++ = (quake_transparency && color == 255) ? 0 : 255;
+		}
+	}
+
+	free(row);
+	fclose(f);
+	*width = bmp_width;
+	*height = bmp_height;
+	*malloced = true;
+	return rgba;
+
+fallback:
+	free(row);
+	free(rgba);
+	if (file_start < 0 || fseek(f, file_start, SEEK_SET) != 0)
+		goto fail;
+	return Image_LoadSTBI(f, width, height);
+
+fail:
+	free(row);
+	free(rgba);
+	fclose(f);
 	return NULL;
 }
 
@@ -568,6 +705,11 @@ byte *Image_LoadImage (const char *name, int *width, int *height, enum srcformat
 		COM_FOpenFile (loadfilename, &f, NULL);
 		if (f)
 			return Image_LoadPNG (f, width, height, malloced);
+
+		q_snprintf (loadfilename, sizeof(loadfilename), "%s%s.bmp", prefixes[i], name);
+		COM_FOpenFile (loadfilename, &f, NULL);
+		if (f)
+			return Image_LoadBMP (f, width, height, malloced, !strncmp(origname, "gfx/", 4));
 
 		q_snprintf (loadfilename, sizeof(loadfilename), "%s%s.jpeg", prefixes[i], name);
 		COM_FOpenFile (loadfilename, &f, NULL);

@@ -27,6 +27,10 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 extern cvar_t gl_fullbrights, r_drawflat, gl_overbright, r_oldskyleaf, r_showtris; //johnfitz
 cvar_t r_scenecache = {"r_scenecache",""};	//spike, an attempt to cope with abusive maps a bit better.
+cvar_t r_bumpmapping = {"r_bumpmapping", "1", CVAR_ARCHIVE};	// optional external normal maps for BSP world textures
+cvar_t r_bumpmapping_strength = {"r_bumpmapping_strength", "4", CVAR_ARCHIVE}; // tangent-space normal strength, doubled from the previous default
+cvar_t r_bumpmapping_debug = {"r_bumpmapping_debug", "0"}; // 1 = raw normal map, 2 = transformed normal
+
 
 byte *SV_FatPVS (vec3_t org, qmodel_t *worldmodel);
 static qboolean RSceneCache_Queue(byte *vis);
@@ -600,11 +604,16 @@ float GL_WaterAlphaForEntitySurface (entity_t *ent, msurface_t *s)
 
 static GLuint r_world_program;
 extern GLuint gl_bmodel_vbo;
+extern GLuint gl_bmodel_tangent_vbo;
 
 // uniforms used in frag shader
 static GLuint texLoc;
 static GLuint LMTexLoc;
 static GLuint fullbrightTexLoc;
+static GLuint normalMapTexLoc;
+static GLuint useNormalMapLoc;
+static GLuint bumpDebugModeLoc;
+static GLuint bumpStrengthLoc;
 static GLuint useFullbrightTexLoc;
 static GLuint useOverbrightLoc;
 static GLuint useAlphaTestLoc;
@@ -612,6 +621,73 @@ static GLuint alphaLoc;
 GLuint clTimeLoc; // woods #caustics
 static GLuint causticsOpacityLoc; // woods #caustics
 
+static int r_bumpmapping_usage_frame = -1;
+static unsigned int r_bumpmapping_usage_count;
+static qboolean r_bumpmapping_status_registered;
+
+/* GL_MAX_TEXTURE_UNITS counts fixed-function units, not GLSL sampler units. */
+static qboolean R_BumpmappingTextureUnitsAvailable(void)
+{
+	return gl_max_texture_image_units >= 5 && gl_max_combined_texture_image_units >= 5;
+}
+
+static float R_BumpmappingStrength(void)
+{
+	return CLAMP(0.0f, r_bumpmapping_strength.value, 8.0f);
+}
+
+static void R_BumpmappingNoteUse(void)
+{
+	if (r_bumpmapping_usage_frame != r_framecount)
+	{
+		r_bumpmapping_usage_frame = r_framecount;
+		r_bumpmapping_usage_count = 0;
+	}
+	r_bumpmapping_usage_count++;
+}
+
+static void R_BumpmappingStatus_f(void)
+{
+	int i;
+	int loaded = 0;
+	int total = 0;
+	unsigned int used = r_bumpmapping_usage_frame == r_framecount ? r_bumpmapping_usage_count : 0;
+	qboolean ready = r_bumpmapping.value != 0 && r_world_program != 0 &&
+		R_BumpmappingTextureUnitsAvailable() && gl_bmodel_tangent_vbo != 0;
+
+	Con_Printf("BSP normal mapping prerequisites: %s\n", ready ? "ready" : "not ready");
+	Con_Printf("  r_bumpmapping=%s, strength=%s, debug=%s (1=raw map, 2=world normal)\n",
+		r_bumpmapping.string, r_bumpmapping_strength.string, r_bumpmapping_debug.string);
+	Con_Printf("  world GLSL program=%u, fixed-function texture units=%d\n",
+		(unsigned int)r_world_program, gl_max_texture_units);
+	Con_Printf("  fragment samplers=%d/5, combined samplers=%d/5, tangent VBO=%u\n",
+		gl_max_texture_image_units, gl_max_combined_texture_image_units,
+		(unsigned int)gl_bmodel_tangent_vbo);
+	Con_Printf("  normal-mapped material batches in frame %d: %u\n",
+		r_bumpmapping_usage_frame, used);
+
+	if (!cl.worldmodel)
+	{
+		Con_Printf("  no world model is loaded\n");
+		return;
+	}
+
+	for (i = 0; i < cl.worldmodel->numtextures; i++)
+	{
+		texture_t *tex = cl.worldmodel->textures[i];
+		if (!tex)
+			continue;
+		total++;
+		if (tex->normalmap)
+		{
+			loaded++;
+			Con_Printf("  loaded: %s (%s)\n", tex->name, tex->normalmap->source_file);
+		}
+	}
+	Con_Printf("  loaded sidecars: %d of %d world texture slots\n", loaded, total);
+	if (!loaded)
+		Con_Printf("  no normal-map sidecars were found for this world\n");
+}
 
 static struct
 {
@@ -628,6 +704,9 @@ static struct
 #define vertAttrIndex 0
 #define texCoordsAttrIndex 1
 #define LMCoordsAttrIndex 2
+#define surfaceNormalAttrIndex 3
+#define surfaceTangentAttrIndex 4
+#define surfaceTangentSignAttrIndex 5
 
 /*
 =============
@@ -1044,8 +1123,17 @@ void GLWorld_CreateShaders (void)
 	const glsl_attrib_binding_t bindings[] = {
 		{ "Vert", vertAttrIndex },
 		{ "TexCoords", texCoordsAttrIndex },
-		{ "LMCoords", LMCoordsAttrIndex }
+		{ "LMCoords", LMCoordsAttrIndex },
+		{ "SurfaceNormal", surfaceNormalAttrIndex },
+		{ "SurfaceTangent", surfaceTangentAttrIndex },
+		{ "SurfaceTangentSign", surfaceTangentSignAttrIndex }
 	};
+
+	if (!r_bumpmapping_status_registered)
+	{
+		Cmd_AddCommand("r_bumpmapping_status", R_BumpmappingStatus_f);
+		r_bumpmapping_status_registered = true;
+	}
 
 	// Driver bug workarounds:
 	// - "Intel(R) UHD Graphics 600" version "4.6.0 - Build 26.20.100.7263"
@@ -1058,15 +1146,25 @@ void GLWorld_CreateShaders (void)
 		"attribute vec4 Vert;\n"
 		"attribute vec2 TexCoords;\n"
 		"attribute vec2 LMCoords;\n"
+		"attribute vec3 SurfaceNormal;\n"
+		"attribute vec3 SurfaceTangent;\n"
+		"attribute float SurfaceTangentSign;\n"
 		"\n"
 		"varying float FogFragCoord;\n"
 		"varying vec2 tc_tex;\n"
 		"varying vec2 tc_lm;\n"
+		"varying vec3 frameNormal;\n"
+		"varying vec3 frameTangent;\n"
+		"varying float tangentSign;\n"
 		"\n"
 		"void main()\n"
 		"{\n"
 		"	tc_tex = TexCoords;\n"
 		"	tc_lm = LMCoords;\n"
+		"\tframeNormal = normalize(SurfaceNormal);\n"
+		"\tframeTangent = normalize(SurfaceTangent);\n"
+		"\tframeTangent = normalize(frameTangent - frameNormal * dot(frameNormal, frameTangent));\n"
+		"\ttangentSign = SurfaceTangentSign;\n"
 		"	gl_Position = gl_ModelViewProjectionMatrix * Vert;\n"
 		"	FogFragCoord = gl_Position.w;\n"
 		"}\n";
@@ -1080,10 +1178,14 @@ void GLWorld_CreateShaders (void)
 		"uniform sampler2D LMTex;\n"
 		"uniform sampler2D FullbrightTex;\n"
 		"uniform sampler2D CausticsTex;\n"
+		"uniform sampler2D NormalMap;\n"
 		"uniform bool UseFullbrightTex;\n"
 		"uniform bool UseOverbright;\n"
 		"uniform bool UseAlphaTest;\n"
 		"uniform bool UseCausticsTex;\n"
+		"uniform bool UseNormalMap;\n"
+		"uniform int BumpDebugMode;\n"
+		"uniform float BumpStrength;\n"
 		"uniform float Alpha;\n"
 		"uniform float ClTime;\n"
 		"uniform float CausticsOpacity;\n"
@@ -1091,6 +1193,9 @@ void GLWorld_CreateShaders (void)
 		"varying float FogFragCoord;\n"
 		"varying vec2 tc_tex;\n"
 		"varying vec2 tc_lm;\n"
+		"varying vec3 frameNormal;\n"
+		"varying vec3 frameTangent;\n"
+		"varying float tangentSign;\n"
 		"\n"
 		"void main()\n"
 		"{\n"
@@ -1103,6 +1208,28 @@ void GLWorld_CreateShaders (void)
 		"\n"
 		"	if (UseOverbright)\n"
 		"		result.rgb *= 2.0;\n"
+		"\tif (UseNormalMap)\n"
+		"\t{\n"
+		"\t\tvec4 normalSample = texture2D(NormalMap, tc_tex.xy);\n"
+		"\t\tvec3 tangentNormal = normalize(normalSample.xyz * 2.0 - 1.0);\n"
+		"\t\ttangentNormal.xy *= BumpStrength;\n"
+		"\t\ttangentNormal = normalize(tangentNormal);\n"
+		"\t\tvec3 N = normalize(frameNormal);\n"
+		"\t\tvec3 T = normalize(frameTangent - N * dot(N, frameTangent));\n"
+		"\t\tvec3 B = normalize(cross(N, T)) * tangentSign;\n"
+		"\t\tvec3 mappedNormal = normalize(T * tangentNormal.x + B * tangentNormal.y + N * tangentNormal.z);\n"
+		"\t\tif (BumpDebugMode == 1) { gl_FragColor = vec4(normalSample.rgb, result.a); return; }\n"
+		"\t\tif (BumpDebugMode == 2) { gl_FragColor = vec4(mappedNormal * 0.5 + 0.5, result.a); return; }\n"
+		"\t\t// Keep the BSP lightmap authoritative; it also carries dynamic-light brightness.\n"
+		"\t\tfloat lightmapBrightness = dot(lightmapColor.rgb, vec3(0.299, 0.587, 0.114));\n"
+		"\t\tif (UseOverbright) lightmapBrightness *= 2.0;\n"
+		"\t\tfloat lightInfluence = 0.25 + 0.75 * clamp(lightmapBrightness * 2.0, 0.0, 1.0);\n"
+		"\t\tvec3 lightDirection = normalize(vec3(-0.35, 0.45, 0.82));\n"
+		"\t\tfloat baseDiffuse = max(dot(N, lightDirection), 0.0);\n"
+		"\t\tfloat mappedDiffuse = max(dot(mappedNormal, lightDirection), 0.0);\n"
+		"\t\tfloat bumpDiffuse = 1.0 + lightInfluence * 0.80 * (mappedDiffuse - baseDiffuse);\n"
+		"\t\tresult.rgb *= bumpDiffuse; // flat normals preserve BSP brightness\n"
+		"\t}\n"
 		"	if (UseFullbrightTex)\n"
 		"		result += texture2D(FullbrightTex, tc_tex.xy);\n"
 		"\n"
@@ -1166,6 +1293,10 @@ void GLWorld_CreateShaders (void)
 		LMTexLoc = GL_GetUniformLocation (&r_world_program, "LMTex");
 		fullbrightTexLoc = GL_GetUniformLocation (&r_world_program, "FullbrightTex");
 		causticsTexLoc = GL_GetUniformLocation(&r_world_program, "CausticsTex"); // woods #caustics
+		normalMapTexLoc = GL_GetUniformLocation(&r_world_program, "NormalMap");
+		useNormalMapLoc = GL_GetUniformLocation(&r_world_program, "UseNormalMap");
+		bumpDebugModeLoc = GL_GetUniformLocation(&r_world_program, "BumpDebugMode");
+		bumpStrengthLoc = GL_GetUniformLocation(&r_world_program, "BumpStrength");
 		useFullbrightTexLoc = GL_GetUniformLocation (&r_world_program, "UseFullbrightTex");
 		useOverbrightLoc = GL_GetUniformLocation (&r_world_program, "UseOverbright");
 		useAlphaTestLoc = GL_GetUniformLocation (&r_world_program, "UseAlphaTest");
@@ -1178,6 +1309,9 @@ void GLWorld_CreateShaders (void)
 		GL_Uniform1iFunc (texLoc, 0);
 		GL_Uniform1iFunc (LMTexLoc, 1);
 		GL_Uniform1iFunc (fullbrightTexLoc, 2);
+		GL_Uniform1iFunc (normalMapTexLoc, R_BumpmappingTextureUnitsAvailable() ? 4 : 0);
+		GL_Uniform1iFunc (bumpDebugModeLoc, (int)r_bumpmapping_debug.value);
+		GL_Uniform1fFunc (bumpStrengthLoc, R_BumpmappingStrength());
 		GL_UseProgramFunc (0);
 	}
 
@@ -1196,15 +1330,19 @@ void R_DrawTextureChains_GLSL (qmodel_t *model, entity_t *ent, texchain_t chain)
 {
 	int			i;
 	msurface_t	*s;
-	texture_t	*t;
+	texture_t	*t, *animated;
 	//qboolean	bound; //removed this cos it was pointless anyway
 	int		lastlightmap;
+	qboolean	allowNormalMaps;
 	gltexture_t	*fullbright = NULL;
 	float		entalpha;
 	unsigned int enteffects;
 
 	entalpha = (ent != NULL) ? ENTALPHA_DECODE(ent->alpha) : 1.0f;
 	enteffects = (ent != NULL) ? ent->effects : 0;
+	allowNormalMaps = r_bumpmapping.value != 0 && r_world_program != 0 &&
+		model == cl.worldmodel && ent == NULL && R_BumpmappingTextureUnitsAvailable() &&
+		gl_bmodel_tangent_vbo != 0;
 
 // enable blending / disable depth writes
 	if (enteffects & EF_ADDITIVE)
@@ -1232,6 +1370,14 @@ void R_DrawTextureChains_GLSL (qmodel_t *model, entity_t *ent, texchain_t chain)
 	GL_VertexAttribPointerFunc (vertAttrIndex,      3, GL_FLOAT, GL_FALSE, VERTEXSIZE * sizeof(float), ((float *)0));
 	GL_VertexAttribPointerFunc (texCoordsAttrIndex, 2, GL_FLOAT, GL_FALSE, VERTEXSIZE * sizeof(float), ((float *)0) + 3);
 	GL_VertexAttribPointerFunc (LMCoordsAttrIndex,  2, GL_FLOAT, GL_FALSE, VERTEXSIZE * sizeof(float), ((float *)0) + 5);
+	GL_EnableVertexAttribArrayFunc (surfaceNormalAttrIndex);
+	GL_EnableVertexAttribArrayFunc (surfaceTangentAttrIndex);
+	GL_EnableVertexAttribArrayFunc (surfaceTangentSignAttrIndex);
+	GL_BindBuffer (GL_ARRAY_BUFFER, gl_bmodel_tangent_vbo);
+	GL_VertexAttribPointerFunc (surfaceNormalAttrIndex, 3, GL_FLOAT, GL_FALSE, TANGENT_VERTEXSIZE * sizeof(float), ((float *)0));
+	GL_VertexAttribPointerFunc (surfaceTangentAttrIndex, 3, GL_FLOAT, GL_FALSE, TANGENT_VERTEXSIZE * sizeof(float), ((float *)0) + 3);
+	GL_VertexAttribPointerFunc (surfaceTangentSignAttrIndex, 1, GL_FLOAT, GL_FALSE, TANGENT_VERTEXSIZE * sizeof(float), ((float *)0) + 6);
+	GL_BindBuffer (GL_ARRAY_BUFFER, gl_bmodel_vbo);
 
 // set uniforms
 	GL_Uniform1iFunc (texLoc, 0);
@@ -1241,6 +1387,9 @@ void R_DrawTextureChains_GLSL (qmodel_t *model, entity_t *ent, texchain_t chain)
 	GL_Uniform1iFunc (useFullbrightTexLoc, 0);
 	GL_Uniform1iFunc (useOverbrightLoc, (int)gl_overbright.value);
 	GL_Uniform1iFunc(useCausticsTexLoc, 0); // woods #caustics
+	GL_Uniform1iFunc (useNormalMapLoc, 0);
+	GL_Uniform1iFunc (bumpDebugModeLoc, (int)r_bumpmapping_debug.value);
+	GL_Uniform1fFunc (bumpStrengthLoc, R_BumpmappingStrength());
 	GL_Uniform1iFunc (useAlphaTestLoc, 0);
 	GL_Uniform1fFunc (alphaLoc, entalpha);
 	GL_Uniform1fFunc(clTimeLoc, cl.time); // woods #caustics
@@ -1255,7 +1404,8 @@ void R_DrawTextureChains_GLSL (qmodel_t *model, entity_t *ent, texchain_t chain)
 
 	// Enable/disable TMU 2 (fullbrights)
 	// FIXME: Move below to where we bind GL_TEXTURE0
-		if (gl_fullbrights.value && (fullbright = R_TextureAnimation(t, ent != NULL ? ent->frame : 0)->fullbright))
+		animated = R_TextureAnimation(t, ent != NULL ? ent->frame : 0);
+		if (gl_fullbrights.value && (fullbright = animated->fullbright))
 		{
 			GL_SelectTexture (GL_TEXTURE2);
 			GL_Bind (fullbright);
@@ -1268,9 +1418,20 @@ void R_DrawTextureChains_GLSL (qmodel_t *model, entity_t *ent, texchain_t chain)
 
 		//bind the appropriate diffuse
 		GL_SelectTexture (GL_TEXTURE0);
-		GL_Bind ((R_TextureAnimation(t, ent != NULL ? ent->frame : 0))->gltexture);
+		GL_Bind (animated->gltexture);
 		if (t->texturechains[chain]->flags & SURF_DRAWFENCE)
 			GL_Uniform1iFunc (useAlphaTestLoc, 1); // Flip alpha test back on
+
+		if (allowNormalMaps && animated->normalmap)
+		{
+			GL_SelectTexture (GL_TEXTURE0 + 4);
+			GL_Bind (animated->normalmap);
+			GL_Uniform1iFunc (useNormalMapLoc, 1);
+			R_BumpmappingNoteUse();
+		}
+		else
+			GL_Uniform1iFunc (useNormalMapLoc, 0);
+		GL_SelectTexture (GL_TEXTURE0);
 
 		GL_SelectTexture (GL_TEXTURE1);
 		lastlightmap = -1;	//we're checking anyway, so w/e
@@ -1284,7 +1445,7 @@ void R_DrawTextureChains_GLSL (qmodel_t *model, entity_t *ent, texchain_t chain)
 				if ((!underwater && !(s->flags & SURF_UNDERWATER)) || (underwater && (s->flags & SURF_UNDERWATER)))
 				{
 						GL_SelectTexture(GL_TEXTURE0);
-						GL_Bind((R_TextureAnimation(t, ent != NULL ? ent->frame : 0))->gltexture);
+						GL_Bind(animated->gltexture);
 						if (t->texturechains[chain]->flags & SURF_DRAWFENCE)
 							GL_Uniform1iFunc(useAlphaTestLoc, 1); // Flip alpha test back on
 
@@ -1314,6 +1475,9 @@ void R_DrawTextureChains_GLSL (qmodel_t *model, entity_t *ent, texchain_t chain)
 	GL_DisableVertexAttribArrayFunc (vertAttrIndex);
 	GL_DisableVertexAttribArrayFunc (texCoordsAttrIndex);
 	GL_DisableVertexAttribArrayFunc (LMCoordsAttrIndex);
+	GL_DisableVertexAttribArrayFunc (surfaceNormalAttrIndex);
+	GL_DisableVertexAttribArrayFunc (surfaceTangentAttrIndex);
+	GL_DisableVertexAttribArrayFunc (surfaceTangentSignAttrIndex);
 
 	GL_UseProgramFunc (0);
 	GL_SelectTexture (GL_TEXTURE0);
@@ -2314,12 +2478,16 @@ static void RSceneCache_Draw(qboolean water)
 	int mode;
 	int lastprog = -1;
 	float alpha = 0;
+	qboolean allowNormalMaps;
 
 	if (!cache)
 	{
 		skipsubmodels = NULL;
 		return;
 	}
+	allowNormalMaps = !water && cache->worldmodel == cl.worldmodel && r_world_program != 0 &&
+		r_bumpmapping.value != 0 && R_BumpmappingTextureUnitsAvailable() &&
+		gl_bmodel_tangent_vbo != 0;
 	RSceneCache_Finish(cache);
 	skipsubmodels = cache->cachedsubmodels;
 
@@ -2342,6 +2510,15 @@ static void RSceneCache_Draw(qboolean water)
 	GL_VertexAttribPointerFunc (vertAttrIndex,      3, GL_FLOAT, GL_FALSE, VERTEXSIZE * sizeof(float), ((float *)0));
 	GL_VertexAttribPointerFunc (texCoordsAttrIndex, 2, GL_FLOAT, GL_FALSE, VERTEXSIZE * sizeof(float), ((float *)0) + 3);
 	GL_VertexAttribPointerFunc (LMCoordsAttrIndex,  2, GL_FLOAT, GL_FALSE, VERTEXSIZE * sizeof(float), ((float *)0) + 5);
+	// Scene-cache batches share the world VBO vertex indices; bind the matching tangent frames too.
+	GL_EnableVertexAttribArrayFunc (surfaceNormalAttrIndex);
+	GL_EnableVertexAttribArrayFunc (surfaceTangentAttrIndex);
+	GL_EnableVertexAttribArrayFunc (surfaceTangentSignAttrIndex);
+	GL_BindBuffer (GL_ARRAY_BUFFER, gl_bmodel_tangent_vbo);
+	GL_VertexAttribPointerFunc (surfaceNormalAttrIndex, 3, GL_FLOAT, GL_FALSE, TANGENT_VERTEXSIZE * sizeof(float), ((float *)0));
+	GL_VertexAttribPointerFunc (surfaceTangentAttrIndex, 3, GL_FLOAT, GL_FALSE, TANGENT_VERTEXSIZE * sizeof(float), ((float *)0) + 3);
+	GL_VertexAttribPointerFunc (surfaceTangentSignAttrIndex, 1, GL_FLOAT, GL_FALSE, TANGENT_VERTEXSIZE * sizeof(float), ((float *)0) + 6);
+	GL_BindBuffer (GL_ARRAY_BUFFER, gl_bmodel_vbo);
 
 	rs_brushpolys += cache->brushpolys; //for r_speeds.;
 
@@ -2459,6 +2636,8 @@ static void RSceneCache_Draw(qboolean water)
 						lastprog = r_world_program;
 						GL_UseProgramFunc (r_world_program);
 						GL_Uniform1iFunc (useOverbrightLoc, (int)gl_overbright.value);
+						GL_Uniform1iFunc (bumpDebugModeLoc, (int)r_bumpmapping_debug.value);
+						GL_Uniform1fFunc (bumpStrengthLoc, R_BumpmappingStrength());
 						GL_Uniform1fFunc (alphaLoc, 1);			//worldmodel is never translucent.
 
 						GL_Uniform1fFunc(clTimeLoc, cl.time);
@@ -2484,6 +2663,16 @@ static void RSceneCache_Draw(qboolean water)
 						GL_Uniform1iFunc (useFullbrightTexLoc, 0);
 						//don't bother unbinding. the glsl won't use it anyway.
 					}
+
+					if (allowNormalMaps && tex->normalmap)
+					{
+						GL_SelectTexture (GL_TEXTURE0 + 4);
+						GL_Bind (tex->normalmap);
+						GL_Uniform1iFunc (useNormalMapLoc, 1);
+						R_BumpmappingNoteUse();
+					}
+					else
+						GL_Uniform1iFunc (useNormalMapLoc, 0);
 				}
 			}
 
@@ -2518,6 +2707,9 @@ static void RSceneCache_Draw(qboolean water)
 	GL_DisableVertexAttribArrayFunc (vertAttrIndex);
 	GL_DisableVertexAttribArrayFunc (texCoordsAttrIndex);
 	GL_DisableVertexAttribArrayFunc (LMCoordsAttrIndex);
+	GL_DisableVertexAttribArrayFunc (surfaceNormalAttrIndex);
+	GL_DisableVertexAttribArrayFunc (surfaceTangentAttrIndex);
+	GL_DisableVertexAttribArrayFunc (surfaceTangentSignAttrIndex);
 	GL_SelectTexture (GL_TEXTURE0);
 
 	GL_BindBuffer (GL_ARRAY_BUFFER, 0);

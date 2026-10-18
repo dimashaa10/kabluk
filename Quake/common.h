@@ -336,8 +336,11 @@ unsigned COM_HashBlock (const void* data, size_t size); // woods #modsmenu (iw)
 // localization support for 2021 rerelease version:
 void LOC_Init (void);
 void LOC_Shutdown (void);
+const char *LOC_GetLanguageCode (void);
 const char* LOC_GetRawString (const char *key);
 const char* LOC_GetString (const char *key);
+const char* LOC_GetStringOr (const char *key, const char *fallback);
+const char* LOC_TranslateText (const char *text);
 qboolean LOC_HasPlaceholders (const char *str);
 size_t LOC_Format (const char *format, const char* (*getarg_fn)(int idx, void* userdata), void* userdata, char* out, size_t len);
 qboolean isSpecialMap (const char* name); // woods for bmodels
