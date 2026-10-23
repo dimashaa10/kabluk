@@ -65,6 +65,12 @@ It covers:
 - No flip on a held jump without takeoff, falling off a ledge, an airborne
   velocity change, enabling in midair or a water jump; early landing and
   mode cleanup clear the animation state.
+- A jump is only a takeoff when `+jump` was pressed: rising from a jump pad,
+  push trigger or teleport never awards a flip, the input latch is one-shot,
+  and riding up a slope keeps the ground poses and never flips or wall-bounces.
+- The slide toggle is rate limited; a tap only latches for a grounded rider who
+  is already rolling and only reaches a small curb above the board, so tapping
+  cannot be used to climb a wall.
 - Shared model origin, wheels above flat ground and sloped ground beneath the
   corners, non-solid board, ownership, follow/yaw and cleanup after death,
   noclip, deep water, ladder entry and a VM-context change.

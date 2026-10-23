@@ -281,11 +281,13 @@ typedef struct client_s
 	float			skate_lift;
 	qboolean		skate_grounded;		// rearm a flip only after touching ground
 	qboolean		skate_jump_active;	// airborne after a real jump, independent of flip animation
+	qboolean		skate_jump_input;	// +jump seen in the latest move packet
 	qboolean		skate_slide_armed;	// slide mode toggled by press; key-up does not disarm it
 	qboolean		skate_sliding;		// grind-latched to a brush upper edge until its end or toggle-off
 	vec3_t			skate_slide_normal;
 	edict_t			*skate_slide_surface;
 	float			skate_slide_edge_height;
+	double			skate_slide_next_toggle;	// anti-spam gate for +skate_slide
 	int				skate_anim_state;
 	int				skate_anim_frame;
 	double			skate_anim_next_frame_time;
