@@ -3135,12 +3135,28 @@ void SV_WriteClientdataToMessage (client_t *client, sizebuf_t *msg)
 		MSG_WriteByte (msg, ent->alpha); //for now, weaponalpha = client entity alpha
 	//johnfitz
 
-	// Repeat the small stock-compatible state in every legacy datagram so
-	// packet loss cannot leave the chase camera stuck on/off. Predinfo uses
-	// the normal acknowledged stat channel from SV_CalcStats instead.
-	MSG_WriteByte(msg, svc_updatestat);
-	MSG_WriteByte(msg, STAT_SKATE);
-	MSG_WriteLong(msg, SV_SkateStat(client));
+	// The skate state rides in the stat channel, which this legacy datagram
+	// does not otherwise delta. Send it when it changes (it changes every
+	// frame while riding, because of the lift) plus a few redundant repeats so
+	// a lost packet cannot leave the chase camera stuck on/off. When the player
+	// is not skating it costs nothing: the last value sent was 0.
+	{
+		int skate_stat = SV_SkateStat(client);
+
+		if (skate_stat != client->skate_stat_sent)
+		{
+			client->skate_stat_sent = skate_stat;
+			client->skate_stat_repeat = SV_SKATE_STAT_REPEATS;
+		}
+		if (skate_stat != 0 || client->skate_stat_repeat > 0)
+		{
+			if (client->skate_stat_repeat > 0)
+				client->skate_stat_repeat--;
+			MSG_WriteByte(msg, svc_updatestat);
+			MSG_WriteByte(msg, STAT_SKATE);
+			MSG_WriteLong(msg, skate_stat);
+		}
+	}
 }
 
 

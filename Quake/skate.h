@@ -65,6 +65,12 @@
 #define SKATE_GROUND_CLEARANCE 1.0f
 #define SKATE_MAX_LIFT 64.0f
 
+/* The engine sends STAT_SKATE in legacy datagrams only when the value changes,
+ * plus this many redundant repeats so a lost packet cannot leave the chase
+ * camera latched on or off. Predinfo/FTE-delta clients use the normal
+ * acknowledged stat channel and need none of this. */
+#define SV_SKATE_STAT_REPEATS 3
+
 /* One stock-compatible stat carries both mode and camera lift (1/256 units).
  * The signature avoids treating another mod's ordinary stat 19 as skating.
  */

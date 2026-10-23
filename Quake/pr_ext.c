@@ -5082,6 +5082,15 @@ static struct svcustomstat_s *PR_CustomStat(int idx, int type)
 		if (sv.customstats[i].idx == idx && (sv.customstats[i].type==ev_string) == (type==ev_string))
 			break;
 	}
+	if (i == sv.numcustomstats && idx < 32 && (STAT_RESERVED_ENGINE_STATS & (1u<<idx)))
+	{	//engine-owned stat: say so loudly instead of silently eating the mod's value
+		static unsigned int warned;
+		if (!(warned & (1u<<idx)))
+		{
+			warned |= 1u<<idx;
+			Con_Warning("clientstat: index %i is reserved by the engine and will keep its own value; pick an index outside 15/16/19/25-31\n", idx);
+		}
+	}
 	if (i == sv.numcustomstats)
 		sv.numcustomstats++;
 	sv.customstats[i].idx = idx;

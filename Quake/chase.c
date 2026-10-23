@@ -63,6 +63,41 @@ qboolean CL_IsSkateBoard (const entity_t *ent)
 		!q_strcasecmp(ent->model->name, SKATE_MODEL_ROOT));
 }
 
+/*
+ * The prepared board models carry their origin at the rider, not at the board's
+ * own center, so any rotation would swing the visible model around the player's
+ * feet. Move the origin by the offset the rotation puts between the level board
+ * and the tilted one, so pitch (the grind tilt) and roll (a kickflip) both pivot
+ * about the board center. The axes are the ones R_EntityMatrix builds, so this
+ * is exact rather than an approximation, and it is a no-op when both are zero.
+ */
+static void CL_BoardTiltPivot (entity_t *board)
+{
+	float pitch = DEG2RAD(board->angles[PITCH]);
+	float yaw = DEG2RAD(board->angles[YAW]);
+	float roll = DEG2RAD(board->angles[ROLL]);
+	float sy = sinf(yaw), cy = cosf(yaw);
+	float sp = sinf(pitch), cp = cosf(pitch);
+	float sr = sinf(roll), cr = cosf(roll);
+	float y = (board->model->mins[1] + board->model->maxs[1]) * 0.5f;
+	float z = (board->model->mins[2] + board->model->maxs[2]) * 0.5f;
+	float scale = ENTSCALE_DECODE(board->netstate.scale);
+	vec3_t tilted, level;
+	int i;
+
+	// center offset (0, y, z) in world space with the current board angles ...
+	tilted[0] = y * (-cy * sp * sr - cr * sy) + z * (sy * sr - cr * cy * sp);
+	tilted[1] = y * ( cr * cy - sy * sp * sr) + z * (-cy * sr - cr * sy * sp);
+	tilted[2] = y * ( cp * sr)             + z * ( cr * cp);
+	// ... and where it would be with the board level (yaw only)
+	level[0] = -y * sy;
+	level[1] =  y * cy;
+	level[2] =  z;
+
+	for (i = 0; i < 3; i++)
+		board->origin[i] += (level[i] - tilted[i]) * scale;
+}
+
 void CL_UpdateSkateVisuals (void)
 {
 	int i, owner;
@@ -97,25 +132,13 @@ void CL_UpdateSkateVisuals (void)
 		// transform. The exported relative positions of both models stay intact.
 		VectorCopy(rider->origin, board->origin);
 		board->origin[2] += lift;
-		board->angles[PITCH] = 0;
+		// Heading follows the rider. Pitch and roll come from the server and are
+		// already network-interpolated: the grind pose tilts the board
+		// (SKATE_SLIDE_BOARD_PITCH) and a kickflip spins it. Zeroing the pitch
+		// here, as an earlier build did, silently threw the grind pose away.
 		board->angles[YAW] = rider->angles[YAW];
-		// Keep the already network-interpolated roll. The prepared model's
-		// origin is at the rider, not at the board: compensate so a kickflip
-		// rotates about the board's own center instead of orbiting the feet.
-		if (board->angles[ROLL])
-		{
-			float roll = DEG2RAD(board->angles[ROLL]);
-			float yaw = DEG2RAD(board->angles[YAW]);
-			float c = cosf(roll), s = sinf(roll);
-			float y = (board->model->mins[1] + board->model->maxs[1]) * 0.5f;
-			float z = (board->model->mins[2] + board->model->maxs[2]) * 0.5f;
-			float scale = ENTSCALE_DECODE(board->netstate.scale);
-			float side = (y * (1.0f - c) + z * s) * scale;
-			float height = (z * (1.0f - c) - y * s) * scale;
-			board->origin[0] -= sinf(yaw) * side;
-			board->origin[1] += cosf(yaw) * side;
-			board->origin[2] += height;
-		}
+		if (board->angles[PITCH] || board->angles[ROLL])
+			CL_BoardTiltPivot(board);
 		board->lerpflags &= ~LERP_MOVESTEP;
 	}
 }

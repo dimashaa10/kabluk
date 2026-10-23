@@ -151,7 +151,17 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define STAT_VIEWHEIGHT		16	//replaces clc_clientdata info
 //#define STAT_TIME			17	//zquake, redundant for nq.
 //#define STAT_MATCHSTARTTIME 18
-#define STAT_SKATE			19	// tagged skate mode + visual lift; see skate.h
+/* Engine-reserved stats. These indices belong to the engine, not to the mod:
+ * the server writes them every frame in SV_CalcStats, so a mod that claims one
+ * of them with the clientstat builtin will have its value overwritten (the
+ * engine warns once in that case, see PR_CustomStat). Mods must use indices
+ * outside this list. */
+#define STAT_RESERVED_ENGINE_STATS \
+	(  (1u<<STAT_ITEMS) | (1u<<STAT_VIEWHEIGHT) | (1u<<STAT_SKATE) \
+	 | (1u<<STAT_IDEALPITCH) | (1u<<STAT_PUNCHANGLE_X) | (1u<<STAT_PUNCHANGLE_Y) \
+	 | (1u<<STAT_PUNCHANGLE_Z) | (1u<<STAT_PUNCHVECTOR_X) \
+	 | (1u<<STAT_PUNCHVECTOR_Y) | (1u<<STAT_PUNCHVECTOR_Z) )
+#define STAT_SKATE			19	// tagged skate mode + visual lift; see skate.h (engine-reserved)
 //#define STAT_VIEW2		20
 #define STAT_VIEWZOOM		21 // DP
 //#define STAT_UNUSED3		22 

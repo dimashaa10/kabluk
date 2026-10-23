@@ -110,6 +110,20 @@ tiny stand-in world (an endless floor plus an optional ceiling) and checks:
 applies on the ground only, and never touches airborne, swimming, noclip or
 pmove-driven velocity.
 
+## Skate presentation and stat channel
+
+`test_skate_client.c` also checks the board's screen pose end to end:
+- the grind tilt sent by the server (`SKATE_SLIDE_BOARD_PITCH`) reaches the render
+  transform instead of being zeroed on the client, for local and remote riders;
+- both the tilt and the kickflip roll rotate the board about its own center, verified
+  against the real `R_EntityMatrix`, including off-center models, other yaw angles and
+  network scales;
+- a level board is restored exactly (no accumulated offset) when the tilt goes away.
+
+The stat channel is covered from both sides: `test_skate_server.c` asserts the server
+tilt while grinding and its removal afterwards, and `test_skate_client.c` asserts that
+an ordinary value in stat 19 from another mod is not mistaken for skate mode.
+
 `run_cigarette_impulse_tests.sh` remains a compatibility wrapper for the full
 suite. Some legacy renderer code has an existing unused local; only that warning
 is suppressed when compiling the renderer-inclusive client test.

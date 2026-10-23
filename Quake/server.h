@@ -293,6 +293,8 @@ typedef struct client_s
 	double			skate_anim_next_frame_time;
 	qboolean		skate_flip_active;
 	double			skate_flip_start_time;
+	int				skate_stat_sent;	// last STAT_SKATE written to a legacy datagram
+	int				skate_stat_repeat;	// redundant repeats left, to survive packet loss
 } client_t;
 
 
