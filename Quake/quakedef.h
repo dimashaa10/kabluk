@@ -36,20 +36,20 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define	LINUX_VERSION		1.30
 #define	X11_VERSION		1.10
 
-#define	FITZQUAKE_VERSION	0.85	//johnfitz
+#define	FITZQUAKE_VERSION	0.85	//johnfitz 
 #define	QUAKESPASM_VERSION	0.96
 #define	QUAKESPASM_VER_PATCH	0	// helper to print a string like 0.94.7
 #ifndef	QUAKESPASM_VER_SUFFIX
 #define	QUAKESPASM_VER_SUFFIX		// optional version suffix string literal like "-beta1"
 #endif
 
-#define QSS_VER	"24-10-26" // eggs
+#define QSS_VER	"24-10-26" // eggs| version date of engine
 
 // kabluk version info
 
 #define QSSM_VER_MAJOR		0
 #define QSSM_VER_MINOR		2
-#define QSSM_VER_PATCH		1
+#define QSSM_VER_PATCH		2
 #ifndef QSSM_VER_SUFFIX
 #define QSSM_VER_SUFFIX		"-lox"	// napishi chto ti lox
 #endif
