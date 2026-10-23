@@ -264,6 +264,28 @@ void SV_UnlinkEdict (edict_t *ent)
 }
 
 #include "pmove.h"
+
+/*
+==================
+World_PhysentsOverflow
+
+The move ran out of collision entity slots. Not fatal, but the server and the
+predicting client build this list from different sources, so truncation means
+they disagree about what is solid: rubber-banding, or walking through something
+that should block. Say so instead of silently dropping the rest.
+==================
+*/
+static void World_PhysentsOverflow (void)
+{
+	static double last_warning;
+
+	if (realtime - last_warning < 5)
+		return;
+	last_warning = realtime;
+	Con_DPrintf ("pmove: collision list full (%i solids around the player), raise MAX_PHYSENTS\n",
+		MAX_PHYSENTS);
+}
+
 static void
 World_AreaAddEntsToPmove ( edict_t *ignore, areanode_t *node, vec3_t boxminmax[2] )
 {
@@ -295,8 +317,11 @@ World_AreaAddEntsToPmove ( edict_t *ignore, areanode_t *node, vec3_t boxminmax[2
 				continue;	// don't clip against owner
 		}
 
-		if (pmove.numphysent == countof(pmove.physents))
-			return; //too many... ooer.
+		if (pmove.numphysent >= countof(pmove.physents))
+		{	//too many... ooer.
+			World_PhysentsOverflow ();
+			return;
+		}
 
 		pmove.physents[pmove.numphysent].info = NUM_FOR_EDICT(other);
 		pmove.physents[pmove.numphysent].model = (other->v.solid == SOLID_BSP)?qcvm->GetModel(other->v.modelindex):NULL;
@@ -354,8 +379,11 @@ void World_AddEntsToPmove(edict_t *ignore, vec3_t boxminmax[2])
 			if (touch->netstate.solidsize == ES_SOLID_NOT)
 				continue;	//not relevant
 
-			if (pmove.numphysent == countof(pmove.physents))
-				return; //too many... ooer.
+			if (pmove.numphysent >= countof(pmove.physents))
+			{	//too many... ooer.
+				World_PhysentsOverflow ();
+				break;
+			}
 
 			if (touch->netstate.solidsize == ES_SOLID_BSP)
 			{

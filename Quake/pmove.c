@@ -238,7 +238,7 @@ static float PM_MaxSpeed (void)
 */
 static void PM_AddTouchedEnt (int num)
 {
-	if (pmove.numtouch == MAX_PHYSENTS)
+	if (pmove.numtouch >= (int)countof(pmove.touchindex))
 		return;
 
 	if (pmove.numtouch)

@@ -46,7 +46,14 @@ typedef enum {
 #define PM_CROUCH_TRANSITION	0.3f	// seconds for the smooth eye/model transition
 #define PM_CROUCH_MAX_SPEED		160.0f	// ground wish-speed cap while crouched
 
-#define	MAX_PHYSENTS	64//2048
+/* Entities the player can collide with in one move. The server fills this from
+ * the area the player is in, the predicting client from the same BSP area plus
+ * every networked solid it knows about. If the list fills up, whatever did not
+ * fit silently stops blocking movement: the server and the client then walk
+ * through different geometry and the prediction rubber-bands. Keep this
+ * comfortably above any realistic crowd, and watch for the warning in
+ * World_AddEntsToPmove if it ever does fill up. */
+#define	MAX_PHYSENTS	256
 typedef struct
 {
 	vec3_t	origin;

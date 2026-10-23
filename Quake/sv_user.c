@@ -41,7 +41,6 @@ float	*velocity;
 
 qboolean	onground;
 qboolean	prevonground; // woods #qwbunnyhop
-vec3_t velocitybeforethink; // woods #qwbunnyhop
 
 usercmd_t	cmd;
 
@@ -336,21 +335,32 @@ void SV_NoclipMove (void)
 	}
 }
 
-static void SV_UpdateSpeedInfo (void) // woods #speedometer
+/*
+===================
+SV_UpdateSpeedInfo
+
+Publishes the horizontal speed for the HUD speedometer. Callers must pass the
+velocity *after* the frame's movement: on the engine path that is the velocity
+SV_AirMove/SV_WaterMove/SV_SkateMove produced, on the pmove path the one the
+shared move wrote back into the edict. Missing the pmove call is what kept the
+speedometer permanently hidden for pmove clients.
+===================
+*/
+void SV_UpdateSpeedInfo (const vec3_t vel, const usercmd_t *ucmd, qboolean grounded) // woods #speedometer
 {
 	float fmove, smove;
 
-	fmove = cmd.forwardmove;
-	smove = cmd.sidemove;
+	fmove = ucmd->forwardmove;
+	smove = ucmd->sidemove;
 
 	// If jumping record whether directional keys pressed, to indicate a bad power bunny hop.
-	if (onground && sv_player->v.button2)
+	if (grounded && sv_player->v.button2)
 	{
  		speed_info.jump_fmove = fmove;
 		speed_info.jump_smove = smove;
 	}
 
-	speed_info.speed = sqrt(velocity[0] * velocity[0] + velocity[1] * velocity[1]);
+	speed_info.speed = sqrt(vel[0] * vel[0] + vel[1] * vel[1]);
 }
 
 /*
@@ -821,8 +831,6 @@ void SV_ClientThink (void)
 	origin = sv_player->v.origin;
 	velocity = sv_player->v.velocity;
 
-	for (int i = 0;i < 3;i++) velocitybeforethink[i] = velocity[i]; // woods #qwbunnyhop
-
 	DropPunchAngle ();
 
 	if (host_client->usingpmove)
@@ -880,7 +888,7 @@ void SV_ClientThink (void)
 	//johnfitz
 
 	SV_ClampCrouchSpeed(host_client, sv_player);
-	SV_UpdateSpeedInfo (); // woods #speedometer
+	SV_UpdateSpeedInfo (velocity, &cmd, onground); // woods #speedometer
 }
 
 
@@ -2278,6 +2286,11 @@ void SV_ReadClientMove (usercmd_t *move)
 		SV_CigarettePostThink(host_client, host_client->edict, saved_button0, equip_cigarette);
 		SV_SkateUpdate(host_client);
 		SV_UpdateCrouchAnimation(host_client, host_client->edict);
+
+		// The speedometer used to be engine-path only, so pmove clients always read
+		// -1 and never drew it. Report the velocity the move just produced.
+		SV_UpdateSpeedInfo(host_client->edict->v.velocity, move,
+			((int)host_client->edict->v.flags & FL_ONGROUND) != 0);
 	}
 }
 

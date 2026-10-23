@@ -47,6 +47,14 @@ compile -Wno-unused-variable "$repo/tests/test_skate_client.c" "$work/chase.o" "
 compile "$repo/tests/test_pmove_crouch.c" "$work/pmove.o" "$work/mathlib.o" \
     ${LDFLAGS:-} -Wl,--gc-sections -lm -o "$work/pmove_crouch"
 "$work/pmove_crouch"
+# Collision-entity list size and bookkeeping (busy maps used to truncate it).
+compile "$repo/tests/test_pmove_physents.c" "$work/pmove.o" "$work/mathlib.o" \
+    ${LDFLAGS:-} -Wl,--gc-sections -lm -o "$work/pmove_physents"
+"$work/pmove_physents"
+# HUD speedometer feed, including the pmove path that used to leave it at -1.
+compile "$repo/tests/test_speed_info.c" "$work/sv_user.o" "$work/mathlib.o" \
+    ${LDFLAGS:-} -Wl,--gc-sections -lm -o "$work/speed_info"
+"$work/speed_info"
 compile -c "$repo/Quake/wad.c" -o "$work/wad.o"
 compile "$repo/tests/test_wad3.c" "$work/wad.o" \
     ${LDFLAGS:-} -Wl,--gc-sections -o "$work/wad3"

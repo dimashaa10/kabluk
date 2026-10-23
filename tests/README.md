@@ -110,6 +110,25 @@ tiny stand-in world (an endless floor plus an optional ceiling) and checks:
 applies on the ground only, and never touches airborne, swimming, noclip or
 pmove-driven velocity.
 
+## Collision-entity list and HUD speed
+
+`test_pmove_physents.c` links the real `pmove.c` and fills the collision list the
+way a busy map would:
+- the list is large enough for a crowd and `physents`, `touchindex` and `touchvel`
+  all share its size;
+- a solid in the *last* slot blocks exactly like one in the first, its index ends
+  up in `touchindex`, and the player stays on the floor;
+- with every slot used, `numtouch`, `touchindex[]` and `groundent` stay inside the
+  arrays;
+- movement itself is unchanged: a full list of far-away dummies and a list with
+  only the world produce the same position, so the bigger cap only decides *what*
+  may block, not *how* the move runs.
+
+`test_speed_info.c` links the real `sv_user.c` to pin the speedometer feed:
+horizontal speed only (vertical is ignored), recomputed every frame including
+zero and overspeed, and the bunny-hop key sample is recorded only for a ground
+frame with `+jump` and is not overwritten by a later airborne frame.
+
 ## Skate presentation and stat channel
 
 `test_skate_client.c` also checks the board's screen pose end to end:

@@ -412,6 +412,7 @@ void SV_AddUpdates (void);
 void SV_ClientThink (void);
 void SV_UpdateCrouch (client_t *client, edict_t *ent, float upmove);
 void SV_UpdateCrouchAnimation (client_t *client, edict_t *ent);
+void SV_UpdateSpeedInfo (const vec3_t vel, const usercmd_t *ucmd, qboolean grounded);
 void SV_AddClientToServer (struct qsocket_s	*ret);
 
 void SV_ClientPrintf (const char *fmt, ...) FUNC_PRINTF(1,2);
