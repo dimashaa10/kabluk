@@ -21,6 +21,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 */
 
 #include "quakedef.h"
+#include "pmove.h"
 
 //#define	STRINGTEMP_BUFFERS		16
 //#define	STRINGTEMP_LENGTH		1024
@@ -770,19 +771,14 @@ static void PF_traceline (void)
 
 	VectorCopy(v1, trace_start);
 	VectorCopy(v2, trace_end);
+	/* Crouched shooting: progs trace from a hard-coded standing eye, which while
+	 * crouched sits above the player's head. PM_CrouchedAim moves such a trace to
+	 * the real eye and keeps its direction, so the crosshair stays honest. Traces
+	 * that already use view_ofs (or do not start at an eye at all) are untouched,
+	 * and non-attack traces (nomonsters) are never rewritten. */
 	client = PF_ClientForEntity(ent);
-	if (!nomonsters && client && ent->v.view_ofs[2] < DEFAULT_VIEWHEIGHT &&
-		client->edict->v.button0 &&
-		trace_start[2] - ent->v.origin[2] > -4 &&
-		trace_start[2] - ent->v.origin[2] < 40)
-	{
-		float crouch_offset = ent->v.view_ofs[2] - DEFAULT_VIEWHEIGHT;
-
-		// Hitscan weapon traces use hard-coded standing muzzle heights in many
-		// progs.dat files. Preserve their muzzle-to-eye offset while crouching.
-		trace_start[2] += crouch_offset;
-		trace_end[2] += crouch_offset;
-	}
+	if (!nomonsters && client && client->crouched)
+		PM_CrouchedAim(ent->v.origin, ent->v.view_ofs[2], trace_start, trace_end);
 
 	trace = SV_Move (trace_start, vec3_origin, vec3_origin, trace_end, nomonsters, ent);
 

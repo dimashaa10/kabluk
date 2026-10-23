@@ -791,35 +791,48 @@ static qboolean CL_LerpEntity(entity_t *ent, vec3_t org, vec3_t ang, float frac)
 #endif
 		PMCL_SetMoveVars();
 
+		/* The snapshot always carries the *standing* hull; the crouch flag says
+		 * which of the two hulls is active right now. PM_SeedCrouch below turns
+		 * that back into the effective hull, so a replayed crouch command
+		 * produces the same boxes (and the same movement) as on the server. */
 		if (ent->netstate.solidsize)
 		{
-			pmove.player_maxs[0] = pmove.player_maxs[1] = ent->netstate.solidsize & 255;
-			pmove.player_mins[0] = pmove.player_mins[1] = -pmove.player_maxs[0];
-			pmove.player_mins[2] = -(int)((ent->netstate.solidsize >>8) & 255);
-			pmove.player_maxs[2] = (int)((ent->netstate.solidsize>>16) & 65535) - 32768;
+			pmove.stand_maxs[0] = pmove.stand_maxs[1] = ent->netstate.solidsize & 255;
+			pmove.stand_mins[0] = pmove.stand_mins[1] = -pmove.stand_maxs[0];
+			pmove.stand_mins[2] = -(int)((ent->netstate.solidsize >>8) & 255);
+			pmove.stand_maxs[2] = (int)((ent->netstate.solidsize>>16) & 65535) - 32768;
 		}
 		else
 		{
-			VectorClear(pmove.player_mins);
-			VectorClear(pmove.player_maxs);
+			VectorClear(pmove.stand_mins);
+			VectorClear(pmove.stand_maxs);
 		}
+		pmove.stand_viewheight = DEFAULT_VIEWHEIGHT;
+		pmove.waterlevel = cl.inwater ? 2 : 0;	//not networked, but the replay
+		pmove.crouched = !!(ent->netstate.pmovetype & PMP_CROUCHED);	//needs the same start
+
+		pmove.crouch_wanted = false;
+		pmove.crouch_blocked = false;
+		pmove.crouch_amount = pmove.crouched ? 1.0f : 0.0f;
+		PM_SeedCrouch ();
+
 		pmove.safeorigin_known = false;
 		VectorCopy(ent->msg_origins[0], pmove.origin);
 		for (j = 0; j < 3; j++)
 		{
 			pmove.velocity[j] = ent->netstate.velocity[j]*1.0/8;
-			bounds[0][j] = pmove.origin[j] + pmove.player_mins[j] - 256;
-			bounds[1][j] = pmove.origin[j] + pmove.player_maxs[j] + 256;
+			bounds[0][j] = pmove.origin[j] + pmove.stand_mins[j] - 256;
+			bounds[1][j] = pmove.origin[j] + pmove.stand_maxs[j] + 256;
 		}
 		VectorClear(pmove.gravitydir);
 
 		pmove.waterjumptime = 0;//FIXME: needs propagation. (e->v.teleport_time>qcvm->time)?e->v.teleport_time - qcvm->time:0;
-		pmove.jump_held = !!(ent->netstate.pmovetype&0x40);
+		pmove.jump_held = !!(ent->netstate.pmovetype&PMP_JUMP_HELD);
 		pmove.onladder = false;//!!(fl&PMF_LADDER);
 		pmove.jump_secs = 0;	//has been 0 since Z_EXT_PM_TYPE instead of imposing a delay on rejumps.
-		pmove.onground = !!(ent->netstate.pmovetype&0x80); //in case we're using pm_pground
+		pmove.onground = !!(ent->netstate.pmovetype&PMP_ONGROUND); //in case we're using pm_pground
 
-		switch(ent->netstate.pmovetype&63)
+		switch(ent->netstate.pmovetype&PMP_MOVETYPE_MASK)
 		{
 		case MOVETYPE_WALK:		pmove.pm_type = PM_NORMAL;		break;
 		case MOVETYPE_TOSS:		//pmove.pm_type = PM_DEAD;		break;

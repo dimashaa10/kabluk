@@ -1185,9 +1185,21 @@ void SV_BuildEntityState(client_t *client, edict_t *ent, entity_state_t *state)
 		state->solidsize = ES_SOLID_BSP;
 	else if (ent->v.solid == SOLID_BBOX || ent->v.solid == SOLID_SLIDEBOX || ent->v.skin < 0)
 	{
+		float mins2 = ent->v.mins[2], maxs2 = ent->v.maxs[2];
+
+		/* The local player's hull is crouched along with the collision box, but
+		 * prediction needs the *standing* hull to rebuild both states from, and
+		 * the crouch flag above tells it which one is active. Everyone else gets
+		 * the real (possibly crouched) hull, which is what you see and shoot. */
+		if (client && client->crouched && client->crouch_bounds_saved &&
+			client->edict == ent && client->usingpmove)
+		{
+			mins2 = client->crouch_stand_mins_z;
+			maxs2 = client->crouch_stand_maxs_z;
+		}
 		state->solidsize = CLAMP(0, (int)-ent->v.mins[0], 255);
-		state->solidsize |= CLAMP(0, (int)-ent->v.mins[2], 255)<<8;
-		state->solidsize |= CLAMP(0, (int)((ent->v.maxs[2]+32768)), 65535)<<16;	/*up can be negative*/
+		state->solidsize |= CLAMP(0, (int)-mins2, 255)<<8;
+		state->solidsize |= CLAMP(0, (int)((maxs2+32768)), 65535)<<16;	/*up can be negative*/
 		if (state->solidsize == 0x80000000)
 			state->solidsize = ES_SOLID_NOT;	//point sized stuff should just be non-solid. you'll thank me for splitscreens.
 	}
@@ -1335,9 +1347,11 @@ invisible:
 			{	//add some extra pmove flags...
 				eval_t *pmflags = GetEdictFieldValue(ent, qcvm->extfields.pmove_flags);
 				if ((int)ent->v.flags & FL_ONGROUND)	//nq likes to know this for bob states.
-					ents[numents].state.pmovetype |= 0x80;
+					ents[numents].state.pmovetype |= PMP_ONGROUND;
 				if ((int)pmflags->_float & 1)	//'jump_held' so no pogostick surprises.
-					ents[numents].state.pmovetype |= 0x40;
+					ents[numents].state.pmovetype |= PMP_JUMP_HELD;
+				if (client->crouched)	//so the predicting client rebuilds the same hull
+					ents[numents].state.pmovetype |= PMP_CROUCHED;
 			}
 			ents[numents].state.velocity[0] = ent->v.velocity[0]*8;
 			ents[numents].state.velocity[1] = ent->v.velocity[1]*8;

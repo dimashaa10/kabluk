@@ -87,6 +87,29 @@ the board center fixed beneath the upright rider (local and remote),
 including off-center models, different yaw/scale, repeated updates,
 render culling and restoring the original fit at zero roll.
 
+## Crouch and pmove coverage
+
+The crouch lives in the shared `pmove.c`, which runs both on the server and in
+client-side prediction, so `test_pmove_crouch.c` links the real `pmove.c` with a
+tiny stand-in world (an endless floor plus an optional ceiling) and checks:
+- the crouched hull is half the standing height with the feet left in place, the
+  eye height eases over 0.3 s while the collision hull snaps;
+- standing up is refused while the ceiling is too low and recovers on its own
+  once there is head room;
+- `PM_SeedCrouch` rebuilds exactly the same hull from a snapshot, standing or
+  crouched;
+- crouching caps the *wish* speed on the ground (160) and never brakes momentum
+  already in hand, so crouch-jumps keep their speed;
+- replaying one command batch from one snapshot is bit-identical for the
+  "server" and the "predicted" run, in both postures;
+- `PM_CrouchedAim` moves a hard-coded standing-eye shot onto the real crouched
+  eye while keeping the prog's aim and range, and leaves correct traces
+  (already at the eye, floor probes, standing players) untouched.
+
+`test_crouch_server.c` additionally covers the engine path: the 160 speed clamp
+applies on the ground only, and never touches airborne, swimming, noclip or
+pmove-driven velocity.
+
 `run_cigarette_impulse_tests.sh` remains a compatibility wrapper for the full
 suite. Some legacy renderer code has an existing unused local; only that warning
 is suppressed when compiling the renderer-inclusive client test.

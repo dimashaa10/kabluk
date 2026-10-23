@@ -386,7 +386,7 @@ void SV_AirMove (void)
 	wishspeed = VectorNormalize(wishdir);
 	maxspeed = sv_maxspeed.value;
 	if (host_client && host_client->crouched && !host_client->skate_active &&
-		sv_player->v.movetype == MOVETYPE_WALK)
+		!host_client->usingpmove && sv_player->v.movetype == MOVETYPE_WALK && onground)
 		maxspeed = q_min(maxspeed, SV_CROUCH_MAX_SPEED);
 	if (wishspeed > maxspeed)
 	{
@@ -430,6 +430,14 @@ static void SV_ClampCrouchSpeed (client_t *client, edict_t *ent)
 
 	if (!client || !ent || !client->crouched || client->skate_active ||
 		ent->v.health <= 0 || ent->v.movetype != MOVETYPE_WALK)
+		return;
+
+	// Crouching only limits ground movement. Clamping airborne or swimming
+	// velocity used to cancel crouch-jumps, bunny hops and every horizontal
+	// push (rocket jumps, triggers, teleports) for anyone holding crouch.
+	// The pmove path applies its own wish-speed cap and must not be second
+	// guessed here, or the client prediction would disagree with the server.
+	if (client->usingpmove || !((int)ent->v.flags & FL_ONGROUND) || ent->v.waterlevel >= 2)
 		return;
 
 	speed = sqrtf(ent->v.velocity[0] * ent->v.velocity[0] +
@@ -593,6 +601,17 @@ void SV_UpdateCrouchAnimation (client_t *client, edict_t *ent)
 
 	if (!client || !ent)
 		return;
+	/* This is the only crouch bookkeeping that runs for pmove clients (the hull
+	 * itself is handled inside PM_UpdateCrouch), so it is also the place that
+	 * has to hand the standing hull back when the player can no longer crouch:
+	 * death, respawn, noclip/spectator, or a skate transition. */
+	if (!client->spawned || ent->v.health <= 0 || ent->v.deadflag != DEAD_NO ||
+		ent->v.movetype != MOVETYPE_WALK)
+	{
+		if (client->crouch_bounds_saved)
+			SV_ResetCrouch(client, ent);
+		return;
+	}
 	if (!client->crouched || !client->crouch_bounds_saved || client->skate_active)
 	{
 		SV_ResetCrouchAnimation(client);
@@ -784,7 +803,10 @@ void SV_ClientThink (void)
 {
 	vec3_t		v_angle;
 
-	if (host_client && sv_player)
+	// Movement handled by the shared pmove crouches there, so the engine path
+	// must keep its hands off the hull. Otherwise it would snap the bounds and
+	// speed that the client already predicted.
+	if (host_client && sv_player && !host_client->usingpmove)
 		SV_UpdateCrouch(host_client, sv_player, host_client->cmd.upmove);
 
 	if (sv_player->v.movetype == MOVETYPE_NONE)
@@ -2135,7 +2157,13 @@ void SV_ReadClientMove (usercmd_t *move)
 	move->forwardmove = movevalues[0];
 	move->sidemove = movevalues[1];
 	move->upmove = movevalues[2];
-	SV_UpdateCrouch(host_client, host_client->edict, move->upmove);
+
+	//decide if we're going independant or not (needed before crouch handling)
+	host_client->usingpmove = !host_client->skate_active &&
+		(!!qcvm->extfuncs.SV_RunClientCommand || (!sv_nqplayerphysics.value && (*sv_nqplayerphysics.string||deathmatch.value)));
+
+	if (!host_client->usingpmove)
+		SV_UpdateCrouch(host_client, host_client->edict, move->upmove);
 
 // read buttons
 	host_client->edict->v.button0 = (buttonbits & 1)>>0;
@@ -2177,10 +2205,6 @@ void SV_ReadClientMove (usercmd_t *move)
 		eval->vector[1] = move->sidemove;
 		eval->vector[2] = move->upmove;
 	}
-
-	//decide if we're going independant or not
-	host_client->usingpmove = !host_client->skate_active &&
-		(!!qcvm->extfuncs.SV_RunClientCommand || (!sv_nqplayerphysics.value && (*sv_nqplayerphysics.string||deathmatch.value)));
 
 	//and give them their independance here.
 	if (host_client->usingpmove && host_client->knowntoqc)
@@ -2254,7 +2278,6 @@ void SV_ReadClientMove (usercmd_t *move)
 		SV_CigarettePostThink(host_client, host_client->edict, saved_button0, equip_cigarette);
 		SV_SkateUpdate(host_client);
 		SV_UpdateCrouchAnimation(host_client, host_client->edict);
-		SV_ClampCrouchSpeed(host_client, host_client->edict);
 	}
 }
 
