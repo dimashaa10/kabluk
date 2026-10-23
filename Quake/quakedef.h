@@ -29,27 +29,27 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #define	QUAKE_GAME		// as opposed to utilities
 
-#define	VERSION			1.09
+#define	VERSION			0.00		//version of game
 #define	GLQUAKE_VERSION		1.00
 #define	D3DQUAKE_VERSION	0.01
 #define	WINQUAKE_VERSION	0.996
 #define	LINUX_VERSION		1.30
 #define	X11_VERSION		1.10
 
-#define	FITZQUAKE_VERSION	0.85	//johnfitz
+#define	FITZQUAKE_VERSION	0.85	//johnfitz 
 #define	QUAKESPASM_VERSION	0.96
 #define	QUAKESPASM_VER_PATCH	0	// helper to print a string like 0.94.7
 #ifndef	QUAKESPASM_VER_SUFFIX
 #define	QUAKESPASM_VER_SUFFIX		// optional version suffix string literal like "-beta1"
 #endif
 
-#define QSS_VER	"11-10-26" // eggs
+#define QSS_VER	"24-10-26" // eggs| version date of engine
 
 // kabluk version info
 
 #define QSSM_VER_MAJOR		0
 #define QSSM_VER_MINOR		2
-#define QSSM_VER_PATCH		0
+#define QSSM_VER_PATCH		2
 #ifndef QSSM_VER_SUFFIX
 #define QSSM_VER_SUFFIX		"-lox"	// napishi chto ti lox
 #endif
@@ -151,7 +151,17 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define STAT_VIEWHEIGHT		16	//replaces clc_clientdata info
 //#define STAT_TIME			17	//zquake, redundant for nq.
 //#define STAT_MATCHSTARTTIME 18
-#define STAT_SKATE			19	// tagged skate mode + visual lift; see skate.h
+/* Engine-reserved stats. These indices belong to the engine, not to the mod:
+ * the server writes them every frame in SV_CalcStats, so a mod that claims one
+ * of them with the clientstat builtin will have its value overwritten (the
+ * engine warns once in that case, see PR_CustomStat). Mods must use indices
+ * outside this list. */
+#define STAT_RESERVED_ENGINE_STATS \
+	(  (1u<<STAT_ITEMS) | (1u<<STAT_VIEWHEIGHT) | (1u<<STAT_SKATE) \
+	 | (1u<<STAT_IDEALPITCH) | (1u<<STAT_PUNCHANGLE_X) | (1u<<STAT_PUNCHANGLE_Y) \
+	 | (1u<<STAT_PUNCHANGLE_Z) | (1u<<STAT_PUNCHVECTOR_X) \
+	 | (1u<<STAT_PUNCHVECTOR_Y) | (1u<<STAT_PUNCHVECTOR_Z) )
+#define STAT_SKATE			19	// tagged skate mode + visual lift; see skate.h (engine-reserved)
 //#define STAT_VIEW2		20
 #define STAT_VIEWZOOM		21 // DP
 //#define STAT_UNUSED3		22 

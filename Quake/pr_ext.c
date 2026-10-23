@@ -1884,12 +1884,92 @@ void PR_GetSetInputs(usercmd_t *cmd, qboolean set)
 			cmd->cursor_entitynumber = *qcvm->extglobals.input_cursor_entitynumber;
 	}
 }
+/* Engine-side crouch bookkeeping for a client whose movement runs through the
+ * shared pmove (SV_RunClientCommand or the engine fallback). The edict always
+ * carries the effective hull, so the uncrouched one is remembered on the client
+ * slot; PM_UpdateCrouch rebuilds the hull from this frame's command only, which
+ * is what keeps client-side prediction in sync. */
+static client_t *PF_CrouchClient(edict_t *e)
+{
+	if (qcvm != &sv.qcvm || !host_client || host_client->edict != e)
+		return NULL;
+	return host_client;
+}
+static void PF_CrouchToPmove(client_t *client, edict_t *e)
+{
+	float stand_mins_z, stand_maxs_z;
+	if (!client)
+	{
+		VectorCopy(e->v.mins, pmove.stand_mins);
+		VectorCopy(e->v.maxs, pmove.stand_maxs);
+		pmove.stand_viewheight = e->v.view_ofs[2] > 0 ? e->v.view_ofs[2] : DEFAULT_VIEWHEIGHT;
+		pmove.crouched = false;
+		pmove.crouch_amount = 0;
+		return;
+	}
+	if (!client->crouched && client->crouch_amount <= 0)
+	{	// standing: keep the reference hull/eye in sync with the edict, so mods
+		// that change view_ofs or the hull while standing are honoured
+		client->crouch_stand_mins_z = e->v.mins[2];
+		client->crouch_stand_maxs_z = e->v.maxs[2];
+		client->crouch_stand_viewheight = e->v.view_ofs[2] > 0 ? e->v.view_ofs[2] : DEFAULT_VIEWHEIGHT;
+		client->crouch_bounds_saved = true;
+	}
+	if (client->crouch_bounds_saved)
+	{
+		stand_mins_z = client->crouch_stand_mins_z;
+		stand_maxs_z = client->crouch_stand_maxs_z;
+		pmove.stand_viewheight = client->crouch_stand_viewheight;
+	}
+	else
+	{
+		stand_mins_z = e->v.mins[2];
+		stand_maxs_z = e->v.maxs[2];
+		pmove.stand_viewheight = e->v.view_ofs[2] > 0 ? e->v.view_ofs[2] : DEFAULT_VIEWHEIGHT;
+	}
+	VectorCopy(e->v.mins, pmove.stand_mins);
+	VectorCopy(e->v.maxs, pmove.stand_maxs);
+	pmove.stand_mins[2] = stand_mins_z;
+	pmove.stand_maxs[2] = stand_maxs_z;
+	pmove.crouched = client->crouched;
+	pmove.crouch_amount = client->crouch_amount;
+}
+static void PF_CrouchFromPmove(client_t *client, edict_t *e)
+{
+	float maxs_z;
+	if (!client)
+		return;
+	if (!client->crouch_bounds_saved)
+	{
+		client->crouch_stand_mins_z = pmove.stand_mins[2];
+		client->crouch_stand_maxs_z = pmove.stand_maxs[2];
+		client->crouch_stand_viewheight = pmove.stand_viewheight;
+		client->crouch_bounds_saved = true;
+	}
+	maxs_z = pmove.player_maxs[2];
+	if (e->v.maxs[2] != maxs_z)
+	{
+		e->v.maxs[2] = maxs_z;
+		e->v.size[2] = e->v.maxs[2] - e->v.mins[2];
+		SV_LinkEdict(e, false);
+	}
+	/* Only touch the eye while the crouch owns it; mods are free to move
+	 * view_ofs themselves while the player is standing. */
+	if (pmove.crouched || pmove.crouch_amount > 0)
+		e->v.view_ofs[2] = pmove.viewheight;
+	client->crouched = pmove.crouched;
+	client->crouch_wanted = pmove.crouch_wanted;
+	client->crouch_stand_blocked = pmove.crouch_blocked;
+	client->crouch_amount = pmove.crouch_amount;
+	client->crouch_time_initialized = false;	/* engine path timing restarts if it takes over */
+}
 static void PF_both_pmove(edict_t *e)
 {
 	static vec3_t extents = {256, 256, 256};
 	vec3_t bounds[2];
 	eval_t *pmflags = GetEdictFieldValue(e, qcvm->extfields.pmove_flags);
 	unsigned int fl = (pmflags && pmflags->_float)?pmflags->_float:0;
+	client_t *crouch_client = PF_CrouchClient(e);
 
 //	memset(&pmove, 0xff, sizeof(pmove));
 #ifdef VALGRIND_MAKE_MEM_UNDEFINED
@@ -1931,7 +2011,9 @@ static void PF_both_pmove(edict_t *e)
 
 	PR_GetSetInputs(&pmove.cmd, false);	//set pmove.cmd to the input_* globals.
 
+	PF_CrouchToPmove(crouch_client, e);
 	PM_PlayerMove(1);
+	PF_CrouchFromPmove(crouch_client, e);
 
 	VectorCopy(pmove.safeorigin, e->v.oldorigin);
 	VectorCopy(pmove.origin, e->v.origin);
@@ -2078,29 +2160,17 @@ void PF_sv_pmove(void)
 {
 	edict_t	*e			= G_EDICT(OFS_PARM0);
 	movevars = svmovevars;
-	if (host_client && host_client->edict == e && host_client->crouched &&
-		!host_client->skate_active)
-		movevars.maxspeed = q_min(movevars.maxspeed, SV_CROUCH_MAX_SPEED);
+	/* PM_UpdateCrouch applies the crouch speed cap, and it must see the
+	 * uncapped sv_maxspeed so the predicting client, which receives the
+	 * same value as a movevar stat, computes identical movement. */
 	PF_both_pmove(e);
 }
 void PMSV_SetMoveStats(edict_t *plent, float *fstat, int *istat)
 {
+	/* The crouch speed cap is applied inside PM_UpdateCrouch, using the same
+ * uncapped movevars the predicting client gets, so both sides agree. */
 	float maxspeed = svmovevars.maxspeed;
-	int i;
 	eval_t *entgrav = GetEdictFieldValue(plent, qcvm->extfields.gravity);
-
-	if (svs.clients)
-	{
-		for (i = 0; i < svs.maxclients; i++)
-		{
-			if (svs.clients[i].edict == plent && svs.clients[i].crouched &&
-				!svs.clients[i].skate_active)
-			{
-				maxspeed = q_min(maxspeed, SV_CROUCH_MAX_SPEED);
-				break;
-			}
-		}
-	}
 
 	fstat[STAT_MOVEVARS_STEPHEIGHT] = svmovevars.stepheight;
 	istat[STAT_MOVEFLAGS] = svmovevars.flags;
@@ -5011,6 +5081,15 @@ static struct svcustomstat_s *PR_CustomStat(int idx, int type)
 	{
 		if (sv.customstats[i].idx == idx && (sv.customstats[i].type==ev_string) == (type==ev_string))
 			break;
+	}
+	if (i == sv.numcustomstats && idx < 32 && (STAT_RESERVED_ENGINE_STATS & (1u<<idx)))
+	{	//engine-owned stat: say so loudly instead of silently eating the mod's value
+		static unsigned int warned;
+		if (!(warned & (1u<<idx)))
+		{
+			warned |= 1u<<idx;
+			Con_Warning("clientstat: index %i is reserved by the engine and will keep its own value; pick an index outside 15/16/19/25-31\n", idx);
+		}
 	}
 	if (i == sv.numcustomstats)
 		sv.numcustomstats++;

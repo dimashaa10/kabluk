@@ -41,7 +41,6 @@ float	*velocity;
 
 qboolean	onground;
 qboolean	prevonground; // woods #qwbunnyhop
-vec3_t velocitybeforethink; // woods #qwbunnyhop
 
 usercmd_t	cmd;
 
@@ -336,21 +335,32 @@ void SV_NoclipMove (void)
 	}
 }
 
-static void SV_UpdateSpeedInfo (void) // woods #speedometer
+/*
+===================
+SV_UpdateSpeedInfo
+
+Publishes the horizontal speed for the HUD speedometer. Callers must pass the
+velocity *after* the frame's movement: on the engine path that is the velocity
+SV_AirMove/SV_WaterMove/SV_SkateMove produced, on the pmove path the one the
+shared move wrote back into the edict. Missing the pmove call is what kept the
+speedometer permanently hidden for pmove clients.
+===================
+*/
+void SV_UpdateSpeedInfo (const vec3_t vel, const usercmd_t *ucmd, qboolean grounded) // woods #speedometer
 {
 	float fmove, smove;
 
-	fmove = cmd.forwardmove;
-	smove = cmd.sidemove;
+	fmove = ucmd->forwardmove;
+	smove = ucmd->sidemove;
 
 	// If jumping record whether directional keys pressed, to indicate a bad power bunny hop.
-	if (onground && sv_player->v.button2)
+	if (grounded && sv_player->v.button2)
 	{
  		speed_info.jump_fmove = fmove;
 		speed_info.jump_smove = smove;
 	}
 
-	speed_info.speed = sqrt(velocity[0] * velocity[0] + velocity[1] * velocity[1]);
+	speed_info.speed = sqrt(vel[0] * vel[0] + vel[1] * vel[1]);
 }
 
 /*
@@ -386,7 +396,7 @@ void SV_AirMove (void)
 	wishspeed = VectorNormalize(wishdir);
 	maxspeed = sv_maxspeed.value;
 	if (host_client && host_client->crouched && !host_client->skate_active &&
-		sv_player->v.movetype == MOVETYPE_WALK)
+		!host_client->usingpmove && sv_player->v.movetype == MOVETYPE_WALK && onground)
 		maxspeed = q_min(maxspeed, SV_CROUCH_MAX_SPEED);
 	if (wishspeed > maxspeed)
 	{
@@ -430,6 +440,14 @@ static void SV_ClampCrouchSpeed (client_t *client, edict_t *ent)
 
 	if (!client || !ent || !client->crouched || client->skate_active ||
 		ent->v.health <= 0 || ent->v.movetype != MOVETYPE_WALK)
+		return;
+
+	// Crouching only limits ground movement. Clamping airborne or swimming
+	// velocity used to cancel crouch-jumps, bunny hops and every horizontal
+	// push (rocket jumps, triggers, teleports) for anyone holding crouch.
+	// The pmove path applies its own wish-speed cap and must not be second
+	// guessed here, or the client prediction would disagree with the server.
+	if (client->usingpmove || !((int)ent->v.flags & FL_ONGROUND) || ent->v.waterlevel >= 2)
 		return;
 
 	speed = sqrtf(ent->v.velocity[0] * ent->v.velocity[0] +
@@ -593,6 +611,17 @@ void SV_UpdateCrouchAnimation (client_t *client, edict_t *ent)
 
 	if (!client || !ent)
 		return;
+	/* This is the only crouch bookkeeping that runs for pmove clients (the hull
+	 * itself is handled inside PM_UpdateCrouch), so it is also the place that
+	 * has to hand the standing hull back when the player can no longer crouch:
+	 * death, respawn, noclip/spectator, or a skate transition. */
+	if (!client->spawned || ent->v.health <= 0 || ent->v.deadflag != DEAD_NO ||
+		ent->v.movetype != MOVETYPE_WALK)
+	{
+		if (client->crouch_bounds_saved)
+			SV_ResetCrouch(client, ent);
+		return;
+	}
 	if (!client->crouched || !client->crouch_bounds_saved || client->skate_active)
 	{
 		SV_ResetCrouchAnimation(client);
@@ -784,7 +813,10 @@ void SV_ClientThink (void)
 {
 	vec3_t		v_angle;
 
-	if (host_client && sv_player)
+	// Movement handled by the shared pmove crouches there, so the engine path
+	// must keep its hands off the hull. Otherwise it would snap the bounds and
+	// speed that the client already predicted.
+	if (host_client && sv_player && !host_client->usingpmove)
 		SV_UpdateCrouch(host_client, sv_player, host_client->cmd.upmove);
 
 	if (sv_player->v.movetype == MOVETYPE_NONE)
@@ -798,8 +830,6 @@ void SV_ClientThink (void)
 
 	origin = sv_player->v.origin;
 	velocity = sv_player->v.velocity;
-
-	for (int i = 0;i < 3;i++) velocitybeforethink[i] = velocity[i]; // woods #qwbunnyhop
 
 	DropPunchAngle ();
 
@@ -858,7 +888,7 @@ void SV_ClientThink (void)
 	//johnfitz
 
 	SV_ClampCrouchSpeed(host_client, sv_player);
-	SV_UpdateSpeedInfo (); // woods #speedometer
+	SV_UpdateSpeedInfo (velocity, &cmd, onground); // woods #speedometer
 }
 
 
@@ -944,7 +974,10 @@ static int SV_SkateAnimationFrame (client_t *client, const edict_t *ent)
 
 	// Airborne poses take priority over firing and locomotion. A jump climbs
 	// through 150-154, cycles 154-155 while falling, then lands on 156-158.
-	if (!grounded || rising)
+	// Only FL_ONGROUND decides this: a board rolling up a slope has an upward
+	// clipped velocity while it is still on the ground, and playing the jump
+	// and landing poses there looked like a phantom hop on every incline.
+	if (!grounded)
 	{
 		if (state != SKATE_ANIM_JUMP_ASCENT && state != SKATE_ANIM_JUMP_FALL)
 			SV_SkateAnimationBegin(client,
@@ -1091,7 +1124,9 @@ void SV_SkateStop (client_t *client)
 	client->skate_yaw = 0;
 	client->skate_grounded = false;
 	client->skate_jump_active = false;
+	client->skate_jump_input = false;
 	client->skate_slide_armed = false;
+	client->skate_slide_next_toggle = 0;
 	SV_SkateSlideClear(client);
 	SV_SkateAnimationReset(client);
 	client->skate_flip_active = false;
@@ -1144,6 +1179,14 @@ static float SV_SkateGroundLift (edict_t *ent, const qmodel_t *model)
 	return CLAMP(SKATE_GROUND_CLEARANCE, lift, SKATE_MAX_LIFT);
 }
 
+/* +jump is button2. Latch it from the input packet so QuakeC cannot clear the
+ * field before the takeoff is observed; bots and engine-path players fall back
+ * to the edict field. */
+static qboolean SV_SkateJumpPressed (const client_t *client, const edict_t *ent)
+{
+	return client->skate_jump_input || ent->v.button2 != 0;
+}
+
 static float SV_SkateJumpRoll (client_t *client, const edict_t *ent)
 {
 	qboolean grounded = !!((int)ent->v.flags & FL_ONGROUND);
@@ -1154,15 +1197,19 @@ static float SV_SkateJumpRoll (client_t *client, const edict_t *ent)
 		client->skate_jump_active = false;
 		client->skate_flip_active = false;
 		client->skate_flip_start_time = 0;
+		client->skate_jump_input = false; // rearm on the next press
 	}
 	else if (client->skate_grounded && ent->v.velocity[2] > 0 &&
-		!((int)ent->v.flags & FL_WATERJUMP))
+		!((int)ent->v.flags & FL_WATERJUMP) && SV_SkateJumpPressed(client, ent))
 	{
-		// An upward takeoff, not merely holding jump or falling off an edge.
-		// Normal QuakeC/native jump physics have already run at this point.
+		// A real upward takeoff: jumped this frame, so the rider is no longer
+		// touching ground. Rising without +jump (a slope, a jump pad, a push
+		// trigger) must not award a flip. Normal QuakeC/native jump physics
+		// have already run at this point.
 		client->skate_jump_active = true;
 		client->skate_flip_active = true;
 		client->skate_flip_start_time = qcvm->time;
+		client->skate_jump_input = false; // one flip per press
 	}
 	client->skate_grounded = grounded;
 	if (!client->skate_flip_active)
@@ -1370,7 +1417,7 @@ static qboolean SV_SkateSlideTopProbe (edict_t *ent, edict_t *surface,
 }
 
 static qboolean SV_SkateFindTopEdge (edict_t *ent, edict_t *surface,
-	float nx, float ny, float *edge_height)
+	float nx, float ny, float max_up, float *edge_height)
 {
 	vec3_t wallpoint;
 	float feet_z = ent->v.origin[2] + ent->v.mins[2];
@@ -1378,11 +1425,15 @@ static qboolean SV_SkateFindTopEdge (edict_t *ent, edict_t *surface,
 	float inset = radius + SKATE_SLIDE_EDGE_INSET;
 	float height, wall_distance;
 
+	// max_up is how far above the feet the lip may sit: a wall impact may
+	// mantle the full SKATE_SLIDE_EDGE_SNAP_UP, a tap only a small curb.
+	if (max_up > SKATE_SLIDE_EDGE_SNAP_UP)
+		max_up = SKATE_SLIDE_EDGE_SNAP_UP;
 	if (!SV_SkateSlideTopProbe(ent, surface, nx, ny, inset,
-		feet_z + SKATE_SLIDE_EDGE_SNAP_UP + SKATE_SLIDE_EDGE_SEARCH_PADDING,
+		feet_z + max_up + SKATE_SLIDE_EDGE_SEARCH_PADDING,
 		feet_z - SKATE_SLIDE_EDGE_SNAP_DOWN - SKATE_SLIDE_EDGE_SEARCH_PADDING,
 		&height) || height < feet_z - SKATE_SLIDE_EDGE_SNAP_DOWN ||
-		height > feet_z + SKATE_SLIDE_EDGE_SNAP_UP + SKATE_SLIDE_EDGE_SEARCH_PADDING)
+		height > feet_z + max_up + SKATE_SLIDE_EDGE_SEARCH_PADDING)
 		return false;
 
 	// A real upper corner has the same nearby wall face below the cap, but
@@ -1520,7 +1571,8 @@ static qboolean SV_SkateWallSlideInternal (edict_t *ent, edict_t *surface,
 	if (!from_tap && (speed < SKATE_SLIDE_MIN_SPEED ||
 		normal_speed > -SKATE_SLIDE_MIN_IMPACT_SPEED))
 		return false;
-	if (!SV_SkateFindTopEdge(ent, surface, nx, ny, &edge_height))
+	if (!SV_SkateFindTopEdge(ent, surface, nx, ny,
+		from_tap ? SKATE_SLIDE_TAP_SNAP_UP : SKATE_SLIDE_EDGE_SNAP_UP, &edge_height))
 		return false;
 
 	// First lift clear of the wall, then move the rider's center onto the
@@ -1591,12 +1643,20 @@ static qboolean SV_SkateTryAttachNearbyEdge (client_t *client)
 	vec3_t zero = {0, 0, 0}, start, end, best_normal = {0, 0, 0};
 	edict_t *ent, *best_surface = NULL;
 	float best_distance = SKATE_SLIDE_PROBE_DISTANCE + 1.0f;
-	float edge_height, angle, dx, dy, nx, ny, distance;
+	float edge_height, angle, dx, dy, nx, ny, distance, speed;
 	int direction, height;
 	trace_t trace;
 
 	if (!client || !client->active || !client->skate_active ||
 		!client->skate_slide_armed || client->skate_sliding || !(ent = client->edict))
+		return false;
+
+	// Tapping is a latch for a rider who is already rolling from the ground.
+	// Without this a standing player could alternate tap/tap-again and climb
+	// any vertical brush one lip at a time.
+	speed = sqrtf(ent->v.velocity[0] * ent->v.velocity[0] +
+		ent->v.velocity[1] * ent->v.velocity[1]);
+	if (!((int)ent->v.flags & FL_ONGROUND) || speed < SKATE_SLIDE_TAP_MIN_SPEED)
 		return false;
 
 	// Sweep radial point probes around the rider at several body heights. This
@@ -1625,7 +1685,7 @@ static qboolean SV_SkateTryAttachNearbyEdge (client_t *client)
 				(trace.endpos[1] - ent->v.origin[1]) *
 				(trace.endpos[1] - ent->v.origin[1]));
 			if (distance >= best_distance ||
-				!SV_SkateFindTopEdge(ent, trace.ent, nx, ny, &edge_height))
+				!SV_SkateFindTopEdge(ent, trace.ent, nx, ny, SKATE_SLIDE_TAP_SNAP_UP, &edge_height))
 				continue;
 			best_distance = distance;
 			best_surface = trace.ent;
@@ -1652,8 +1712,12 @@ qboolean SV_SkateWallBounce (edict_t *ent, const vec3_t normal, const vec3_t inc
 
 	// Only rebound from vertical surfaces during a real jump, not from floors,
 	// ceilings, walking into a wall, or simply falling off an edge.
-	if (((int)ent->v.flags & (FL_ONGROUND | FL_WATERJUMP)) ||
-		!(client->skate_jump_active || (client->skate_grounded && ent->v.velocity[2] > 0)))
+	// FL_ONGROUND is cleared by SV_WalkMove before the sweep, so "still on the
+	// ground" has to come from the previous skate update. That also rules out
+	// riding up a slope, where the clipped velocity points upward while the
+	// rider never leaves the ground.
+	if (((int)ent->v.flags & (FL_ONGROUND | FL_WATERJUMP)) || client->skate_grounded ||
+		!(client->skate_jump_active || ent->v.velocity[2] > 0))
 		return false;
 
 	if (fabsf(normal[2]) > SKATE_WALL_BOUNCE_MAX_NORMAL_Z)
@@ -1696,6 +1760,16 @@ static client_t *SV_SkateSlideCommandClient (qboolean require_skate)
 
 static void SV_SkateSlideToggle (client_t *client, qboolean report)
 {
+	// Bound how often a client can toggle: each attach runs dozens of brush
+	// probes, and unthrottled taps turned +skate_slide into a climbing lift.
+	if (qcvm && qcvm->time < client->skate_slide_next_toggle)
+	{
+		if (report)
+			SV_ClientPrintf("Wait a moment before toggling the slide again.\n");
+		return;
+	}
+	client->skate_slide_next_toggle = (qcvm ? qcvm->time : 0) + SKATE_SLIDE_TOGGLE_COOLDOWN;
+
 	if (client->skate_slide_armed || client->skate_sliding)
 	{
 		client->skate_slide_armed = false;
@@ -1821,7 +1895,9 @@ void SV_Skate_f (void)
 	host_client->skate_yaw = ent->v.v_angle[YAW];
 	host_client->skate_grounded = !!((int)ent->v.flags & FL_ONGROUND);
 	host_client->skate_jump_active = false;
+	host_client->skate_jump_input = ent->v.button2 != 0;
 	host_client->skate_slide_armed = false;
+	host_client->skate_slide_next_toggle = 0;
 	SV_SkateSlideClear(host_client);
 	SV_SkateAnimationReset(host_client);
 	host_client->skate_flip_active = false;
@@ -2089,12 +2165,21 @@ void SV_ReadClientMove (usercmd_t *move)
 	move->forwardmove = movevalues[0];
 	move->sidemove = movevalues[1];
 	move->upmove = movevalues[2];
-	SV_UpdateCrouch(host_client, host_client->edict, move->upmove);
+
+	//decide if we're going independant or not (needed before crouch handling)
+	host_client->usingpmove = !host_client->skate_active &&
+		(!!qcvm->extfuncs.SV_RunClientCommand || (!sv_nqplayerphysics.value && (*sv_nqplayerphysics.string||deathmatch.value)));
+
+	if (!host_client->usingpmove)
+		SV_UpdateCrouch(host_client, host_client->edict, move->upmove);
 
 // read buttons
 	host_client->edict->v.button0 = (buttonbits & 1)>>0;
 	//button1 was meant to be 'use', but got reused by too many mods to get implemented now
 	host_client->edict->v.button2 = (buttonbits & 2)>>1;
+	// Latch +jump for the skate takeoff test: QuakeC is free to clear the
+	// edict field while handling the jump, but the flip still belongs to it.
+	host_client->skate_jump_input = (buttonbits & 2) != 0;
 	if ((val = GetEdictFieldValue(host_client->edict, qcvm->extfields.button3)))
 		val->_float = (buttonbits & 4)>>2;
 	if ((val = GetEdictFieldValue(host_client->edict, qcvm->extfields.button4)))
@@ -2128,10 +2213,6 @@ void SV_ReadClientMove (usercmd_t *move)
 		eval->vector[1] = move->sidemove;
 		eval->vector[2] = move->upmove;
 	}
-
-	//decide if we're going independant or not
-	host_client->usingpmove = !host_client->skate_active &&
-		(!!qcvm->extfuncs.SV_RunClientCommand || (!sv_nqplayerphysics.value && (*sv_nqplayerphysics.string||deathmatch.value)));
 
 	//and give them their independance here.
 	if (host_client->usingpmove && host_client->knowntoqc)
@@ -2205,7 +2286,11 @@ void SV_ReadClientMove (usercmd_t *move)
 		SV_CigarettePostThink(host_client, host_client->edict, saved_button0, equip_cigarette);
 		SV_SkateUpdate(host_client);
 		SV_UpdateCrouchAnimation(host_client, host_client->edict);
-		SV_ClampCrouchSpeed(host_client, host_client->edict);
+
+		// The speedometer used to be engine-path only, so pmove clients always read
+		// -1 and never drew it. Report the velocity the move just produced.
+		SV_UpdateSpeedInfo(host_client->edict->v.velocity, move,
+			((int)host_client->edict->v.flags & FL_ONGROUND) != 0);
 	}
 }
 

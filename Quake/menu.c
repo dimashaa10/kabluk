@@ -10047,7 +10047,7 @@ void M_Extras_Draw(void)
 			break;
 
 		case EXTRAS_PONG: // Added Quake Pong display
-			text = "        Quake Pong";
+			text = "        Pong when paused";
 			value = cl_pong.value ? "on" : "off";
 			break;
 

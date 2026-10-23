@@ -23,7 +23,7 @@ compile() {
         -I"$repo/Quake" -I"$repo/Windows/SDL2/include" -I"$repo/Windows/zlib/include" \
         -I"$repo/Windows/curl/include" -I"$work" -ffunction-sections -fdata-sections "$@"
 }
-for source in sv_user sv_phys mathlib chase gl_rmain; do
+for source in sv_user sv_phys mathlib chase gl_rmain pmove; do
     compile -c "$repo/Quake/$source.c" -o "$work/$source.o"
 done
 compile "$repo/tests/test_cigarette_impulse.c" "$work/sv_user.o" "$work/mathlib.o" \
@@ -42,6 +42,19 @@ compile "$repo/tests/test_crouch_server.c" "$work/sv_user.o" \
 compile -Wno-unused-variable "$repo/tests/test_skate_client.c" "$work/chase.o" "$work/mathlib.o" "$work/gl_rmain.o" \
     ${LDFLAGS:-} -Wl,--gc-sections -lm -o "$work/skate_client"
 "$work/skate_client"
+# Shared engine-side crouch: the same pmove code runs on the server and in
+# client-side prediction, so the test drives both from one snapshot.
+compile "$repo/tests/test_pmove_crouch.c" "$work/pmove.o" "$work/mathlib.o" \
+    ${LDFLAGS:-} -Wl,--gc-sections -lm -o "$work/pmove_crouch"
+"$work/pmove_crouch"
+# Collision-entity list size and bookkeeping (busy maps used to truncate it).
+compile "$repo/tests/test_pmove_physents.c" "$work/pmove.o" "$work/mathlib.o" \
+    ${LDFLAGS:-} -Wl,--gc-sections -lm -o "$work/pmove_physents"
+"$work/pmove_physents"
+# HUD speedometer feed, including the pmove path that used to leave it at -1.
+compile "$repo/tests/test_speed_info.c" "$work/sv_user.o" "$work/mathlib.o" \
+    ${LDFLAGS:-} -Wl,--gc-sections -lm -o "$work/speed_info"
+"$work/speed_info"
 compile -c "$repo/Quake/wad.c" -o "$work/wad.o"
 compile "$repo/tests/test_wad3.c" "$work/wad.o" \
     ${LDFLAGS:-} -Wl,--gc-sections -o "$work/wad3"
