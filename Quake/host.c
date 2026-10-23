@@ -317,10 +317,10 @@ void Host_Version_f(void)
 
 	// Application Section
 	Con_Printf("\n^mApplication Information^m\n\n");
-	Con_Printf("%-24s %1.2f\n", "Quake", VERSION);
-	Con_Printf("%-24s %s\n", "QuakeSpasm", QUAKESPASM_VER_STRING);
-	Con_Printf("%-24s %s\n", "QuakeSpasm-Spiked", QSS_VER);
-	Con_Printf("%-24s %s\n", "QSS-M", QSSM_VER_STRING);
+	Con_Printf("%-24s %1.2f\n", "Kuzba$$", VERSION);
+	//Con_Printf("%-24s %s\n", "QuakeSpasm", QUAKESPASM_VER_STRING);
+	Con_Printf("%-24s %s\n", "Version Date", QSS_VER);
+	Con_Printf("%-24s %s\n", "Kabluk", QSSM_VER_STRING);
 
 #ifdef QSS_VERSION
 	Con_Printf("%-24s %s\n", "QSS Git Description", QS_STRINGIFY(QSS_VERSION));
