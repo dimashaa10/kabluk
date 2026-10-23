@@ -43,13 +43,13 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define	QUAKESPASM_VER_SUFFIX		// optional version suffix string literal like "-beta1"
 #endif
 
-#define QSS_VER	"11-10-26" // eggs
+#define QSS_VER	"24-10-26" // eggs
 
 // kabluk version info
 
 #define QSSM_VER_MAJOR		0
 #define QSSM_VER_MINOR		2
-#define QSSM_VER_PATCH		0
+#define QSSM_VER_PATCH		1
 #ifndef QSSM_VER_SUFFIX
 #define QSSM_VER_SUFFIX		"-lox"	// napishi chto ti lox
 #endif
