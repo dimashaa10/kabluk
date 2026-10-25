@@ -149,6 +149,18 @@ tiny world (a wall the player can aim at, plus a floor):
 - `SV_UseInputEdge` treats holding the key as one press, drops presses inside the
   0.2 s cooldown, and ignores attack/jump/other buttons.
 
+## Controls menu and default bindings
+
+`test_bind_defaults.c` parses the real default config (the `default_cfg` string from
+`Quake/default_cfg.h`) and, when present, `Misc/qs_pak/default.cfg`:
+- `+use` is part of `engine_required_binds` (`Quake/bindlist.h`), so the controls menu
+  offers it even if the game ships its own `bindlist.lst`; every entry there is a
+  single-word `+` command with a non-empty label and no duplicates;
+- `E` is bound to `+use` exactly once, `+moveup` moved to `PGUP` (so freeing E costs
+  nothing) and `+movedown` is still on `C`/`CTRL`;
+- no physical key carries two actions in the defaults, every menu action has a default
+  key, and the two copies of the default config (binary + pak) agree.
+
 ## Skate presentation and stat channel
 
 `test_skate_client.c` also checks the board's screen pose end to end:

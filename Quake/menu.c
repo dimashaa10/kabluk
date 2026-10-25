@@ -23,6 +23,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "quakedef.h"
 #include "bgmusic.h"
 #include "q_ctype.h" // woods #modsmenu (iw)
+#include "bindlist.h"	// engine actions the controls menu must always offer
 #include <sys/stat.h>
 
 #ifdef _WIN32
@@ -4678,6 +4679,7 @@ const char *quakebindnames[][2] = // woods use iw quake bind names
 	{"+moveleft",		"Move left"},
 	{"+moveright",		"Move right"},
 	{"+jump",			"Jump / swim up"},
+	{"+use",			"Use / press button"},
 	{"+skate_slide",		"Skate slide"},
 	{"+moveup",			"Swim up"},
 	{"+movedown",			"Crouch / swim down"},
@@ -4777,20 +4779,25 @@ void M_Keys_Populate(void) // woods #mousemenu -- modified
 		numbindnames = NUMQUAKECOMMANDS;
 	}
 
-	// Keep the engine skateboard action available even when an external
-	// bindlist.lst supplies the rest of the controls.
+	// Keep the engine's own actions bindable even when an external
+	// bindlist.lst supplies the rest of the controls: such a list cannot know
+	// about the keys this engine adds (see bindlist.h).
 	{
-		int i;
-		for (i = 0; i < numbindnames; i++)
-			if (!strcmp(bindnames[i].cmd, "+skate_slide"))
-				break;
-		if (i == numbindnames)
+		int a, i;
+
+		for (a = 0; a < (int)countof(engine_required_binds); a++)
 		{
+			for (i = 0; i < numbindnames; i++)
+				if (!strcmp(bindnames[i].cmd, engine_required_binds[a].cmd))
+					break;
+			if (i != numbindnames)
+				continue;	// already listed
+
 			bindnames = (bindname_t*)Z_Realloc(bindnames, sizeof(bindname_t) * (numbindnames + 1));
-			bindnames[numbindnames].cmd = (char*)Z_Malloc(sizeof("+skate_slide"));
-			strcpy(bindnames[numbindnames].cmd, "+skate_slide");
-			bindnames[numbindnames].desc = (char*)Z_Malloc(sizeof("Skate slide"));
-			strcpy(bindnames[numbindnames].desc, "Skate slide");
+			bindnames[numbindnames].cmd = (char*)Z_Malloc(strlen(engine_required_binds[a].cmd) + 1);
+			strcpy(bindnames[numbindnames].cmd, engine_required_binds[a].cmd);
+			bindnames[numbindnames].desc = (char*)Z_Malloc(strlen(engine_required_binds[a].desc) + 1);
+			strcpy(bindnames[numbindnames].desc, engine_required_binds[a].desc);
 			numbindnames++;
 		}
 	}

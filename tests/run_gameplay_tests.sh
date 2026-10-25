@@ -59,6 +59,10 @@ compile "$repo/tests/test_speed_info.c" "$work/sv_user.o" "$work/mathlib.o" \
 compile "$repo/tests/test_use_button.c" "$work/sv_user.o" "$work/mathlib.o" \
     ${LDFLAGS:-} -Wl,--gc-sections -lm -o "$work/use_button"
 "$work/use_button"
+# Controls menu / default bindings: +use must be bindable and default to E.
+compile -DREPO_DIR=\"$repo\" "$repo/tests/test_bind_defaults.c" \
+    ${LDFLAGS:-} -Wl,--gc-sections -lm -o "$work/bind_defaults"
+"$work/bind_defaults"
 compile -c "$repo/Quake/wad.c" -o "$work/wad.o"
 compile "$repo/tests/test_wad3.c" "$work/wad.o" \
     ${LDFLAGS:-} -Wl,--gc-sections -o "$work/wad3"
