@@ -4679,7 +4679,7 @@ const char *quakebindnames[][2] = // woods use iw quake bind names
 	{"+moveleft",		"Move left"},
 	{"+moveright",		"Move right"},
 	{"+jump",			"Jump / swim up"},
-	{"+use",			"Use / press button"},
+	{"+use",			"Use"},
 	{"+skate_slide",		"Skate slide"},
 	{"+moveup",			"Swim up"},
 	{"+movedown",			"Crouch / swim down"},
