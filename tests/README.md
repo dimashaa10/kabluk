@@ -134,18 +134,18 @@ frame with `+jump` and is not overwritten by a later airborne frame.
 `test_use_button.c` links the real `sv_user.c` and drives the action key against a
 tiny world (a wall the player can aim at, plus a floor):
 
-- only classnames listed in `sv_use_classes` may be pressed: `func_button` yes,
-  `func_door`/`func_door_secret` never, which is what keeps the key from opening
-  doors that a map trigger or a key is supposed to open;
+- only `func_button` may be pressed - the whitelist is the `SV_USE_CLASSES`
+  constant, not a cvar, so the console cannot add doors to it. `func_door`,
+  `func_door_secret`, `func_plat`, `func_train`, `func_wall` and triggers are
+  never pressed, which is what keeps the key from opening what a map trigger or a
+  key is supposed to open;
 - the target must also be a pushing brush solid with a `.use`, and must not be a
   shoot-only button (`health > 0`);
 - pressing runs the prog's use function with `self` = button, `other` and
   `activator` = player, and restores the globals afterwards;
-- aiming: what is in front is pressed, out-of-range and behind-the-player brushes
-  are not, and a button flush with the wall counts only when the crosshair really
-  is next to it;
-- the whitelist is a cvar, so a different classname only needs
-  `sv_use_classes "func_button func_lever"`;
+- aiming: what is in front is pressed, out-of-range (`SV_USE_RANGE`) and
+  behind-the-player brushes are not, and a button flush with the wall counts only
+  when the crosshair really is next to it;
 - `SV_UseInputEdge` treats holding the key as one press, drops presses inside the
   0.2 s cooldown, and ignores attack/jump/other buttons.
 

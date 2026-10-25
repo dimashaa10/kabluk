@@ -416,9 +416,9 @@ void SV_UpdateCrouch (client_t *client, edict_t *ent, float upmove);
 void SV_UpdateCrouchAnimation (client_t *client, edict_t *ent);
 void SV_UpdateSpeedInfo (const vec3_t vel, const usercmd_t *ucmd, qboolean grounded);
 
-extern cvar_t	sv_use;
-extern cvar_t	sv_use_range;
-extern cvar_t	sv_use_classes;
+/* The action key's rules are fixed, not tunable: see sv_user.c. */
+#define	SV_USE_CLASSES	"func_button"	// the only classname a hand may press
+#define	SV_USE_RANGE	64.0f			// reach of +use, in units
 
 qboolean SV_UseClassListed (const char *list, const char *classname);
 qboolean SV_UseEntityAllowed (const edict_t *target);

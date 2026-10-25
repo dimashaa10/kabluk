@@ -30,7 +30,8 @@ static int		global_words[256];
 /* classname strings, addressed by the string_t values used in the tests */
 static const char *test_strings[] = {
 	"", "player", "world", "func_button", "func_door", "func_door_secret",
-	"func_lever", "trigger_multiple",
+	"func_lever", "trigger_multiple", "func_plat", "func_train", "func_wall",
+	"button",
 };
 
 const char *PR_GetString (int num)
@@ -175,11 +176,7 @@ static void ResetWorld (void)
 	executed_activator = 0;
 	traces = 0;
 
-	/* cvars are not registered in this harness, so set both string and value */
-	sv_use.value = 1;
-	sv_use.string = "1";
-	sv_use_range.value = 64;
-	sv_use_classes.string = "func_button";
+	/* the action key's rules are compile-time constants, nothing to reset */
 
 	for (i = 0; i < MAX_TEST_EDICTS; i++)
 		edicts[i].free = (i >= next_edict);
@@ -321,23 +318,29 @@ static void TestDoorInFrontIsIgnored (void)
 	assert(executed == 0);
 }
 
-/* A button past the player's reach is not pressed; the very same button is
- * pressed once it is within sv_use_range. */
-static void TestRangeLimit (void)
+/* The reach is a fixed constant: a button beyond it is not pressed, and nothing in
+ * the console can stretch it. */
+static void TestRangeIsFixed (void)
 {
 	edict_t *button;
 
+	assert(SV_USE_RANGE > 0.0f);
+
 	ResetWorld();
 	button = AddBrush("func_button");
-	button->v.absmin[0] = 200;		/* well outside the default 64 units */
+	button->v.absmin[0] = 200;		/* well outside the reach */
 	button->v.absmax[0] = 216;
 	wall_x = 300;
 	assert(!SV_UsePress (player));
 	assert(executed == 0);
 
-	/* same button, longer reach: now the wall behind it is what the trace hits */
-	sv_use_range.value = 512;
-	wall_x = 216;
+	/* just inside the reach the wall behind it is what the trace hits, and the
+	 * button right next to that point is pressable */
+	ResetWorld();
+	button = AddBrush("func_button");
+	wall_x = SV_USE_RANGE - 4.0f;			/* inside the reach, or the trace misses it */
+	button->v.absmin[0] = wall_x - 16.0f;
+	button->v.absmax[0] = wall_x;
 	assert(SV_UsePress (player));
 	assert(executed == 1);
 	assert(executed_self == button);
@@ -394,22 +397,32 @@ static void TestFlushWithTheWall (void)
 	assert(executed == 1);
 }
 
-/* The whitelist is the game's choice: a game that names its buttons differently
- * (or adds levers) only has to extend sv_use_classes. */
-static void TestCustomClassList (void)
+/* The whitelist is fixed to plain func_button - not a cvar, so the console cannot
+ * add doors to it. Nothing else that carries a .use function is pressable. */
+static void TestBuiltinClassList (void)
 {
-	edict_t *lever;
+	static const char *const rejected[] = {
+		"func_door", "func_door_secret", "func_plat", "func_train",
+		"func_wall", "trigger_multiple", "func_lever", "button",
+	};
+	int i;
 
-	ResetWorld();
-	lever = AddBrush("func_lever");
+	assert(!strcmp(SV_USE_CLASSES, "func_button"));
+	assert(SV_UseClassListed (SV_USE_CLASSES, "func_button"));
+	assert(SV_UseClassListed (SV_USE_CLASSES, "FUNC_BUTTON"));
 
-	assert(!SV_UsePress (player));			/* not listed yet */
-	assert(executed == 0);
+	for (i = 0; i < (int)countof(rejected); i++)
+	{
+		edict_t *e;
 
-	sv_use_classes.string = "func_button func_lever";
-	assert(SV_UsePress (player));
-	assert(executed == 1);
-	assert(executed_self == lever);
+		assert(!SV_UseClassListed (SV_USE_CLASSES, rejected[i]));
+
+		ResetWorld();
+		e = AddBrush (rejected[i]);
+		assert(!SV_UseEntityAllowed (e));
+		assert(!SV_UsePress (player));
+		assert(executed == 0);
+	}
 }
 
 /* Dead players and noclip players do not press anything. */
@@ -428,7 +441,7 @@ static void TestPlayerState (void)
 
 	ResetWorld();
 	AddBrush("func_button");
-	sv_use.value = 0;			/* feature switch */
+	player->v.movetype = MOVETYPE_NONE;
 	assert(!SV_UsePress (player));
 	assert(executed == 0);
 }
@@ -486,17 +499,17 @@ int main (void)
 	TestPressableShape();
 	TestPressButtonInFront();
 	TestDoorInFrontIsIgnored();
-	TestRangeLimit();
+	TestRangeIsFixed();
 	TestBrushMustBeInFront();
 	TestFlushWithTheWall();
-	TestCustomClassList();
+	TestBuiltinClassList();
 	TestPlayerState();
 	TestEdgeTrigger();
 	TestOtherButtonsDoNotPress();
 
-	puts("PASS: +use presses only the classnames the game lists as buttons, never a door;");
+	puts("PASS: +use presses func_button and never a door, with the whitelist and reach");
+	puts("PASS: fixed in the engine rather than tunable from the console;");
 	puts("PASS: it reaches a button flush with the wall, ignores what is out of range,");
-	puts("PASS: behind the player, shoot-only or out of the class list, and holding");
-	puts("PASS: the key counts as one press with other buttons left alone.");
+	puts("PASS: behind the player or shoot-only, and holding the key is one press.");
 	return 0;
 }

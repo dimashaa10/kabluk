@@ -2076,10 +2076,15 @@ Quake-derived progs carries a `.use` function - func_door sets door_use, secret
 doors set their own, and so on - so "call .use on whatever is in front of the
 player" would let the action key open doors that the map meant to open only from
 a trigger or a key. The action key therefore only considers entities whose
-classname is listed in sv_use_classes (plain `func_button` by default, the one
-entity type the map authors make explicitly pressable), and it trusts the progs
-with everything else: the button's own use function still runs the target's key
-check, so a key-locked button behaves exactly as if it had been walked into.
+classname is in SV_USE_CLASSES (plain `func_button`, the one entity type the map
+authors make explicitly pressable), and it trusts the progs with everything else:
+the button's own use function still runs the target's key check, so a key-locked
+button behaves exactly as if it had been walked into.
+
+This is deliberately fixed behaviour rather than something the player (or a
+server admin) can tune: nerfing the range or widening the classname list would
+either make the key useless or let it open things the map did not intend. The
+values live here as constants and are not registered as cvars.
 
 Pressed entities must also look pressable, which filters out the rest:
   * brush solid (SOLID_BSP) and MOVETYPE_PUSH - a real button/switch brush,
@@ -2088,10 +2093,8 @@ Pressed entities must also look pressable, which filters out the rest:
     not pressed (see the func_button documentation in id's buttons.qc).
 ===================
 */
-cvar_t	sv_use = {"sv_use", "1", CVAR_ARCHIVE};
-cvar_t	sv_use_range = {"sv_use_range", "64", CVAR_ARCHIVE};
-cvar_t	sv_use_classes = {"sv_use_classes", "func_button", CVAR_ARCHIVE};
-
+/* SV_USE_CLASSES / SV_USE_RANGE live in server.h so the rules are visible next to
+ * the prototypes, and so tests can assert them. These two are private here. */
 #define	SV_USE_SLOP		8.0f	// how far the aim point may be from a button brush
 #define	SV_USE_COOLDOWN	0.2		// seconds between two presses of one client
 #define	SV_USE_BUTTONBIT	4u	// button bit 2: +use (also self.button3 for QC)
@@ -2182,7 +2185,7 @@ qboolean SV_UseEntityAllowed (const edict_t *target)
 	if (!classname || !*classname)
 		return false;
 
-	return SV_UseClassListed (sv_use_classes.string, classname);
+	return SV_UseClassListed (SV_USE_CLASSES, classname);
 }
 
 /* Shortest distance from a point to an entity's axis-aligned box. */
@@ -2206,7 +2209,7 @@ static float SV_UsePointBoxDistance (const vec3_t mins, const vec3_t maxs, const
 SV_UseFindTarget
 
 What would +use press right now, if anything? Traces from the eye along the
-view for sv_use_range units and then accepts a pressable brush touching the aim
+view for SV_USE_RANGE units and then accepts a pressable brush touching the aim
 point. The second step matters because a button is normally a brush set into a
 wall: the trace can stop on the wall face, or on the shared plane between the
 wall and the button, and either of those is still "aiming at the button".
@@ -2218,17 +2221,14 @@ edict_t *SV_UseFindTarget (edict_t *player)
 	trace_t		trace;
 	edict_t		*best = NULL;
 	float		best_dist = SV_USE_SLOP + 0.01f;
-	float		range;
 	int			i;
 
 	if (!player || player->free)
 		return NULL;
 
-	range = sv_use_range.value > 0 ? sv_use_range.value : 64;
-
 	AngleVectors (player->v.v_angle, forward, right, up);	// this one wants all three
 	VectorAdd (player->v.origin, player->v.view_ofs, eye);
-	VectorMA (eye, range, forward, end);
+	VectorMA (eye, SV_USE_RANGE, forward, end);
 
 	// MOVE_NOMONSTERS: monsters, items and triggers must not swallow the press.
 	trace = SV_Move (eye, vec3_origin, vec3_origin, end, MOVE_NOMONSTERS, player);
@@ -2344,7 +2344,7 @@ qboolean SV_UsePress (edict_t *player)
 {
 	edict_t	*target;
 
-	if (!sv_use.value || !player || player->free)
+	if (!player || player->free)
 		return false;
 	if (player->v.health <= 0)
 		return false;	// dead players do not open doors

@@ -1620,9 +1620,6 @@ void SV_Init (void)
 	Cvar_RegisterVariable (&sv_gameplayfix_setmodelrealbox);
 	Cvar_RegisterVariable (&pr_checkextension);
 	Cvar_RegisterVariable (&sv_altnoclip); //johnfitz
-	Cvar_RegisterVariable (&sv_use);		// engine action key
-	Cvar_RegisterVariable (&sv_use_range);
-	Cvar_RegisterVariable (&sv_use_classes);
 	Cvar_RegisterVariable (&sv_autoload); // woods #autoload (iw)
 	Cvar_RegisterVariable (&sv_nqplayerphysics);	//spike
 	Cvar_RegisterVariable (&sv_bunnyhopqw); // woods #qwbunnyhop
