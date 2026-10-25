@@ -55,6 +55,10 @@ compile "$repo/tests/test_pmove_physents.c" "$work/pmove.o" "$work/mathlib.o" \
 compile "$repo/tests/test_speed_info.c" "$work/sv_user.o" "$work/mathlib.o" \
     ${LDFLAGS:-} -Wl,--gc-sections -lm -o "$work/speed_info"
 "$work/speed_info"
+# Engine action key (+use): what it may press and how often.
+compile "$repo/tests/test_use_button.c" "$work/sv_user.o" "$work/mathlib.o" \
+    ${LDFLAGS:-} -Wl,--gc-sections -lm -o "$work/use_button"
+"$work/use_button"
 compile -c "$repo/Quake/wad.c" -o "$work/wad.o"
 compile "$repo/tests/test_wad3.c" "$work/wad.o" \
     ${LDFLAGS:-} -Wl,--gc-sections -o "$work/wad3"

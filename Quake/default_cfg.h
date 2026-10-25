@@ -13,7 +13,9 @@ static char default_cfg[] =
 "bind PGDN +lookup\n"
 "bind END centerview\n"
 
-"bind e +moveup\n"
+"// E is the action key (press buttons, like Half-Life); swim/noclip up is PGUP\n"
+"bind e +use\n"
+"bind PGUP +moveup\n"
 "bind c +movedown\n"
 "bind SHIFT +speed\n"
 "bind CTRL +movedown\n"

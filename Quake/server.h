@@ -238,6 +238,8 @@ typedef struct client_s
 	int lastmovemessage;
 	double lastmovetime;
 	qboolean usingpmove;	//using the SV_RunClientCommand entrypoint, or getting pmove thrust upon them serverside (disables sv_user.c+movetype stuff, enables provides pmove hints to the client)
+	qboolean use_held;		// +use was down in the last command (action key edge detection)
+	double use_nexttime;	// earliest time this client may press a button again
 	qboolean crouched;		// crouch hull active during crouching/standing transition
 	qboolean crouch_wanted;	// current +movedown target
 	qboolean crouch_bounds_saved;
@@ -413,6 +415,17 @@ void SV_ClientThink (void);
 void SV_UpdateCrouch (client_t *client, edict_t *ent, float upmove);
 void SV_UpdateCrouchAnimation (client_t *client, edict_t *ent);
 void SV_UpdateSpeedInfo (const vec3_t vel, const usercmd_t *ucmd, qboolean grounded);
+
+extern cvar_t	sv_use;
+extern cvar_t	sv_use_range;
+extern cvar_t	sv_use_classes;
+
+qboolean SV_UseClassListed (const char *list, const char *classname);
+qboolean SV_UseEntityAllowed (const edict_t *target);
+edict_t *SV_UseFindTarget (edict_t *player);
+void SV_UseExecute (edict_t *player, edict_t *target);
+qboolean SV_UsePress (edict_t *player);
+qboolean SV_UseInputEdge (client_t *client, unsigned int buttonbits);
 void SV_AddClientToServer (struct qsocket_s	*ret);
 
 void SV_ClientPrintf (const char *fmt, ...) FUNC_PRINTF(1,2);

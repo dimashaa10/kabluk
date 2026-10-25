@@ -2066,6 +2066,301 @@ void SV_CigarettePostThink (client_t *client, edict_t *ent, float saved_button0,
 
 /*
 ===================
+Use (action) key
+
+Half-Life style: +use presses a nearby button instead of the player having to
+walk into it.
+
+The important part is *what* may be pressed. Almost everything interactive in a
+Quake-derived progs carries a `.use` function - func_door sets door_use, secret
+doors set their own, and so on - so "call .use on whatever is in front of the
+player" would let the action key open doors that the map meant to open only from
+a trigger or a key. The action key therefore only considers entities whose
+classname is listed in sv_use_classes (plain `func_button` by default, the one
+entity type the map authors make explicitly pressable), and it trusts the progs
+with everything else: the button's own use function still runs the target's key
+check, so a key-locked button behaves exactly as if it had been walked into.
+
+Pressed entities must also look pressable, which filters out the rest:
+  * brush solid (SOLID_BSP) and MOVETYPE_PUSH - a real button/switch brush,
+  * has a .use function to invoke,
+  * not shoot-only: a func_button with `health` set is meant to be shot,
+    not pressed (see the func_button documentation in id's buttons.qc).
+===================
+*/
+cvar_t	sv_use = {"sv_use", "1", CVAR_ARCHIVE};
+cvar_t	sv_use_range = {"sv_use_range", "64", CVAR_ARCHIVE};
+cvar_t	sv_use_classes = {"sv_use_classes", "func_button", CVAR_ARCHIVE};
+
+#define	SV_USE_SLOP		8.0f	// how far the aim point may be from a button brush
+#define	SV_USE_COOLDOWN	0.2		// seconds between two presses of one client
+#define	SV_USE_BUTTONBIT	4u	// button bit 2: +use (also self.button3 for QC)
+
+/*
+===================
+SV_UseClassListed
+
+Does the space/comma separated classname list contain this exact classname?
+Case insensitive, because map classnames are not written consistently.
+===================
+*/
+static qboolean SV_UseNameEquals (const char *a, const char *b, size_t len)
+{
+	size_t	 i;
+
+	for (i = 0; i < len; i++)
+	{
+		int	ca = (unsigned char)a[i];
+		int	cb = (unsigned char)b[i];
+
+		if (ca >= 'A' && ca <= 'Z')
+			ca += 'a' - 'A';
+		if (cb >= 'A' && cb <= 'Z')
+			cb += 'a' - 'A';
+		if (ca != cb)
+			return false;
+	}
+	return true;
+}
+
+qboolean SV_UseClassListed (const char *list, const char *classname)
+{
+	const char	*p = list;
+	size_t		len;
+
+	if (!list || !classname || !*classname)
+		return false;
+
+	len = strlen (classname);
+	while (*p)
+	{
+		const char	*start;
+		size_t		curlen;
+
+		while (*p == ' ' || *p == '\t' || *p == ',' || *p == ';')
+			p++;
+		if (!*p)
+			break;
+
+		start = p;
+		while (*p && *p != ' ' && *p != '\t' && *p != ',' && *p != ';')
+			p++;
+
+		curlen = (size_t)(p - start);
+		if (curlen == len && SV_UseNameEquals (start, classname, len))
+			return true;
+	}
+	return false;
+}
+
+/*
+===================
+SV_UseEntityAllowed
+
+Is this something the action key may press? Deliberately narrow: only the
+classnames the map/game marked as buttons, only brush solids that push, only
+things with a use function, and never shoot-only buttons.
+===================
+*/
+qboolean SV_UseEntityAllowed (const edict_t *target)
+{
+	const char	*classname;
+
+	if (!target || target->free)
+		return false;
+
+	if (target->v.solid != SOLID_BSP || target->v.movetype != MOVETYPE_PUSH)
+		return false;
+	if (!target->v.use)
+		return false;
+	if (target->v.health > 0)
+		return false;	// shoot-only button: the map wants a bullet, not a hand
+
+	if (!target->v.classname)
+		return false;
+	classname = PR_GetString (target->v.classname);
+	if (!classname || !*classname)
+		return false;
+
+	return SV_UseClassListed (sv_use_classes.string, classname);
+}
+
+/* Shortest distance from a point to an entity's axis-aligned box. */
+static float SV_UsePointBoxDistance (const vec3_t mins, const vec3_t maxs, const vec3_t point)
+{
+	float	dist2 = 0;
+	int		i;
+
+	for (i = 0; i < 3; i++)
+	{
+		if (point[i] < mins[i])
+			dist2 += (mins[i] - point[i]) * (mins[i] - point[i]);
+		else if (point[i] > maxs[i])
+			dist2 += (point[i] - maxs[i]) * (point[i] - maxs[i]);
+	}
+	return sqrtf (dist2);
+}
+
+/*
+===================
+SV_UseFindTarget
+
+What would +use press right now, if anything? Traces from the eye along the
+view for sv_use_range units and then accepts a pressable brush touching the aim
+point. The second step matters because a button is normally a brush set into a
+wall: the trace can stop on the wall face, or on the shared plane between the
+wall and the button, and either of those is still "aiming at the button".
+===================
+*/
+edict_t *SV_UseFindTarget (edict_t *player)
+{
+	vec3_t		forward, right, up, eye, end, center, delta;
+	trace_t		trace;
+	edict_t		*best = NULL;
+	float		best_dist = SV_USE_SLOP + 0.01f;
+	float		range;
+	int			i;
+
+	if (!player || player->free)
+		return NULL;
+
+	range = sv_use_range.value > 0 ? sv_use_range.value : 64;
+
+	AngleVectors (player->v.v_angle, forward, right, up);	// this one wants all three
+	VectorAdd (player->v.origin, player->v.view_ofs, eye);
+	VectorMA (eye, range, forward, end);
+
+	// MOVE_NOMONSTERS: monsters, items and triggers must not swallow the press.
+	trace = SV_Move (eye, vec3_origin, vec3_origin, end, MOVE_NOMONSTERS, player);
+	if (trace.fraction == 1 && !trace.startsolid)
+		return NULL;	// nothing within reach
+
+	if (trace.ent && !trace.ent->free && trace.ent != player && SV_UseEntityAllowed (trace.ent))
+		return trace.ent;
+
+	for (i = 1; i < qcvm->num_edicts; i++)
+	{
+		edict_t	*e = (edict_t *)((byte *)qcvm->edicts + (size_t)i * qcvm->edict_size);
+		float	d;
+
+		if (e->free || e == player || !SV_UseEntityAllowed (e))
+			continue;
+
+		d = SV_UsePointBoxDistance (e->v.absmin, e->v.absmax, trace.endpos);
+		if (d >= best_dist)
+			continue;
+
+		// Must be in front of the player, not a button behind or under him.
+		VectorAdd (e->v.absmin, e->v.absmax, center);
+		VectorScale (center, 0.5f, center);
+		VectorSubtract (center, eye, delta);
+		if (DotProduct (delta, forward) <= 0)
+			continue;
+
+		best = e;
+		best_dist = d;
+	}
+	return best;
+}
+
+/*
+===================
+SV_UseExecute
+
+Runs the entity's use function with the player as both `other` and the progs'
+`activator` global, which is what button_use/door_use read to decide who is
+pressing and which keys he carries.
+===================
+*/
+void SV_UseExecute (edict_t *player, edict_t *target)
+{
+	int		old_self, old_other;
+	float	old_time;
+	int		*activator = NULL;
+	int		old_activator = 0;
+	ddef_t	*def;
+
+	if (!target || target->free || !target->v.use || !player || player->free)
+		return;
+
+	// `activator` is declared by the progs (id1 and QW both do); if this game
+	// does not declare it, `other` is still set the same way.
+	def = ED_FindGlobal ("activator");
+	if (def)
+	{
+		activator = (int *)qcvm->globals + def->ofs;
+		old_activator = *activator;
+		*activator = EDICT_TO_PROG(player);
+	}
+
+	old_self = pr_global_struct->self;
+	old_other = pr_global_struct->other;
+	old_time = pr_global_struct->time;
+
+	pr_global_struct->self = EDICT_TO_PROG(target);
+	pr_global_struct->other = EDICT_TO_PROG(player);
+	pr_global_struct->time = qcvm->time;
+	PR_ExecuteProgram (target->v.use);
+
+	pr_global_struct->self = old_self;
+	pr_global_struct->other = old_other;
+	pr_global_struct->time = old_time;
+
+	if (activator)
+		*activator = old_activator;
+}
+
+/*
+===================
+SV_UseInputEdge
+
+Called once per client command with that command's button bits. Returns true
+exactly once per key press: holding the key must not fire the button every
+frame, and a client that spams the bit is limited to one attempt per 0.2 s.
+===================
+*/
+qboolean SV_UseInputEdge (client_t *client, unsigned int buttonbits)
+{
+	qboolean	use_down = (buttonbits & SV_USE_BUTTONBIT) != 0;
+	qboolean	edge = use_down && !client->use_held;
+
+	client->use_held = use_down;
+
+	if (!edge || qcvm->time < client->use_nexttime)
+		return false;
+
+	client->use_nexttime = qcvm->time + SV_USE_COOLDOWN;
+	return true;
+}
+
+/*
+===================
+SV_UsePress
+
+The action key was pressed this command: press whatever is in reach.
+===================
+*/
+qboolean SV_UsePress (edict_t *player)
+{
+	edict_t	*target;
+
+	if (!sv_use.value || !player || player->free)
+		return false;
+	if (player->v.health <= 0)
+		return false;	// dead players do not open doors
+	if (player->v.movetype == MOVETYPE_NONE || player->v.movetype == MOVETYPE_NOCLIP)
+		return false;
+
+	target = SV_UseFindTarget (player);
+	if (!target)
+		return false;
+
+	SV_UseExecute (player, target);
+	return true;
+}
+
+/*
+===================
 SV_ReadClientMove
 ===================
 */
@@ -2205,6 +2500,11 @@ void SV_ReadClientMove (usercmd_t *move)
 			newimpulse = 9; // unchanged QC handles the cheat and its restrictions
 		host_client->edict->v.impulse = newimpulse;
 	}
+
+	// The action key (+use, button bit 2) presses a nearby button instead of
+	// requiring the player to walk into it.
+	if (SV_UseInputEdge (host_client, buttonbits))
+		SV_UsePress (host_client->edict);
 
 	eval = GetEdictFieldValue(host_client->edict, qcvm->extfields.movement);
 	if (eval)
