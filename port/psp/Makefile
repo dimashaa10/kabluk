@@ -161,9 +161,21 @@ TEST_LIBS := $(PSP_LIBS) -lm
 # kernel stubs are never pulled.  Verified on the host with two archives
 # exporting the same symbol: kernel-first links the kernel member, libc-first
 # links the libc one.
-GAME_LIB_NAMES := -lc -lm -lz -lpspgu -lpspgum -lpspvfpu -lpsprtc \
+# ...and for the same reason there is no -lpspkernel here.  libpspkernel.a is
+# made of src/kernel/*, i.e. the *ForKernel import stubs, and those carry the
+# same symbol names as the user-mode ones: asking for sceIoOpen, sceIoRead,
+# sceKernelDelayThread and friends with only -lpspkernel on the command line
+# gets the kernel stub, and the import table then names ThreadManForKernel,
+# IoFileMgrForKernel, LoadExecForKernel and ModuleMgrForKernel.  A user-mode
+# EBOOT cannot link any of those -- 8002013C again.
+#
+# libpspuser.a (src/user/*) is the user-mode half and provides exactly the same
+# symbols with the ForUser NIDs, which is what a game EBOOT must import.
+# The test link keeps -lpspkernel because it works there and the suite is
+# green; the game does not get to gamble on it.
+GAME_LIB_NAMES := -lc -lpspuser -lm -lz -lpspgu -lpspgum -lpspvfpu -lpsprtc \
                   -lpsppower -lpspaudiolib -lpspaudio -lpsphprm -lpspumd \
-                  $(PSP_LIBS) -lpspsdk
+                  -lpspdebug -lpspdisplay -lpspge -lpspctrl
 GAME_LIBS := -Wl,--start-group $(GAME_LIB_NAMES) -Wl,--end-group
 
 # No --allow-multiple-definition here any more.  It was hiding the duplicate
@@ -323,8 +335,8 @@ $(GAME_DIR)/$(TARGET).elf: $(GAME_OBJS) $(MAKEFILE_LIST) $(HERE)/keep_sce.ld
 		echo "ERROR: модуль импортирует kernel-библиотеку:"; \
 		echo "$$bad" | sed "s/^/    /"; \
 		echo "Такой EBOOT прошивка не запустит (8002013C = LIBRARY_NOTFOUND)."; \
-		echo "Ищи, какой символ потянул стаб из libpspkernel.a: имя стаба в скобках"; \
-		echo "в ошибке линкера, и добавляй -lc раньше той библиотеки."; \
+		echo "Причина: в списке библиотек есть -lpspkernel, и он перехватывает"; \
+		echo "символы sce* раньше libpspuser.a. Для user-модуля нужен -lpspuser."; \
 		rm -f $@; exit 1; \
 	fi
 	$(FIXUP) $@
