@@ -74,7 +74,8 @@ qofs_t Sys_FileOpenRead (const char *path, int *hndl)
 	fd = sceIoOpen(path, PSP_O_RDONLY, 0777);
 	if (fd < 0)
 	{
-		*hndl = -1;
+		if (hndl)
+			*hndl = -1;
 		return -1;
 	}
 

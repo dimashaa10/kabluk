@@ -91,6 +91,13 @@ static void con_putc (int c)
 		con_flush();
 }
 
+static void con_write_msg (const char *text)
+{
+	pspDebugScreenSetXY(0, con_row);
+	pspDebugScreenPrintf("log: %s\n", text);
+	con_row++;
+}
+
 static void con_write (const char *s)
 {
 	while (s && *s)
@@ -132,16 +139,25 @@ void psp_con_init (void)
 			"ms0:/kabluk.log"
 		};
 		unsigned int i;
+		const char *opened = NULL;
 
 		for (i = 0; i < sizeof(paths) / sizeof(paths[0]); i++)
 		{
 			con_log = sceIoOpen(paths[i],
 			                    PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
 			if (con_log >= 0)
+			{
+				opened = paths[i];
 				break;
+			}
 		}
-	}
 
+		/* Say where the log went -- or that there is none.  Without this
+		 * line, "the console died and there is no file anywhere" is
+		 * indistinguishable from "the file is in a folder you did not
+		 * look in". */
+		con_write_msg(opened ? opened : "NONE - crash output will be lost");
+	}
 }
 
 int psp_con_puts (const char *s)

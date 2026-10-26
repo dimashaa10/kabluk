@@ -10,7 +10,10 @@
 
 PSP_MODULE_INFO("kabluk", 0, 1, 0);
 PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER);
-PSP_MAIN_THREAD_STACK_SIZE_KB(256);
+/* 512 KB, not 256: Host_Init descends through printf, the filesystem and the
+ * model loader, and each of those keeps buffers on the stack.  A stack
+ * overflow on the PSP does not say "stack overflow" -- it takes the screen. */
+PSP_MAIN_THREAD_STACK_SIZE_KB(512);
 /*
  * The newlib heap.  main_psp.c hands the engine one big block, and
  * PSP_HEAP_SIZE_KB is the ceiling malloc() can reach, so this has to be the
