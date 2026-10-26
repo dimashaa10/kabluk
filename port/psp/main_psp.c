@@ -46,6 +46,9 @@ static const int psp_zone_sizes_mb[] = { 40, 36, 32, 28, 24, 20, 16, 12, 8 };
 
 static quakeparms_t	parms;
 
+/* 64 KB that is deliberately never freed; see main(). */
+static void *heap_anchor;
+
 int main (int argc, char *argv[])
 {
 	double	time, oldtime, newtime;
@@ -103,6 +106,14 @@ int main (int argc, char *argv[])
 	           sceKernelTotalFreeMemSize() / 1024,
 	           sceKernelMaxFreeMemSize() / 1024);
 
+	/* One small block, kept for the whole run on purpose.  It does two things:
+	 * it makes sure the newlib heap exists at all (PSP_HEAP_SIZE_KB(-1) sizes it
+	 * on the first malloc), and -- because it is never freed -- it pins the
+	 * bottom of the heap, so a later free() cannot hand the whole partition
+	 * back to the system and strand the big block. */
+	heap_anchor = malloc(64 * 1024);
+	Sys_Printf("malloc(64 KB): %s\n", heap_anchor ? "ok" : "FAILED (no heap)");
+
 	if (COM_CheckParm("-mem"))
 	{
 		int p = COM_CheckParm("-mem") + 1;
@@ -115,43 +126,45 @@ int main (int argc, char *argv[])
 	else
 	{
 		int i;
-		int best = 0;
-
-		/* Probe first, commit second.  Asking malloc() for the final size
-		 * directly would silently eat the reserve on the way; the probe
-		 * block is freed again, so the number that fits is known and the
-		 * real block can be that number minus the reserve. */
+		/* The reserve is taken off BEFORE the attempt, not after a successful
+		 * probe.
+		 *
+		 * The first version asked malloc() for the full candidate, freed that
+		 * block, and then allocated candidate-minus-reserve.  It looked safe
+		 * and was not: newlib hands a freed block at the top of the heap back
+		 * to the system, and asking for it again afterwards failed -- 40 MB
+		 * probed fine, and then 37 MB came back NULL, which the error message
+		 * below reported as "even 8 MB failed" and sent us chasing ghosts.
+		 *
+		 * Trying the size we actually want, largest first, has no such step:
+		 * every attempt is a real allocation that either becomes the zone or
+		 * fails small. */
 		for (i = 0; i < PSP_NUM_ZONE_SIZES; i++)
 		{
-			void *probe = malloc((size_t)psp_zone_sizes_mb[i] * 1024 * 1024);
+			int want = psp_zone_sizes_mb[i] * 1024 * 1024 - PSP_MALLOC_RESERVE;
 
-			if (probe)
+			if (want < PSP_MIN_MEMORY)
+				want = PSP_MIN_MEMORY;
+
+			parms.membase = malloc((size_t)want);
+			if (parms.membase)
 			{
-				free(probe);
-				best = psp_zone_sizes_mb[i];
+				parms.memsize = want;
+				Sys_Printf("Zone: %d MB (+%d MB kept for malloc)\n",
+				           want / (1024 * 1024), PSP_MALLOC_RESERVE / (1024 * 1024));
 				break;
 			}
 
-			Sys_Printf("Zone: %d MB did not fit\n", psp_zone_sizes_mb[i]);
-		}
-
-		if (best)
-		{
-			parms.memsize = best * 1024 * 1024 - PSP_MALLOC_RESERVE;
-			if (parms.memsize < PSP_MIN_MEMORY)
-				parms.memsize = PSP_MIN_MEMORY;
-
-			parms.membase = malloc((size_t)parms.memsize);
-			if (parms.membase)
-				Sys_Printf("Zone: %d MB (biggest that fits: %d MB, %d MB kept for malloc)\n",
-				           parms.memsize / (1024 * 1024), best,
-				           PSP_MALLOC_RESERVE / (1024 * 1024));
+			Sys_Printf("Zone: %d MB did not fit\n", want / (1024 * 1024));
 		}
 	}
 
 	if (!parms.membase)
-		Sys_Error("Not enough memory free: even %d MB failed\n",
-		          PSP_MIN_MEMORY / (1024 * 1024));
+		Sys_Error("Not enough memory for the %d MB minimum zone\n"
+		          "(free to the kernel: %d KB, largest free block: %d KB)",
+		          PSP_MIN_MEMORY / (1024 * 1024),
+		          sceKernelTotalFreeMemSize() / 1024,
+		          sceKernelMaxFreeMemSize() / 1024);
 
 	Sys_Printf("Host_Init (%d MB)\n", parms.memsize / (1024 * 1024));
 	Host_Init();
