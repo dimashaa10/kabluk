@@ -358,11 +358,18 @@ $(GAME_DIR)/$(TARGET).elf: $(GAME_OBJS) $(MAKEFILE_LIST) $(HERE)/keep_sce.ld
 	@out=`$(FIXUP) $@ 2>&1`; \
 	if [ -n "$$out" ]; then echo "$$out"; fi; \
 	if echo "$$out" | grep -q "could not fixup imports"; then \
-		echo "ERROR: psp-fixup-imports не смог дописать часть стабов."; \
-		echo "Такой EBOOT загрузится и упадёт на первом вызове непочиненного"; \
-		echo "импорта. Причина — стабы одной библиотеки идут не подряд:"; \
-		echo "проверь, не добавлен ли -Wl,--start-group или свой -T скрипт."; \
-		rm -f $@; exit 1; \
+		echo ""; \
+		echo "ERROR: psp-fixup-imports не смог дописать часть стабов —"; \
+		echo "стабы одной библиотеки идут не подряд по таблице импорта."; \
+		echo ""; \
+		echo "Порядок библиотек в таблице импорта (соседние одинаковые"; \
+		echo "свёрнуты в строку «N x имя»). Повтор имени ниже в списке —"; \
+		echo "это и есть библиотека, чьи стабы разъехались:"; \
+		cp $@ $@.dbg; \
+		$(FIXUP) -v $@.dbg 2>&1 \
+		| awk '/Import Stub/ { split($$0, a, "("); split(a[2], b, ")"); print b[1] }' \
+		| uniq -c | awk '{ printf "    %-4s %s\n", $$1, $$2 }'; \
+		rm -f $@ $@.dbg; exit 1; \
 	fi
 
 # MEMSIZE is the extra-memory request: without it the user partition is 24 MB,
