@@ -70,13 +70,6 @@ CPPFLAGS += -I$(PSPSDK)/include
 CPPFLAGS += -DUSE_SDL2
 CPPFLAGS += -D_PSP_FW_VERSION=$(PSP_FW_VERSION)
 
-# PSP is "unix-like" as far as the engine is concerned: its libc is newlib on
-# top of NetBSD headers, and $(PSPSDK)/include already carries sys/socket.h,
-# netinet/in.h, arpa/inet.h and netdb.h.  Without this, net_sys.h matches no
-# platform branch at all, so sys_socket_t (and INVALID_SOCKET, SOCKETERRNO,
-# everything net_defs.h builds on) stays undefined and every file that touches
-# the network layer fails -- including host_cmd.c and pr_ext.c.
-CPPFLAGS += -DPLATFORM_UNIX=1
 
 # gnu11, not the compiler default: GCC 15 defaults to gnu23, where true and
 # false are keywords, and q_stdinc.h declares them as enum constants.
@@ -113,7 +106,14 @@ include $(ROOT)/port/objs.mk
 # be played.
 DESKTOP_ONLY := main_sdl.o sys_sdl_unix.o pl_linux.o in_sdl.o snd_sdl.o \
                 gl_vidsdl.o net_bsd.o net_udp.o cd_sdl.o
-CORE_OBJS := $(filter-out $(DESKTOP_ONLY),$(OBJS))
+
+# net_dgrm.c is the UDP datagram driver.  pspsdk's socket headers are IPv4-only
+# (no struct sockaddr_in6) while the driver speaks both protocols unconditionally,
+# so it cannot build here.  A PSP-E100x has no wireless hardware at all, so
+# nothing is lost; a replacement net_psp.c lands with the platform layer.
+PSP_UNSUPPORTED := net_dgrm.o
+
+CORE_OBJS := $(filter-out $(DESKTOP_ONLY) $(PSP_UNSUPPORTED),$(OBJS))
 
 # ---------------------------
 # core compile check
