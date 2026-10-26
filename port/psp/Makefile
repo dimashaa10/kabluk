@@ -157,37 +157,42 @@ TEST_LIBS := $(PSP_LIBS) -lm
 # names a library that is not resident at boot is refused by the firmware with
 # 8002013C (SCE_KERNEL_ERROR_LIBRARY_NOTFOUND) before a single instruction
 # runs.  These are the same libraries the test EBOOTs link, and they boot.
-# -lc comes first, and that is not cosmetic.  libpspkernel.a carries pspsdk's
-# SysclibForKernel import stubs, and they are named strcat, strcmp, strcpy,
-# strstr, strtok, strtol, strtoul... -- the same names newlib exports.  An
-# archive is scanned in command-line order and libc would normally only be
-# reached at the very end, after libpspkernel had already answered; the result
-# is a module that imports SysclibForKernel, a KERNEL library.  A user-mode
-# EBOOT cannot link against it, and the firmware answers, before a single
-# instruction runs:
+# No -lpspkernel: libpspkernel.a is built from src/kernel/*, i.e. the
+# *ForKernel import stubs, and those carry the same symbol names as the
+# user-mode ones.  Asking for sceIoOpen, sceIoRead, sceKernelDelayThread with
+# -lpspkernel on the command line gets the kernel stub, the import table then
+# names ThreadManForKernel / IoFileMgrForKernel / LoadExecForKernel /
+# ModuleMgrForKernel, and a user-mode EBOOT may not link any of those:
 #
-#	Запуск игры невозможен (8002013C)   = SCE_KERNEL_ERROR_LIBRARY_NOTFOUND
+#	Запуск игры невозможен (8002013C)  = SCE_KERNEL_ERROR_LIBRARY_NOTFOUND
 #
-# Naming -lc inside the group makes newlib the provider of those names and the
-# kernel stubs are never pulled.  Verified on the host with two archives
-# exporting the same symbol: kernel-first links the kernel member, libc-first
-# links the libc one.
-# ...and for the same reason there is no -lpspkernel here.  libpspkernel.a is
-# made of src/kernel/*, i.e. the *ForKernel import stubs, and those carry the
-# same symbol names as the user-mode ones: asking for sceIoOpen, sceIoRead,
-# sceKernelDelayThread and friends with only -lpspkernel on the command line
-# gets the kernel stub, and the import table then names ThreadManForKernel,
-# IoFileMgrForKernel, LoadExecForKernel and ModuleMgrForKernel.  A user-mode
-# EBOOT cannot link any of those -- 8002013C again.
+# libpspuser.a (src/user/*) is the user-mode half with the ForUser NIDs, which
+# is what a game EBOOT has to import.  The test link keeps -lpspkernel: it
+# works there, the suite is green, and it is not this fix's business.
 #
-# libpspuser.a (src/user/*) is the user-mode half and provides exactly the same
-# symbols with the ForUser NIDs, which is what a game EBOOT must import.
-# The test link keeps -lpspkernel because it works there and the suite is
-# green; the game does not get to gamble on it.
-GAME_LIB_NAMES := -lc -lpspuser -lm -lz -lpspgu -lpspgum -lpspvfpu -lpsprtc \
-                  -lpsppower -lpspaudiolib -lpspaudio -lpsphprm -lpspumd \
-                  -lpspdebug -lpspdisplay -lpspge -lpspctrl
-GAME_LIBS := -Wl,--start-group $(GAME_LIB_NAMES) -Wl,--end-group
+# Order below follows pspsdk's own build.mak / SDL's Makefile.psp: low-level
+# libraries first, libpspuser last.  No --start-group: see GAME_LIBS.
+GAME_LIB_NAMES := -lm -lz -lpspvfpu -lpsphprm -lpspctrl -lpspumd -lpsprtc \
+                  -lpsppower -lpspgum -lpspgu -lpspaudiolib -lpspaudio \
+                  -lpspdebug -lpspdisplay -lpspge -lpspuser
+
+# ...and no -Wl,--start-group, which is what produced
+#
+#	Warning: could not fixup imports, stubs out of order.
+#
+# A group makes ld rescan every archive until nothing is left to resolve.  That
+# is normally a convenience, but here it means a library's members get pulled
+# in several separate bursts with other libraries' members pulled in between,
+# and pspsdk's import stubs travel with their members.  psp-fixup-imports walks
+# .sceStub.text and .rodata.sceNid in lockstep and requires each library's
+# stubs to be contiguous; when they are not it skips the fixup and leaves a
+# "jr $31" with no address patched in -- a call into nowhere.
+#
+# A single left-to-right pass pulls each library's members in one burst, so the
+# stubs stay together, exactly as in a stock pspsdk EBOOT.  If the order above
+# ever leaves a symbol unresolved, the fix is to move that library left, not to
+# put the group back.
+GAME_LIBS := $(GAME_LIB_NAMES)
 
 # No --allow-multiple-definition here any more.  It was hiding the duplicate
 # strtol above, and what it hid was a kernel-library import that made the EBOOT
@@ -350,7 +355,15 @@ $(GAME_DIR)/$(TARGET).elf: $(GAME_OBJS) $(MAKEFILE_LIST) $(HERE)/keep_sce.ld
 		echo "символы sce* раньше libpspuser.a. Для user-модуля нужен -lpspuser."; \
 		rm -f $@; exit 1; \
 	fi
-	$(FIXUP) $@
+	@out=`$(FIXUP) $@ 2>&1`; \
+	if [ -n "$$out" ]; then echo "$$out"; fi; \
+	if echo "$$out" | grep -q "could not fixup imports"; then \
+		echo "ERROR: psp-fixup-imports не смог дописать часть стабов."; \
+		echo "Такой EBOOT загрузится и упадёт на первом вызове непочиненного"; \
+		echo "импорта. Причина — стабы одной библиотеки идут не подряд:"; \
+		echo "проверь, не добавлен ли -Wl,--start-group или свой -T скрипт."; \
+		rm -f $@; exit 1; \
+	fi
 
 # MEMSIZE is the extra-memory request: without it the user partition is 24 MB,
 # with it (value 1 = "give me everything") a PSP-2000/3000/E1000 hands out
