@@ -121,13 +121,25 @@ void psp_con_init (void)
 
 	if (con_log < 0)
 	{
-		/* Next to the EBOOT first (that is where the engine looks for its
-		 * paks), then the root of the stick as a fallback. */
-		con_log = sceIoOpen("kabluk.log",
-		                    PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
-		if (con_log < 0)
-			con_log = sceIoOpen("ms0:/kabluk.log",
+		/* The relative path depends on the working directory the firmware
+		 * happens to set, which is not something to rely on when the whole
+		 * point is to read this file after a crash.  Try the usual install
+		 * folder, then wherever we are, then the root of the stick.  The
+		 * first one that opens wins. */
+		static const char *const paths[] = {
+			"ms0:/PSP/GAME/kabluk/kabluk.log",
+			"kabluk.log",
+			"ms0:/kabluk.log"
+		};
+		unsigned int i;
+
+		for (i = 0; i < sizeof(paths) / sizeof(paths[0]); i++)
+		{
+			con_log = sceIoOpen(paths[i],
 			                    PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
+			if (con_log >= 0)
+				break;
+		}
 	}
 
 }

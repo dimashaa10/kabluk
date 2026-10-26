@@ -106,19 +106,30 @@ CFLAGS += -ffunction-sections -fdata-sections
 LIBDIR := $(PSPDEV)/psp/lib $(PSPSDK)/lib
 LDFLAGS += $(addprefix -L,$(LIBDIR))
 
-# --gc-sections is not optional here.  Each test is one translation unit that
-# exercises part of sv_user.c/pmove.c; the rest of those files is dead code
+# --gc-sections for the TEST links only.  Each test is one translation unit
+# that exercises part of sv_user.c/pmove.c; the rest of those files is dead code
 # whose references (svs, Cmd_*, MSG_*, Sys_Error, ...) would otherwise have to
 # be satisfied by linking half the engine.  The desktop test script collects
 # the same way, so the two builds agree.
 #
 # It does eat the NID table, though: .rodata.sceNid is only reached by the
 # loader, never by code, so nothing keeps it alive and psp-fixup-imports then
-# aborts with "no nid section found" (or with a size mismatch, once only half
-# of the pair survives).  keep_sce.ld re-adds both halves with KEEP()
-# without touching the default script (see the comment in that file).
-LDFLAGS += -Wl,--gc-sections
-LDFLAGS += -Wl,-T,$(HERE)/keep_sce.ld
+# aborts.  keep_sce.ld re-adds both halves with KEEP().
+#
+# The GAME does not use either.  psp-fixup-imports walks .sceStub.text and
+# .rodata.sceNid in lockstep and expects each import library's stubs to stay
+# together; the KEEP overlay puts every stub in one output section of ours,
+# which lets the sections of different libraries interleave once more than a
+# couple of SDK archives are involved.  The fixup then gives up halfway:
+#
+#	Warning: could not fixup imports, stubs out of order.
+#	Continuing, your binary may or not work.
+#
+# "May or not work" turned out to be "crashes a few seconds into Host_Init".
+# The game links every object explicitly, so nothing needs collecting -- the
+# plain link leaves the stubs exactly where pspsdk put them, which is the
+# configuration every working pspsdk EBOOT uses.
+TEST_GC_LDFLAGS := -Wl,--gc-sections -Wl,-T,$(HERE)/keep_sce.ld
 LDFLAGS += -Wl,-zmax-page-size=128
 
 # PSP user-mode libraries.  -lpspdebug is what our console prints through.
@@ -277,7 +288,7 @@ $$($(1)_DIR)/$(1).o: $(TESTS)/test_$(1).c
 	$(CC) $(CFLAGS) $(CPPFLAGS) $(TEST_CPPFLAGS) -c $$< -o $$@
 
 $$($(1)_DIR)/$(1).elf: $$($(1)_OBJS)
-	$(CC) -o $$@ $$^ $(LDFLAGS) $(TEST_LIBS)
+	$(CC) -o $$@ $$^ $(LDFLAGS) $(TEST_GC_LDFLAGS) $(TEST_LIBS)
 	$(FIXUP) $$@
 
 $$($(1)_DIR)/PARAM.SFO:
