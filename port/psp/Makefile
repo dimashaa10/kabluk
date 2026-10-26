@@ -146,18 +146,31 @@ TEST_LIBS := $(PSP_LIBS) -lm
 # names a library that is not resident at boot is refused by the firmware with
 # 8002013C (SCE_KERNEL_ERROR_LIBRARY_NOTFOUND) before a single instruction
 # runs.  These are the same libraries the test EBOOTs link, and they boot.
-GAME_LIB_NAMES := -lm -lz -lpspgu -lpspgum -lpspvfpu -lpsprtc \
+# -lc comes first, and that is not cosmetic.  libpspkernel.a carries pspsdk's
+# SysclibForKernel import stubs, and they are named strcat, strcmp, strcpy,
+# strstr, strtok, strtol, strtoul... -- the same names newlib exports.  An
+# archive is scanned in command-line order and libc would normally only be
+# reached at the very end, after libpspkernel had already answered; the result
+# is a module that imports SysclibForKernel, a KERNEL library.  A user-mode
+# EBOOT cannot link against it, and the firmware answers, before a single
+# instruction runs:
+#
+#	Запуск игры невозможен (8002013C)   = SCE_KERNEL_ERROR_LIBRARY_NOTFOUND
+#
+# Naming -lc inside the group makes newlib the provider of those names and the
+# kernel stubs are never pulled.  Verified on the host with two archives
+# exporting the same symbol: kernel-first links the kernel member, libc-first
+# links the libc one.
+GAME_LIB_NAMES := -lc -lm -lz -lpspgu -lpspgum -lpspvfpu -lpsprtc \
                   -lpsppower -lpspaudiolib -lpspaudio -lpsphprm -lpspumd \
                   $(PSP_LIBS) -lpspsdk
 GAME_LIBS := -Wl,--start-group $(GAME_LIB_NAMES) -Wl,--end-group
 
-# libpspkernel.a carries the SysclibForKernel import stubs, and two of them are
-# called strtol and strtoul -- the same names newlib exports.  Both end up in
-# the link, and ld calls that a multiple definition.  Keeping the first, which
-# is the kernel stub forwarding to the firmware's Sysclib module, is exactly
-# what we want; the alternative is to stop linking libpspkernel, which we
-# cannot do (sceKernelDelayThread and friends live there).
-GAME_LDFLAGS := -Wl,--allow-multiple-definition
+# No --allow-multiple-definition here any more.  It was hiding the duplicate
+# strtol above, and what it hid was a kernel-library import that made the EBOOT
+# unloadable.  With -lc first there is no duplicate to allow, and if another
+# one ever appears we want the link to fail loudly.
+GAME_LDFLAGS :=
 
 # Without this, a recipe that fails after the linker has written the output
 # leaves the file in place and the next make calls it up to date.  That is how
@@ -305,6 +318,15 @@ $(GAME_DIR)/port/%.o: $(HERE)/%.c
 # linker would then try to read as object files.
 $(GAME_DIR)/$(TARGET).elf: $(GAME_OBJS) $(MAKEFILE_LIST) $(HERE)/keep_sce.ld
 	$(CC) -o $@ $(GAME_OBJS) $(LDFLAGS) $(GAME_LDFLAGS) $(GAME_LIBS)
+	@bad=`grep -ao "[A-Za-z_0-9]*ForKernel" $@ | sort -u`; \
+	if [ -n "$$bad" ]; then \
+		echo "ERROR: модуль импортирует kernel-библиотеку:"; \
+		echo "$$bad" | sed "s/^/    /"; \
+		echo "Такой EBOOT прошивка не запустит (8002013C = LIBRARY_NOTFOUND)."; \
+		echo "Ищи, какой символ потянул стаб из libpspkernel.a: имя стаба в скобках"; \
+		echo "в ошибке линкера, и добавляй -lc раньше той библиотеки."; \
+		rm -f $@; exit 1; \
+	fi
 	$(FIXUP) $@
 
 $(GAME_DIR)/PARAM.SFO:
