@@ -166,15 +166,32 @@ TEST_LIBS := $(PSP_LIBS) -lm
 #
 #	Запуск игры невозможен (8002013C)  = SCE_KERNEL_ERROR_LIBRARY_NOTFOUND
 #
-# libpspuser.a (src/user/*) is the user-mode half with the ForUser NIDs, which
-# is what a game EBOOT has to import.  The test link keeps -lpspkernel: it
-# works there, the suite is green, and it is not this fix's business.
+# libpspuser.a (src/user/*) is the user-mode half with the ForUser NIDs.  It is
+# NOT named here, and that is the fix for the "stubs out of order" warning.
 #
-# Order below follows pspsdk's own build.mak / SDL's Makefile.psp: low-level
-# libraries first, libpspuser last.  No --start-group: see GAME_LIBS.
+# The compiler appends the SDK's own libraries after anything on the command
+# line, and that set includes libpspuser.a and libpspsdk.a.  Naming -lpspuser
+# ourselves therefore put the archive on the link line twice, and an archive
+# scanned twice yields its members in two separate bursts.  The import stubs
+# travel with the members, so the same library's stubs ended up on both sides
+# of other libraries' stubs -- exactly what the verbose dump showed:
+#
+#     7  IoFileMgrForUser
+#     5  sceNetInet        <- libpspsdk, pulled by the compiler's own list
+#     6  IoFileMgrForUser  <- back to the same library: split
+#     2  SysMemUserForUser ... 3 SysMemUserForUser
+#     4  ThreadManForUser ... 15 ThreadManForUser
+#
+# Three libraries split, three warnings.  psp-fixup-imports records the first
+# run's start address and count in the module's import table, so the loader
+# walks past the end of that run and patches other libraries' stubs -- the
+# EBOOT loads and dies a few seconds later.
+#
+# Leaving -lpspuser to the compiler gives it a single scan.  Everything below is
+# still needed: build.mak names these explicitly, so the compiler does not.
 GAME_LIB_NAMES := -lm -lz -lpspvfpu -lpsphprm -lpspctrl -lpspumd -lpsprtc \
                   -lpsppower -lpspgum -lpspgu -lpspaudiolib -lpspaudio \
-                  -lpspdebug -lpspdisplay -lpspge -lpspuser
+                  -lpspdebug -lpspdisplay -lpspge
 
 # ...and no -Wl,--start-group, which is what produced
 #
