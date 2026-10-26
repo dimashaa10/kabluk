@@ -135,9 +135,13 @@ TEST_LIBS := $(PSP_LIBS) -lm
 # only once, in command-line order.  With a plain list, a library needed by one
 # that follows it is never revisited -- -lm before -lSDL2, for instance, leaves
 # SDL's sin()/cos() undefined.  A group makes the list order-independent.
+# No -lpspthreadman: current pspsdk has no such archive.  ThreadMan lives in
+# src/kernel/ThreadManForKernel.S and therefore in libpspkernel.a, which is
+# already in PSP_LIBS -- that is also why psp_boot.c's sceKernelDelayThread
+# links without it.
 GAME_LIB_NAMES := -lm -lz -lSDL2 -lpspgu -lpspgum -lpspvfpu -lpsprtc \
                   -lpsppower -lpspaudiolib -lpspaudio -lpsphprm -lpspumd \
-                  -lpspthreadman $(PSP_LIBS) -lpspsdk
+                  $(PSP_LIBS) -lpspsdk
 GAME_LIBS := -Wl,--start-group $(GAME_LIB_NAMES) -Wl,--end-group
 
 # Redirect the tests' stdio to the on-screen console.  The rename happens at
@@ -308,10 +312,19 @@ check:
 			done; \
 		done; \
 		if [ -n "$$found" ]; then echo "  ok   lib$$n"; \
-		else echo "  MISSING lib$$n"; fi; \
+		else echo "  MISSING lib$$n   (нет ни lib$$n.a, ни lib$$n.so в $(LIBDIR))"; fi; \
+	done
+
+# Prints what the toolchain actually installed, so a missing archive is one
+# command away instead of a build error to read backwards.
+libs:
+	@for d in $(LIBDIR); do \
+		echo "== $$d"; \
+		ls "$$d"/*.a 2>/dev/null | xargs -n1 basename 2>/dev/null | sort | tr '\n' ' '; \
+		echo; \
 	done
 
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all core-objs tests game check clean
+.PHONY: all core-objs tests game check libs clean
