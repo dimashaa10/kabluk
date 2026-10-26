@@ -77,6 +77,11 @@ CPPFLAGS += -D_PSP_FW_VERSION=$(PSP_FW_VERSION)
 # net_main.c rather than pulling another third-party library into the port.
 CPPFLAGS += -DFEATURE_CURL=0
 
+# zlib ships with pspdev, and the engine needs it unconditionally: fs_zip.c
+# and common.c call inflate() whether or not USE_ZLIB is defined, so leaving it
+# off would only trade the header for a link error.
+CPPFLAGS += -DUSE_ZLIB
+
 # SDL2 for PSP declares SDL_MAIN_AVAILABLE/NEEDED, which makes SDL_main.h do
 # "#define main SDL_main" and expect int SDL_main(int, char**).  Our entry
 # points are plain int main(void) (the tests) or will be our own module entry
@@ -120,6 +125,7 @@ LDFLAGS += -Wl,-zmax-page-size=128
 # build.mak does not add for user-mode programs.
 PSP_LIBS := -lpspdebug -lpspdisplay -lpspge -lpspctrl -lpspkernel
 TEST_LIBS := $(PSP_LIBS) -lm
+GAME_LIBS := $(TEST_LIBS) -lz -lSDL2
 
 # Redirect the tests' stdio to the on-screen console.  The rename happens at
 # compile time and only for tests/*.c, so the engine sources keep using the
@@ -233,7 +239,10 @@ tests: $(TEST_EBOOTS)
 
 # Platform backends that replace the desktop ones.  Same grouping objs.mk
 # describes: main(), system, input, sound device, CD, video/GL device, network.
-PSP_BACKEND := main_psp.o sys_psp.o pl_psp.o in_psp.o snd_psp.o cd_psp.o \
+# psp_boot.o carries PSP_MODULE_INFO and psp_console.o the on-screen console;
+# without them the module has no header and psp_con_* stay undefined.
+PSP_BACKEND := psp_boot.o psp_console.o \
+               main_psp.o sys_psp.o pl_psp.o in_psp.o snd_psp.o cd_psp.o \
                vid_psp.o gl_stub.o net_psp.o
 
 GAME_ENGINE_OBJS := $(filter-out $(DESKTOP_ONLY) $(PSP_UNSUPPORTED),$(OBJS))
@@ -250,7 +259,7 @@ $(GAME_DIR)/port/%.o: $(HERE)/%.c
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
 
 $(GAME_DIR)/$(TARGET).elf: $(GAME_OBJS)
-	$(CC) -o $@ $^ $(LDFLAGS) $(TEST_LIBS) -lSDL2
+	$(CC) -o $@ $^ $(LDFLAGS) $(GAME_LIBS)
 	$(FIXUP) $@
 
 $(GAME_DIR)/PARAM.SFO:
@@ -278,7 +287,7 @@ check:
 	else echo "  MISSING $(PSPSDK)/lib/build.mak"; fi
 	@if [ -f "$(HERE)/keep_sce.ld" ]; then echo "  ok   $(HERE)/keep_sce.ld"; \
 	else echo "  MISSING $(HERE)/keep_sce.ld"; fi
-	@for l in $(PSP_LIBS) -lm; do \
+	@for l in $(GAME_LIBS); do \
 		n=$${l#-l}; found=; \
 		for d in $(LIBDIR); do \
 			for e in a so; do \

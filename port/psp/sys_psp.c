@@ -16,6 +16,7 @@
 #include <pspkernel.h>
 #include <pspiofilemgr.h>
 
+#include "arch_def.h"	/* PLATFORM_STRING and the platform macros */
 #include "quakedef.h"
 #include "psp_console.h"
 

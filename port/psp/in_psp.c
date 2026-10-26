@@ -87,7 +87,7 @@ void IN_Commands (void)
 	IN_Button (PSP_CTRL_START,    K_ESCAPE);
 	IN_Button (PSP_CTRL_SQUARE,   K_SPACE);
 	IN_Button (PSP_CTRL_TRIANGLE, 'e');		/* the action key */
-	IN_Button (PSP_CTRL_SELECT,   K_TILDE);
+	IN_Button (PSP_CTRL_SELECT,   '`');		/* toggles the console */
 	IN_Button (PSP_CTRL_UP,       K_UPARROW);
 	IN_Button (PSP_CTRL_DOWN,     K_DOWNARROW);
 	IN_Button (PSP_CTRL_LEFT,     K_LEFTARROW);

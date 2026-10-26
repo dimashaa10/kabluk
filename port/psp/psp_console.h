@@ -19,6 +19,12 @@
 
 #include <stdio.h>
 
+/* FUNC_NORETURN comes from the engine headers; this one is included from
+ * port files that may not have pulled quakedef.h in yet. */
+#ifndef FUNC_NORETURN
+#define FUNC_NORETURN
+#endif
+
 void psp_con_init (void);
 int  psp_con_puts (const char *s);
 int  psp_con_printf (const char *fmt, ...);
@@ -28,8 +34,9 @@ int  psp_con_putchar (int c);
 int  psp_con_fflush (FILE *stream);
 
 /* Prints the failure, keeps it on screen and stops the module.  Newlib's
- * assert() lands here through __assert_func. */
-void psp_con_panic (const char *what, const char *file, int line,
+ * assert() lands here through __assert_func.  It genuinely never returns, and
+ * saying so keeps Sys_Error() (declared FUNC_NORETURN in sys.h) honest. */
+FUNC_NORETURN void psp_con_panic (const char *what, const char *file, int line,
                     const char *func, const char *expr);
 
 #endif /* KABLUK_PSP_CONSOLE_H */

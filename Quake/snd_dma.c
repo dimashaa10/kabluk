@@ -787,9 +787,11 @@ static void S_UpdateAmbientSounds (void)
 		
 // calc ambient sound levels
 	if (!cl.worldmodel || cl.worldmodel->needload)
+	{
 		memset(levels, 0, sizeof(levels));
 		S_SetUnderwaterIntensity(0.f); // woods #waterfx (ironwail)
 		return;
+	}
 
 	l = Mod_PointInLeaf (listener_origin, cl.worldmodel);
 	S_SetUnderwaterIntensity(l ? S_UnderwaterIntensityForContents(l->contents) : 0.f); // woods #waterfx (ironwail)

@@ -158,8 +158,8 @@ int psp_con_fflush (FILE *stream)
 	return 0;
 }
 
-void psp_con_panic (const char *what, const char *file, int line,
-                    const char *func, const char *expr)
+FUNC_NORETURN void psp_con_panic (const char *what, const char *file, int line,
+                                  const char *func, const char *expr)
 {
 	con_ensure();
 	con_flush();
