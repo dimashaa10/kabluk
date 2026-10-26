@@ -92,16 +92,21 @@ CFLAGS += -fno-strict-aliasing
 # given target does not reach (the renderer, for the test builds).
 CFLAGS += -ffunction-sections -fdata-sections
 
-# No --gc-sections at link time: PSPSDK's link script expects to find the
-# module header section (PSP_MODULE_INFO) and the libcglue init tables, and
-# garbage collection has no way of knowing they are reachable -- nothing
-# references them from code.  Each test links a handful of objects anyway, so
-# there is nothing worth collecting.
 # Where -lpsp* actually live.  pspsdk's build.mak adds these itself; this
 # makefile writes its own link line, so it has to add them too -- without them
 # the linker reports "cannot find -lpspdebug" even though the files are there.
 LIBDIR := $(PSPDEV)/psp/lib $(PSPSDK)/lib
 LDFLAGS += $(addprefix -L,$(LIBDIR))
+
+# --gc-sections is not optional here.  Each test is one translation unit that
+# exercises part of sv_user.c/pmove.c; the rest of those files is dead code
+# whose references (svs, Cmd_*, MSG_*, Sys_Error, ...) would otherwise have to
+# be satisfied by linking half the engine.  The desktop test script collects
+# the same way, so the two builds agree.
+#
+# It does not eat the module header: pspsdk's linkfile.prx wraps
+# .rodata.sceModuleInfo, .sceStub.text and the init arrays in KEEP().
+LDFLAGS += -Wl,--gc-sections
 LDFLAGS += -Wl,-zmax-page-size=128
 
 # PSP user-mode libraries.  -lpspdebug is what our console prints through.
