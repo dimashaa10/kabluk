@@ -104,9 +104,12 @@ LDFLAGS += $(addprefix -L,$(LIBDIR))
 # be satisfied by linking half the engine.  The desktop test script collects
 # the same way, so the two builds agree.
 #
-# It does not eat the module header: pspsdk's linkfile.prx wraps
-# .rodata.sceModuleInfo, .sceStub.text and the init arrays in KEEP().
+# It does eat the NID table, though: .rodata.sceNid is only reached by the
+# loader, never by code, so nothing keeps it alive and psp-fixup-imports then
+# aborts with "no nid section found".  keep_sce.ld re-adds it with KEEP()
+# without touching the default script (see the comment in that file).
 LDFLAGS += -Wl,--gc-sections
+LDFLAGS += -Wl,-T,$(HERE)/keep_sce.ld
 LDFLAGS += -Wl,-zmax-page-size=128
 
 # PSP user-mode libraries.  -lpspdebug is what our console prints through.
@@ -234,6 +237,8 @@ check:
 	done
 	@if [ -f "$(PSPSDK)/lib/build.mak" ]; then echo "  ok   $(PSPSDK)/lib/build.mak"; \
 	else echo "  MISSING $(PSPSDK)/lib/build.mak"; fi
+	@if [ -f "$(HERE)/keep_sce.ld" ]; then echo "  ok   $(HERE)/keep_sce.ld"; \
+	else echo "  MISSING $(HERE)/keep_sce.ld"; fi
 	@for l in $(PSP_LIBS) -lm; do \
 		n=$${l#-l}; found=; \
 		for d in $(LIBDIR); do \
