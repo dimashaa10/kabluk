@@ -39,7 +39,14 @@ int main (int argc, char *argv[])
 	double	time, oldtime, newtime;
 
 	psp_con_init();
-	psp_con_printf("Kabluk for PSP -- starting up\n");
+
+	/* The build stamp is not decoration.  When a change on the PC side does
+	 * not change what the console does, the first question is whether the
+	 * EBOOT on the memory stick is the one that was just built -- and the
+	 * only way to answer it from a screenshot is to print the compile time
+	 * on the screen.  If this line does not show today's build, the old
+	 * EBOOT is still on the card (or in a second game folder). */
+	psp_con_printf("Kabluk for PSP -- build " __DATE__ " " __TIME__ "\n");
 
 	/* We replaced SDL's main() (SDL_MAIN_HANDLED), so SDL has to be told that
 	 * the application is ready before any SDL_Init call. */

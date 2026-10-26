@@ -24,8 +24,9 @@
 
 static int   con_ready;
 static int   con_row;
-static int   con_log = -1;	/* kabluk.log, so a crash still leaves evidence */
-static const char *con_log_path;	/* where it landed, for messages */
+static const char *con_log_path;	/* kabluk.log, once we know it can live there */
+static int   con_log_err;	/* last failing sceIo call, 0 while writes work */
+static int   con_log_err_said;	/* the error has been put on the screen once */
 static char  con_line[CON_COLS + 1];
 static int   con_len;
 
@@ -43,27 +44,56 @@ static void con_ensure (void)
 }
 
 /*
- * sceIoWrite() only hands the bytes to the memory stick's FAT cache.  The cache
- * is written back on close() or on a timer -- and a module that dies with an
- * exception never closes anything.  That is why a crash used to leave no file
- * at all: the log was written, but the directory entry never reached the card.
+ * The log has to survive a module that dies without warning, and that rules out
+ * keeping a file open.
  *
- * sceIoSync() forces the cache out, so the lines that were printed before the
- * fault are still there when the stick is put in a PC.  It costs a card write
- * per console line, which is nothing next to losing the evidence.
+ * sceIoWrite() only hands the bytes to the memory stick's FAT cache; the cache
+ * reaches the card on close(), or later, or never if the process is killed by
+ * an exception.  A long-lived descriptor therefore produced a kabluk.log that
+ * existed and was zero bytes long -- created once, written to, and no content
+ * ever reaching the card.  sceIoSync() was supposed to force it out and did not.
+ *
+ * So every line is written the durable way: open (append) -- write -- close.
+ * close() is the operation the driver cannot skip, so the bytes are on the card
+ * before we print the next line.  A handful of card operations per console line
+ * is cheap next to losing the only evidence there is.
  */
 static void con_log_sync (void)
 {
-	if (con_log >= 0)
+	if (con_log_path)
 		sceIoSync("ms0:", 0);
 }
 
 static int con_log_try_open (void);
+static void con_write (const char *s);
+static void con_putc (int c);
 
 static void con_logfmt (const char *s)
 {
-	if (con_log >= 0 && s)
-		sceIoWrite(con_log, s, (unsigned int) strlen(s));
+	SceUID fd;
+	int n;
+	size_t len;
+
+	if (!con_log_path || !s)
+		return;
+
+	len = strlen(s);
+	if (!len)
+		return;
+
+	fd = sceIoOpen(con_log_path,
+	               PSP_O_WRONLY | PSP_O_CREAT | PSP_O_APPEND, 0777);
+	if (fd < 0)
+	{
+		con_log_err = (int)fd;
+		return;
+	}
+
+	n = sceIoWrite(fd, s, (unsigned int)len);
+	sceIoClose(fd);
+
+	if (n < 0)
+		con_log_err = n;
 }
 
 /* Give the log a few more chances: psp_con_init() runs before the memory
@@ -78,7 +108,7 @@ static void con_flush (void)
 	if (!con_len)
 		return;
 
-	if (con_log < 0 && con_log_tries < CON_LOG_OPEN_TRIES)
+	if (!con_log_path && con_log_tries < CON_LOG_OPEN_TRIES)
 	{
 		con_log_tries++;
 		con_log_try_open();
@@ -98,7 +128,19 @@ static void con_flush (void)
 
 	con_logfmt(con_line);
 	con_logfmt("\n");
-	con_log_sync();
+
+	/* If a card write failed, say so on the screen -- once, so a broken card
+	 * does not turn into an endless stream of messages.  Without this the log
+	 * would just stay empty and look like a code problem. */
+	if (con_log_err && !con_log_err_said)
+	{
+		char note[64];
+
+		con_log_err_said = 1;
+		snprintf(note, sizeof(note), "log: card write error %d", con_log_err);
+		con_write(note);
+		con_putc('\n');
+	}
 }
 
 static void con_putc (int c)
@@ -170,13 +212,19 @@ static int con_log_try_open (void)
 
 	for (i = 0; i < sizeof(paths) / sizeof(paths[0]); i++)
 	{
-		con_log = sceIoOpen(paths[i],
-		                    PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
-		if (con_log >= 0)
+		SceUID fd = sceIoOpen(paths[i],
+		                      PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
+
+		if (fd >= 0)
 		{
+			/* Empty the file once, here, and keep no descriptor: from now
+			 * on every line is appended and closed. */
+			sceIoClose(fd);
 			con_log_path = paths[i];
 			return 1;
 		}
+
+		con_log_err = (int)fd;
 	}
 
 	return 0;
@@ -188,7 +236,7 @@ void psp_con_init (void)
 
 	con_ensure();
 
-	if (con_log < 0)
+	if (!con_log_path)
 		con_log_try_open();
 
 	/* Say where the log went -- or that there is none.  Without this line,
@@ -200,10 +248,37 @@ void psp_con_init (void)
 	 * path works. */
 	if (!said_where)
 	{
+		char buf[128];
+		SceIoStat st;
+
 		said_where = 1;
+
 		con_write("log: ");
-		con_write(con_log >= 0 ? con_log_path : "NONE - crash output will be lost");
+		con_write(con_log_path ? con_log_path : "NONE - crash output will be lost");
 		con_putc('\n');
+
+		/* Proof, on the screen, that the line above actually reached the
+		 * card: ask the filesystem how big the file is now.  A "0 bytes"
+		 * here means writes are not landing and the log is worthless, so
+		 * do not go looking for a file that was never written. */
+		if (con_log_path && sceIoGetstat(con_log_path, &st) >= 0)
+		{
+			snprintf(buf, sizeof(buf), "log: %d bytes on the card",
+			         (int)st.st_size);
+			con_write(buf);
+			con_putc('\n');
+		}
+		else if (con_log_path)
+		{
+			con_write("log: stat failed\n");
+		}
+
+		if (!con_log_path)
+		{
+			snprintf(buf, sizeof(buf), "log: open error %d", con_log_err);
+			con_write(buf);
+			con_putc('\n');
+		}
 	}
 }
 
@@ -355,6 +430,16 @@ void psp_trace (const char *step)
 
 	con_write(buf);
 	con_putc('\n');		/* flushes, logs and syncs */
+
+	/* The same text again, in row 0, where nothing else ever scrolls it
+	 * away.  Row 0 is the line to read when the screen is about to die:
+	 * it always names the last step that was reached. */
+	if (con_row > 1)
+	{
+		pspDebugScreenSetXY(0, 0);
+		pspDebugScreenPrintf("LAST: %-60.60s", step ? step : "?");
+		pspDebugScreenSetXY(0, con_row);
+	}
 }
 
 void psp_con_logsync (void)
