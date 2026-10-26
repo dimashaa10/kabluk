@@ -36,6 +36,9 @@ STRIP   := $(PSPDEV)/bin/psp-strip
 MKSFO   := $(PSPDEV)/bin/mksfoex
 PACKPBP := $(PSPDEV)/bin/pack-pbp
 
+# Name of the game module (EBOOT title lives in PARAM.SFO).
+TARGET ?= kabluk
+
 # Firmware the EBOOT advertises. 6.00 is the safe choice for CFW.
 PSP_FW_VERSION ?= 600
 
@@ -225,6 +228,42 @@ $(foreach t,$(TESTS_ALL),$(eval $(call TEST_template,$(t))))
 tests: $(TEST_EBOOTS)
 
 # ---------------------------
+# game: the single runnable EBOOT
+# ---------------------------
+
+# Platform backends that replace the desktop ones.  Same grouping objs.mk
+# describes: main(), system, input, sound device, CD, video/GL device, network.
+PSP_BACKEND := main_psp.o sys_psp.o pl_psp.o in_psp.o snd_psp.o cd_psp.o \
+               vid_psp.o gl_stub.o net_psp.o
+
+GAME_ENGINE_OBJS := $(filter-out $(DESKTOP_ONLY) $(PSP_UNSUPPORTED),$(OBJS))
+GAME_DIR    := $(BUILD)/game
+GAME_OBJS   := $(addprefix $(GAME_DIR)/engine/,$(GAME_ENGINE_OBJS)) \
+               $(addprefix $(GAME_DIR)/port/,$(PSP_BACKEND))
+
+$(GAME_DIR)/engine/%.o: $(ENGINE)/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
+
+$(GAME_DIR)/port/%.o: $(HERE)/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
+
+$(GAME_DIR)/$(TARGET).elf: $(GAME_OBJS)
+	$(CC) -o $@ $^ $(LDFLAGS) $(TEST_LIBS) -lSDL2
+	$(FIXUP) $@
+
+$(GAME_DIR)/PARAM.SFO:
+	@mkdir -p $(GAME_DIR)
+	$(MKSFO) -d MEMSIZE=2 'Kabluk' $@
+
+$(GAME_DIR)/EBOOT.PBP: $(GAME_DIR)/$(TARGET).elf $(GAME_DIR)/PARAM.SFO
+	$(STRIP) $(GAME_DIR)/$(TARGET).elf -o $(GAME_DIR)/data.psp
+	$(PACKPBP) $@ $(GAME_DIR)/PARAM.SFO NULL NULL NULL NULL NULL $(GAME_DIR)/data.psp NULL
+
+game: $(GAME_DIR)/EBOOT.PBP
+
+# ---------------------------
 # housekeeping
 # ---------------------------
 
@@ -253,4 +292,4 @@ check:
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all core-objs tests check clean
+.PHONY: all core-objs tests game check clean
