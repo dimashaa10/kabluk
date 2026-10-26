@@ -355,22 +355,26 @@ $(GAME_DIR)/$(TARGET).elf: $(GAME_OBJS) $(MAKEFILE_LIST) $(HERE)/keep_sce.ld
 		echo "символы sce* раньше libpspuser.a. Для user-модуля нужен -lpspuser."; \
 		rm -f $@; exit 1; \
 	fi
-	@out=`$(FIXUP) $@ 2>&1`; \
+	@cp $@ $@.pre; \
+	$(FIXUP) -v $@.pre > $@.vlog 2>&1; \
+	out=`$(FIXUP) $@ 2>&1`; \
 	if [ -n "$$out" ]; then echo "$$out"; fi; \
 	if echo "$$out" | grep -q "could not fixup imports"; then \
 		echo ""; \
-		echo "ERROR: psp-fixup-imports не смог дописать часть стабов —"; \
+		echo "ERROR: psp-fixup-imports не смог дописать часть стабов"; \
 		echo "стабы одной библиотеки идут не подряд по таблице импорта."; \
 		echo ""; \
 		echo "Порядок библиотек в таблице импорта (соседние одинаковые"; \
-		echo "свёрнуты в строку «N x имя»). Повтор имени ниже в списке —"; \
-		echo "это и есть библиотека, чьи стабы разъехались:"; \
-		cp $@ $@.dbg; \
-		$(FIXUP) -v $@.dbg 2>&1 \
-		| awk '/Import Stub/ { split($$0, a, "("); split(a[2], b, ")"); print b[1] }' \
-		| uniq -c | awk '{ printf "    %-4s %s\n", $$1, $$2 }'; \
-		rm -f $@ $@.dbg; exit 1; \
-	fi
+		echo "свёрнуты в строку N имя). Имя, встретившееся дважды,"; \
+		echo "это библиотека, чьи стабы разъехались:"; \
+		awk '/Import Stub/ { split($$0, a, "("); split(a[2], b, ")"); print b[1] }' \
+			$@.vlog | uniq -c | awk '{ printf "    %-3s %s\n", $$1, $$2 }'; \
+		echo ""; \
+		echo "Первые строки подробного лога (для контекста):"; \
+		head -12 $@.vlog | sed "s/^/    /"; \
+		rm -f $@ $@.pre $@.vlog; exit 1; \
+	fi; \
+	rm -f $@.pre $@.vlog
 
 # MEMSIZE is the extra-memory request: without it the user partition is 24 MB,
 # with it (value 1 = "give me everything") a PSP-2000/3000/E1000 hands out
