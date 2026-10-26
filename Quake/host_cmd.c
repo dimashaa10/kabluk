@@ -2445,6 +2445,14 @@ int ICMP_Ping_Host(const char* host)
 		return -1;
 	}
 }
+#elif defined(PLATFORM_PSP)
+/* newlib on the PSP has no popen(), and there is no shell to popen into.
+ * The menu simply shows no ping; nothing else depends on the value. */
+int ICMP_Ping_Host(const char* host)
+{
+	(void) host;
+	return -1;
+}
 #else  //  linux/macOS
 int ICMP_Ping_Host(const char* host)
 {

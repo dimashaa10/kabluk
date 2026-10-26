@@ -126,11 +126,19 @@ LDFLAGS += -Wl,-zmax-page-size=128
 PSP_LIBS := -lpspdebug -lpspdisplay -lpspge -lpspctrl -lpspkernel
 TEST_LIBS := $(PSP_LIBS) -lm
 # SDL2 for PSP is not a self-contained black box: its video backend talks to
-# sceGu directly, so linking it drags in the GU library, plus the VFPU, RTC and
-# power helpers the platform code uses.  libpspgu.a also carries vramalloc/
-# vfree/vrelptr (pspsdk src/gu/vram.c), which is where those came from.
-# Order matters: SDL2 first, then the libraries it depends on.
-GAME_LIBS := $(TEST_LIBS) -lz -lSDL2 -lpspgu -lpspgum -lpspvfpu -lpsprtc -lpsppower
+# sceGu directly and its audio backend to sceAudio, so linking it drags in most
+# of the SDK.  This is SDL's own Makefile.psp list minus the optional pspgl
+# trio (-lGL -lGLU -lglut) we do not use.  libpspgu.a also carries
+# vramalloc/vfree/vrelptr (pspsdk src/gu/vram.c).
+#
+# --start-group matters: these are static archives, and ld scans an archive
+# only once, in command-line order.  With a plain list, a library needed by one
+# that follows it is never revisited -- -lm before -lSDL2, for instance, leaves
+# SDL's sin()/cos() undefined.  A group makes the list order-independent.
+GAME_LIB_NAMES := -lm -lz -lSDL2 -lpspgu -lpspgum -lpspvfpu -lpsprtc \
+                  -lpsppower -lpspaudiolib -lpspaudio -lpsphprm -lpspumd \
+                  -lpspthreadman $(PSP_LIBS) -lpspsdk
+GAME_LIBS := -Wl,--start-group $(GAME_LIB_NAMES) -Wl,--end-group
 
 # Redirect the tests' stdio to the on-screen console.  The rename happens at
 # compile time and only for tests/*.c, so the engine sources keep using the
@@ -292,7 +300,7 @@ check:
 	else echo "  MISSING $(PSPSDK)/lib/build.mak"; fi
 	@if [ -f "$(HERE)/keep_sce.ld" ]; then echo "  ok   $(HERE)/keep_sce.ld"; \
 	else echo "  MISSING $(HERE)/keep_sce.ld"; fi
-	@for l in $(GAME_LIBS); do \
+	@for l in $(GAME_LIB_NAMES); do \
 		n=$${l#-l}; found=; \
 		for d in $(LIBDIR); do \
 			for e in a so; do \
