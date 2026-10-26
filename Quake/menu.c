@@ -5660,23 +5660,6 @@ void M_Mouse_Key(int k)
 		M_Mouse_AdjustSliders(1);
 		break;
 	}
-	if (key_dest != key_menu || m_state != m_casino)
-		return;
-
-	if (!keydown == K_MOUSE1) {
-		int mx = 320; // глобальные переменные с координатами мыши
-		int my = 200;
-
-		// Проверяем попадание в прямоугольник кнопки
-		if (mx >= spin_x && mx < spin_x + spin_w
-			&& my >= spin_y && my < spin_y + spin_h) {
-			// Как при нажатии SPACE
-			Casino_StartSpin();
-			S_LocalSound("misc/menu2.wav");
-			return;
-		}
-	}
-
 }
 
 void M_Mouse_Mousemove(int cx, int cy)
