@@ -139,10 +139,24 @@ TEST_LIBS := $(PSP_LIBS) -lm
 # src/kernel/ThreadManForKernel.S and therefore in libpspkernel.a, which is
 # already in PSP_LIBS -- that is also why psp_boot.c's sceKernelDelayThread
 # links without it.
-GAME_LIB_NAMES := -lm -lz -lSDL2 -lpspgu -lpspgum -lpspvfpu -lpsprtc \
+# pspgl and libpspvram are not ours: the SDL2 build that pspdev ships was
+# compiled with its pspgl backend, so SDL_pspvideo/SDL_render_psp/SDL_pspgl
+# reference vramalloc/vfree/vrelptr/vabsptr/vmemavail/vlargestblock (libpspvram
+# + libpspvramalloc) and the whole EGL entry point set (inside libGL.a -- pspgl
+# implements EGL, there is no separate libEGL.a).
+GAME_LIB_NAMES := -lm -lz -lSDL2 -lGL -lGLU -lglut -lpspvram -lpspvramalloc \
+                  -lpspgu -lpspgum -lpspvfpu -lpsprtc \
                   -lpsppower -lpspaudiolib -lpspaudio -lpsphprm -lpspumd \
                   $(PSP_LIBS) -lpspsdk
 GAME_LIBS := -Wl,--start-group $(GAME_LIB_NAMES) -Wl,--end-group
+
+# libpspkernel.a carries the SysclibForKernel import stubs, and two of them are
+# called strtol and strtoul -- the same names newlib exports.  Both end up in
+# the link, and ld calls that a multiple definition.  Keeping the first, which
+# is the kernel stub forwarding to the firmware's Sysclib module, is exactly
+# what we want; the alternative is to stop linking libpspkernel, which we
+# cannot do (sceKernelDelayThread and friends live there).
+GAME_LDFLAGS := -Wl,--allow-multiple-definition
 
 # Redirect the tests' stdio to the on-screen console.  The rename happens at
 # compile time and only for tests/*.c, so the engine sources keep using the
@@ -276,7 +290,7 @@ $(GAME_DIR)/port/%.o: $(HERE)/%.c
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
 
 $(GAME_DIR)/$(TARGET).elf: $(GAME_OBJS)
-	$(CC) -o $@ $^ $(LDFLAGS) $(GAME_LIBS)
+	$(CC) -o $@ $^ $(LDFLAGS) $(GAME_LDFLAGS) $(GAME_LIBS)
 	$(FIXUP) $@
 
 $(GAME_DIR)/PARAM.SFO:
