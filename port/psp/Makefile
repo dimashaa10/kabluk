@@ -70,6 +70,14 @@ CPPFLAGS += -I$(PSPSDK)/include
 CPPFLAGS += -DUSE_SDL2
 CPPFLAGS += -D_PSP_FW_VERSION=$(PSP_FW_VERSION)
 
+# PSP is "unix-like" as far as the engine is concerned: its libc is newlib on
+# top of NetBSD headers, and $(PSPSDK)/include already carries sys/socket.h,
+# netinet/in.h, arpa/inet.h and netdb.h.  Without this, net_sys.h matches no
+# platform branch at all, so sys_socket_t (and INVALID_SOCKET, SOCKETERRNO,
+# everything net_defs.h builds on) stays undefined and every file that touches
+# the network layer fails -- including host_cmd.c and pr_ext.c.
+CPPFLAGS += -DPLATFORM_UNIX=1
+
 # gnu11, not the compiler default: GCC 15 defaults to gnu23, where true and
 # false are keywords, and q_stdinc.h declares them as enum constants.
 CFLAGS += -std=gnu11
