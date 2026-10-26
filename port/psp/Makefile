@@ -70,6 +70,10 @@ CPPFLAGS += -I$(PSPSDK)/include
 CPPFLAGS += -DUSE_SDL2
 CPPFLAGS += -D_PSP_FW_VERSION=$(PSP_FW_VERSION)
 
+# No libcurl and no internet on a PSP-E100x: drop the external-IP lookup in
+# net_main.c rather than pulling another third-party library into the port.
+CPPFLAGS += -DFEATURE_CURL=0
+
 
 # gnu11, not the compiler default: GCC 15 defaults to gnu23, where true and
 # false are keywords, and q_stdinc.h declares them as enum constants.

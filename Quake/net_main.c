@@ -25,7 +25,16 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "quakedef.h"
 #include "net_defs.h"
 
+/* libcurl is used for one thing only: the external-IP lookup that the server
+ * browser shows. Ports without it (PSP) build this file with FEATURE_CURL=0,
+ * which drops the dependency and leaves my_public_ip at "UNKNOWN". */
+#ifndef FEATURE_CURL
+#define FEATURE_CURL 1
+#endif
+
+#if FEATURE_CURL
 #include <curl/curl.h> // woods #libcurl
+#endif
 
 qsocket_t	*net_activeSockets = NULL;
 qsocket_t	*net_freeSockets = NULL;
@@ -78,6 +87,8 @@ int		net_driverlevel;
 
 double		net_time;
 
+#if FEATURE_CURL
+
 static size_t WriteCallback(void* contents, size_t size, size_t nmemb, void* userp) // woods #extip
 {
 	size_t realsize = size * nmemb;
@@ -127,6 +138,8 @@ int GetExternalIP(void* data) // woods #extip
 	}
 	return 0; // Return success
 }
+
+#endif	/* FEATURE_CURL */
 
 double SetNetTime (void)
 {
@@ -1124,9 +1137,13 @@ void NET_Init (void)
 		Con_DPrintf("IPv6 address %s\n", my_ipv6_address);
 	}
 
+#if FEATURE_CURL
 	curl_global_init(CURL_GLOBAL_DEFAULT); // woods #libcurl
 
 	SDL_CreateThread(GetExternalIP, "ExternalIPThread", NULL); // woods #extip
+#else
+	strncpy(my_public_ip, "UNKNOWN", sizeof(my_public_ip));
+#endif
 }
 
 /*
@@ -1139,7 +1156,9 @@ void NET_Shutdown (void)
 {
 	qsocket_t	*sock;
 
+#if FEATURE_CURL
 	curl_global_cleanup(); // woods #libcurl
+#endif
 
 	SetNetTime();
 
