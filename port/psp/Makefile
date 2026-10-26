@@ -159,6 +159,11 @@ GAME_LIBS := -Wl,--start-group $(GAME_LIB_NAMES) -Wl,--end-group
 # cannot do (sceKernelDelayThread and friends live there).
 GAME_LDFLAGS := -Wl,--allow-multiple-definition
 
+# Without this, a recipe that fails after the linker has written the output
+# leaves the file in place and the next make calls it up to date.  That is how
+# a broken kabluk.elf survived the fixup error earlier.
+.DELETE_ON_ERROR:
+
 # Redirect the tests' stdio to the on-screen console.  The rename happens at
 # compile time and only for tests/*.c, so the engine sources keep using the
 # real stdio.
@@ -290,7 +295,11 @@ $(GAME_DIR)/port/%.o: $(HERE)/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c $< -o $@
 
-$(GAME_DIR)/$(TARGET).elf: $(GAME_OBJS)
+# The flags themselves are a dependency: changing what we link (dropping SDL2,
+# say) has to force a relink, otherwise make looks at the timestamps of the
+# .o files, sees them older than the existing .elf, and says "nothing to be
+# done" while the stale binary sits there.
+$(GAME_DIR)/$(TARGET).elf: $(GAME_OBJS) $(MAKEFILE_LIST) $(HERE)/keep_sce.ld
 	$(CC) -o $@ $^ $(LDFLAGS) $(GAME_LDFLAGS) $(GAME_LIBS)
 	$(FIXUP) $@
 
