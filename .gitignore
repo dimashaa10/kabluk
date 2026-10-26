@@ -16,3 +16,7 @@ Windows/VisualStudio/UpgradeLog.htm
 Quake/*.o
 Quake/*.d
 
+
+# PSP port build output
+/port/psp/build/
+*.PBP
