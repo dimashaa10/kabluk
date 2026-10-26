@@ -292,10 +292,10 @@ static const char *PR_ValueString (int type, eval_t *val)
 		q_snprintf (line, sizeof(line), "%5.1f", val->_double);
 		break;
 	case ev_ext_integer:
-		sprintf (line, "%i", val->_int);
+		sprintf (line, "%i", (int)val->_int);	/* int32_t is long on some ports */
 		break;
 	case ev_ext_uint32:
-		sprintf (line, "%u", val->_uint32);
+		sprintf (line, "%u", (unsigned int)val->_uint32);
 		break;
 	case ev_ext_sint64:
 		sprintf (line, "%"PRIi64, val->_sint64);
@@ -357,10 +357,10 @@ const char *PR_UglyValueString (int type, eval_t *val)
 		q_snprintf (line, sizeof(line), "%f", val->_float);
 		break;
 	case ev_ext_integer:
-		sprintf (line, "%i", val->_int);
+		sprintf (line, "%i", (int)val->_int);	/* int32_t is long on some ports */
 		break;
 	case ev_ext_uint32:
-		sprintf (line, "%u", val->_uint32);
+		sprintf (line, "%u", (unsigned int)val->_uint32);
 		break;
 	case ev_ext_sint64:
 		sprintf (line, "%"PRIi64, val->_sint64);
