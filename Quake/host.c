@@ -271,7 +271,24 @@ void	Host_FindMaxClients (void)
 	else if (svs.maxclients > MAX_SCOREBOARD)
 		svs.maxclients = MAX_SCOREBOARD;
 
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	/* client_t is ~130 KB in this engine: MAX_MSGLEN and MAX_DATAGRAM are 64 KB
+	 * each and every client owns one of both.  255 of those (MAX_SCOREBOARD)
+	 * are 33.9 MB -- more than the entire hunk the PSP port can hand out, so
+	 * Host_InitLocal died right here with
+	 *
+	 *	Hunk_Alloc: failed on 33955840 bytes
+	 *
+	 * Allocate for the clients the server will actually have instead; the
+	 * maxplayers command already clamps itself to this limit, and a
+	 * single-player game wants exactly one.  Passing -listen N still works,
+	 * because svs.maxclients is already N at this point. */
+	svs.maxclientslimit = svs.maxclients;
+	if (svs.maxclientslimit < 1)
+		svs.maxclientslimit = 1;
+#else
 	svs.maxclientslimit = MAX_SCOREBOARD;
+#endif
 	svs.clients = (struct client_s *) Hunk_AllocName (svs.maxclientslimit*sizeof(client_t), "clients");
 
 	if (svs.maxclients > 1)

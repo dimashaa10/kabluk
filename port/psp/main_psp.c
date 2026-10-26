@@ -26,11 +26,23 @@
  * and take the first that malloc returns.  -mem <MB> overrides the list.
  *
  * 40 MB is not greed, it is the size of the data this game has to hold once
- * the maps, models and sounds of a 64 MB set of packs are resident. */
-static const int psp_zone_sizes_mb[] = { 40, 32, 24, 20, 16, 12, 8 };
+ * the maps, models and sounds of a 42 MB set of packs are resident. */
+static const int psp_zone_sizes_mb[] = { 40, 36, 32, 28, 24, 20, 16, 12, 8 };
 #define PSP_NUM_ZONE_SIZES \
 	((int)(sizeof(psp_zone_sizes_mb) / sizeof(psp_zone_sizes_mb[0])))
 #define PSP_MIN_MEMORY (8 * 1024 * 1024)
+
+/* Memory the engine keeps OUTSIDE the zone, for plain malloc().
+ *
+ * The zone is one huge block handed to the engine, but the engine still calls
+ * malloc() for a few things of its own -- gfx.wad is loaded with it, so are the
+ * .cfg/.rc files, and the pak reader uses it for a directory scan.  Handing the
+ * whole heap to the zone leaves 768 KB, and then "not enough memory" arrives
+ * from somewhere unrelated and confusing.
+ *
+ * The block is therefore sized as "the biggest one that fits MINUS this", which
+ * keeps a real reserve on top of the zone. */
+#define PSP_MALLOC_RESERVE (3 * 1024 * 1024)
 
 static quakeparms_t	parms;
 
@@ -103,14 +115,37 @@ int main (int argc, char *argv[])
 	else
 	{
 		int i;
+		int best = 0;
 
+		/* Probe first, commit second.  Asking malloc() for the final size
+		 * directly would silently eat the reserve on the way; the probe
+		 * block is freed again, so the number that fits is known and the
+		 * real block can be that number minus the reserve. */
 		for (i = 0; i < PSP_NUM_ZONE_SIZES; i++)
 		{
-			parms.memsize = psp_zone_sizes_mb[i] * 1024 * 1024;
-			parms.membase = malloc(parms.memsize);
-			if (parms.membase)
+			void *probe = malloc((size_t)psp_zone_sizes_mb[i] * 1024 * 1024);
+
+			if (probe)
+			{
+				free(probe);
+				best = psp_zone_sizes_mb[i];
 				break;
+			}
+
 			Sys_Printf("Zone: %d MB did not fit\n", psp_zone_sizes_mb[i]);
+		}
+
+		if (best)
+		{
+			parms.memsize = best * 1024 * 1024 - PSP_MALLOC_RESERVE;
+			if (parms.memsize < PSP_MIN_MEMORY)
+				parms.memsize = PSP_MIN_MEMORY;
+
+			parms.membase = malloc((size_t)parms.memsize);
+			if (parms.membase)
+				Sys_Printf("Zone: %d MB (biggest that fits: %d MB, %d MB kept for malloc)\n",
+				           parms.memsize / (1024 * 1024), best,
+				           PSP_MALLOC_RESERVE / (1024 * 1024));
 		}
 	}
 
