@@ -22,6 +22,12 @@
 # ---------------------------
 
 PSPDEV ?= C:/pspdev
+
+# PSPDEV often arrives from the environment, where MSYS exports it as
+# "/c/pspdev".  The toolchain cannot use that form (see the note on paths
+# below), so normalise it to "C:/pspdev" no matter how it was set.
+PSPDEV := $(shell cygpath -m "$(PSPDEV)" 2>/dev/null || echo "$(PSPDEV)")
+
 PSPSDK ?= $(PSPDEV)/psp/sdk
 
 CC      := $(PSPDEV)/bin/psp-gcc
@@ -64,6 +70,9 @@ CPPFLAGS += -I$(PSPSDK)/include
 CPPFLAGS += -DUSE_SDL2
 CPPFLAGS += -D_PSP_FW_VERSION=$(PSP_FW_VERSION)
 
+# gnu11, not the compiler default: GCC 15 defaults to gnu23, where true and
+# false are keywords, and q_stdinc.h declares them as enum constants.
+CFLAGS += -std=gnu11
 CFLAGS += -O2 -G0 -Wall
 CFLAGS += -Wno-unused-variable -Wno-unused-but-set-variable
 CFLAGS += -fno-strict-aliasing
