@@ -369,7 +369,13 @@ int LevenshteinDistance (const char* s, const char* t); // woods -- #smartquit
 #else
 	#define qofs_t long		//LP64 just makes more sense. everything just works.
 #endif
-#define qofs_Make(low,high) ((unsigned int)(low) | ((qofs_t)(high)<<32))
+/* Build the 64-bit value in a type that is always wide enough: on a 32-bit
+ * port (PSP, where qofs_t is long) `(qofs_t)(high) << 32` shifts out of the
+ * type and is undefined.  The final cast back to qofs_t truncates as it must,
+ * which simply means ZIP64 offsets cannot be represented there. */
+#define qofs_Make(low,high) \
+	((qofs_t)((unsigned long long)(unsigned int)(low) | \
+	          ((unsigned long long)(unsigned int)(high) << 32)))
 
 typedef struct
 {

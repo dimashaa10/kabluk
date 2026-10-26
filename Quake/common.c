@@ -317,7 +317,7 @@ int char_to_int (const char* str, int len) // woods #demolistsort
 	int result = 0;
 	for (int i = 0; i < len; ++i) 
 	{
-		if (!isdigit(str[i])) return -1;  // Invalid character for conversion
+		if (!isdigit((unsigned char)str[i])) return -1;  // Invalid character for conversion
 		result = result * 10 + (str[i] - '0');
 	}
 	return result;
