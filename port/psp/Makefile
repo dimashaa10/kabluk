@@ -97,6 +97,11 @@ CFLAGS += -ffunction-sections -fdata-sections
 # garbage collection has no way of knowing they are reachable -- nothing
 # references them from code.  Each test links a handful of objects anyway, so
 # there is nothing worth collecting.
+# Where -lpsp* actually live.  pspsdk's build.mak adds these itself; this
+# makefile writes its own link line, so it has to add them too -- without them
+# the linker reports "cannot find -lpspdebug" even though the files are there.
+LIBDIR := $(PSPDEV)/psp/lib $(PSPSDK)/lib
+LDFLAGS += $(addprefix -L,$(LIBDIR))
 LDFLAGS += -Wl,-zmax-page-size=128
 
 # PSP user-mode libraries.  -lpspdebug is what our console prints through.
@@ -224,6 +229,16 @@ check:
 	done
 	@if [ -f "$(PSPSDK)/lib/build.mak" ]; then echo "  ok   $(PSPSDK)/lib/build.mak"; \
 	else echo "  MISSING $(PSPSDK)/lib/build.mak"; fi
+	@for l in $(PSP_LIBS) -lm; do \
+		n=$${l#-l}; found=; \
+		for d in $(LIBDIR); do \
+			for e in a so; do \
+				if [ -f "$$d/lib$$n.$$e" ]; then found=1; break 2; fi; \
+			done; \
+		done; \
+		if [ -n "$$found" ]; then echo "  ok   lib$$n"; \
+		else echo "  MISSING lib$$n"; fi; \
+	done
 
 clean:
 	rm -rf $(BUILD)
