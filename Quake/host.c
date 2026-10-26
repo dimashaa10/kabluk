@@ -1745,6 +1745,20 @@ void Host_Frame (double time)
 Host_Init
 ====================
 */
+#if defined(PLATFORM_PSP) || defined(__psp__)
+/* On the PSP there is no terminal: if the module dies inside Host_Init the
+ * screen goes with it and nothing has been printed yet, because the engine's
+ * own Con_Printf is a no-op until Con_Init() (halfway down this function).
+ * psp_trace() (port/psp/psp_console.c) writes one line to the debug screen and
+ * to kabluk.log and forces the card write, so the *last* breadcrumb names the
+ * call that killed it.  It is a diagnostic, not part of the port: on every
+ * other platform HOST_TRACE compiles away to nothing. */
+extern void psp_trace (const char *step);
+#define HOST_TRACE(x)	psp_trace(x)
+#else
+#define HOST_TRACE(x)	do { } while (0)
+#endif
+
 void Host_Init (void)
 {
 	extern void LOC_PQ_Init (void);    // rook / woods #pqteam (added PQ to name)
@@ -1764,29 +1778,50 @@ void Host_Init (void)
 	com_argc = host_parms->argc;
 	com_argv = host_parms->argv;
 
+	HOST_TRACE ("Memory_Init");
 	Memory_Init (host_parms->membase, host_parms->memsize);
+	HOST_TRACE ("Cbuf_Init");
 	Cbuf_Init ();
+	HOST_TRACE ("Cmd_Init");
 	Cmd_Init ();
+	HOST_TRACE ("LOG_Init");
 	LOG_Init (host_parms);
+	HOST_TRACE ("Cvar_Init");
 	Cvar_Init (); //johnfitz
+	HOST_TRACE ("COM_Init");
 	COM_Init ();
+	HOST_TRACE ("COM_InitFilesystem");
 	COM_InitFilesystem ();
+	HOST_TRACE ("Host_InitLocal");
 	Host_InitLocal ();
+	HOST_TRACE ("W_LoadWadFile");
 	W_LoadWadFile (); //johnfitz -- filename is now hard-coded for honesty
 	if (cls.state != ca_dedicated)
 	{
+		HOST_TRACE ("Key_Init");
 		Key_Init ();
+		HOST_TRACE ("Con_Init");
 		Con_Init ();
 	}
+	HOST_TRACE ("PR_Init");
 	PR_Init ();
+	HOST_TRACE ("Mod_Init");
 	Mod_Init ();
+	HOST_TRACE ("NET_Init");
 	NET_Init ();
+	HOST_TRACE ("SV_Init");
 	SV_Init ();
+	HOST_TRACE ("URI_Init");
 	URI_Init(); // woods #uri
 
+	HOST_TRACE ("LOC_PQ_Init");
 	LOC_PQ_Init (); // rook / woods #pqteam (added PQ to name)
 	if (cls.state != ca_dedicated)
+	{
+		HOST_TRACE ("IPLog_Init");
 		IPLog_Init ();		// JPG 1.05 - ip address logging // woods #iplog
+	}
+	HOST_TRACE ("Con_Printf Exe");
 
 #ifdef QSS_DATE	//avoid non-determinism.
 	Con_Printf ("Exe: " ENGINE_NAME_AND_VER "\n");
@@ -1797,44 +1832,73 @@ void Host_Init (void)
 
 	if (cls.state != ca_dedicated)
 	{
+		HOST_TRACE ("gfx/colormap.lmp");
 		host_colormap = (byte *)COM_LoadHunkFile ("gfx/colormap.lmp", NULL);
 		if (!host_colormap)
 			Sys_Error ("Couldn't load gfx/colormap.lmp");
 
+		HOST_TRACE ("V_Init");
 		V_Init ();
+		HOST_TRACE ("Chase_Init");
 		Chase_Init ();
+		HOST_TRACE ("ExtraMaps_Init");
 		ExtraMaps_Init (); //johnfitz
+		HOST_TRACE ("Modlist_Init");
 		Modlist_Init (); //johnfitz
+		HOST_TRACE ("DemoList_Init");
 		DemoList_Init (); //ericw
+		HOST_TRACE ("SkyList_Init");
 		SkyList_Init (); // woods #skylist
+		HOST_TRACE ("ExecList_Init");
 		ExecList_Init(); // woods #execlist
+		HOST_TRACE ("TextList_Init");
 		TextList_Init(); // woods #textlist
+		HOST_TRACE ("ParticleList_Init");
 		ParticleList_Init (); // woods #particlelist
+		HOST_TRACE ("ServerList_Init");
 		ServerList_Init(); // woods #serverlist
+		HOST_TRACE ("BookmarksList_Init");
 		BookmarksList_Init (); // woods #bookmarksmenu
+		HOST_TRACE ("FolderList_Init");
 		FolderList_Init(); // woods #folderlist
+		HOST_TRACE ("MusicList_Init");
 		MusicList_Init (); // woods #musiclist
+		HOST_TRACE ("M_CheckMods");
 		M_CheckMods (); // woods #modsmenu (iw)
+		HOST_TRACE ("VID_Init");
 		VID_Init ();
+		HOST_TRACE ("IN_Init");
 		IN_Init ();
+		HOST_TRACE ("TexMgr_Init");
 		TexMgr_Init (); //johnfitz
+		HOST_TRACE ("Draw_Init");
 		Draw_Init ();
+		HOST_TRACE ("SCR_Init");
 		SCR_Init ();
+		HOST_TRACE ("R_Init");
 		R_Init ();
+		HOST_TRACE ("S_Init");
 		S_Init ();
+		HOST_TRACE ("CDAudio_Init");
 		CDAudio_Init ();
+		HOST_TRACE ("BGM_Init");
 		BGM_Init();
+		HOST_TRACE ("Sbar_Init");
 		Sbar_Init ();
+		HOST_TRACE ("CL_Init");
 		CL_Init ();
+		HOST_TRACE ("M_Init");
 		M_Init(); // woods move this up for tab complete system #iwtabcomplete
 	}
 
+	HOST_TRACE ("LOC_Init");
 	LOC_Init (); // for 2021 rerelease support.
 
 	Hunk_AllocName (0, "-HOST_HUNKLEVEL-");
 	host_hunklevel = Hunk_LowMark ();
 
 	host_initialized = true;
+	HOST_TRACE ("Host_Init done");
 	Con_Printf ("\n========= Kabluk Engine Initialized =========\n\n");
 
 	if (setjmp (host_abortserver) )

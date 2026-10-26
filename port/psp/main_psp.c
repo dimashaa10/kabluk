@@ -96,19 +96,45 @@ int main (int argc, char *argv[])
 	Sys_Printf("Host_Init (%d MB)\n", parms.memsize / (1024 * 1024));
 	Host_Init();
 
+	/* Everything the engine prints after Con_Init() goes to the engine's own
+	 * console buffer, which needs a renderer to be visible -- and there is
+	 * none yet.  So these two markers are the only way to tell "Host_Init
+	 * returned and the frame loop is running" from "the module died in one
+	 * of the initialisers".  psp_trace() writes to the screen and to
+	 * kabluk.log, and forces the card write. */
+	psp_trace("Host_Init returned");
+	psp_con_printf("entering main loop, state %d\n", (int)cls.state);
+
 	oldtime = Sys_DoubleTime();
 
-	while (1)
 	{
-		newtime = Sys_DoubleTime();
-		time = newtime - oldtime;
+		int frame = 0;
+		double nextbeat = oldtime + 2.0;
 
-		Host_Frame(time);
+		while (1)
+		{
+			newtime = Sys_DoubleTime();
+			time = newtime - oldtime;
 
-		oldtime = newtime;
+			Host_Frame(time);
 
-		if (time < sys_ticrate.value)
-			sceKernelDelayThread(1000);	/* 1 ms: let the system breathe */
+			oldtime = newtime;
+			frame++;
+
+			/* A heartbeat every two seconds: if the screen freezes on one
+			 * of these, the loop itself is fine and the fault is inside
+			 * the frame; if the numbers stop, it is the last one that
+			 * matters. */
+			if (newtime >= nextbeat)
+			{
+				psp_con_printf("run: frame %d, state %d\n",
+				               frame, (int)cls.state);
+				nextbeat = newtime + 2.0;
+			}
+
+			if (time < sys_ticrate.value)
+				sceKernelDelayThread(1000);	/* 1 ms: let the system breathe */
+		}
 	}
 
 	return 0;

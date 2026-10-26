@@ -33,6 +33,14 @@ int  psp_con_fprintf (FILE *stream, const char *fmt, ...);
 int  psp_con_putchar (int c);
 int  psp_con_fflush (FILE *stream);
 
+/* A breadcrumb for the steps of long initialisation code: screen + log, with
+ * the card write forced.  The last one printed is where the module died. */
+void psp_trace (const char *step);
+
+/* Force the log out of the memory stick's cache.  Called after every line
+ * already; here so a fatal path can do it explicitly. */
+void psp_con_logsync (void);
+
 /* Prints the failure, keeps it on screen and stops the module.  Newlib's
  * assert() lands here through __assert_func.  It genuinely never returns, and
  * saying so keeps Sys_Error() (declared FUNC_NORETURN in sys.h) honest. */

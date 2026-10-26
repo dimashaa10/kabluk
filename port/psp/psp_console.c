@@ -25,6 +25,7 @@
 static int   con_ready;
 static int   con_row;
 static int   con_log = -1;	/* kabluk.log, so a crash still leaves evidence */
+static const char *con_log_path;	/* where it landed, for messages */
 static char  con_line[CON_COLS + 1];
 static int   con_len;
 
@@ -41,16 +42,47 @@ static void con_ensure (void)
 	con_line[0] = '\0';
 }
 
+/*
+ * sceIoWrite() only hands the bytes to the memory stick's FAT cache.  The cache
+ * is written back on close() or on a timer -- and a module that dies with an
+ * exception never closes anything.  That is why a crash used to leave no file
+ * at all: the log was written, but the directory entry never reached the card.
+ *
+ * sceIoSync() forces the cache out, so the lines that were printed before the
+ * fault are still there when the stick is put in a PC.  It costs a card write
+ * per console line, which is nothing next to losing the evidence.
+ */
+static void con_log_sync (void)
+{
+	if (con_log >= 0)
+		sceIoSync("ms0:", 0);
+}
+
+static int con_log_try_open (void);
+
 static void con_logfmt (const char *s)
 {
 	if (con_log >= 0 && s)
 		sceIoWrite(con_log, s, (unsigned int) strlen(s));
 }
 
+/* Give the log a few more chances: psp_con_init() runs before the memory
+ * stick is necessarily ready, and a card that answers on the second try is
+ * worth more than a clean error message. */
+#define CON_LOG_OPEN_TRIES 100
+
+static int con_log_tries;
+
 static void con_flush (void)
 {
 	if (!con_len)
 		return;
+
+	if (con_log < 0 && con_log_tries < CON_LOG_OPEN_TRIES)
+	{
+		con_log_tries++;
+		con_log_try_open();
+	}
 
 	con_line[con_len] = '\0';
 
@@ -66,6 +98,7 @@ static void con_flush (void)
 
 	con_logfmt(con_line);
 	con_logfmt("\n");
+	con_log_sync();
 }
 
 static void con_putc (int c)
@@ -89,13 +122,6 @@ static void con_putc (int c)
 
 	if (con_len >= CON_COLS)
 		con_flush();
-}
-
-static void con_write_msg (const char *text)
-{
-	pspDebugScreenSetXY(0, con_row);
-	pspDebugScreenPrintf("log: %s\n", text);
-	con_row++;
 }
 
 static void con_write (const char *s)
@@ -122,41 +148,62 @@ static void con_write (const char *s)
  * kernel PRX, not by pulling a kernel library into the game.
  */
 
+/*
+ * The relative path depends on the working directory the firmware happens to
+ * set, which is not something to rely on when the whole point is to read this
+ * file after a crash.  Try the usual install folder, then wherever we are,
+ * then the root of the stick.  The first one that opens wins.
+ *
+ * Called again from con_flush() while nothing is open: the first attempt runs
+ * very early, and a memory stick that is not ready yet must not cost us the
+ * whole log.
+ */
+static int con_log_try_open (void)
+{
+	static const char *const paths[] = {
+		"ms0:/PSP/GAME/kabluk/kabluk.log",
+		"ms0:/PSP/GAME/KABLUK/kabluk.log",
+		"kabluk.log",
+		"ms0:/kabluk.log"
+	};
+	unsigned int i;
+
+	for (i = 0; i < sizeof(paths) / sizeof(paths[0]); i++)
+	{
+		con_log = sceIoOpen(paths[i],
+		                    PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
+		if (con_log >= 0)
+		{
+			con_log_path = paths[i];
+			return 1;
+		}
+	}
+
+	return 0;
+}
+
 void psp_con_init (void)
 {
+	static int said_where;
+
 	con_ensure();
 
 	if (con_log < 0)
+		con_log_try_open();
+
+	/* Say where the log went -- or that there is none.  Without this line,
+	 * "the console died and there is no file anywhere" is indistinguishable
+	 * from "the file is in a folder you did not look in".
+	 *
+	 * This one goes through con_write() on purpose: it is the first line
+	 * that has to reach the card, so it doubles as the proof that the write
+	 * path works. */
+	if (!said_where)
 	{
-		/* The relative path depends on the working directory the firmware
-		 * happens to set, which is not something to rely on when the whole
-		 * point is to read this file after a crash.  Try the usual install
-		 * folder, then wherever we are, then the root of the stick.  The
-		 * first one that opens wins. */
-		static const char *const paths[] = {
-			"ms0:/PSP/GAME/kabluk/kabluk.log",
-			"kabluk.log",
-			"ms0:/kabluk.log"
-		};
-		unsigned int i;
-		const char *opened = NULL;
-
-		for (i = 0; i < sizeof(paths) / sizeof(paths[0]); i++)
-		{
-			con_log = sceIoOpen(paths[i],
-			                    PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
-			if (con_log >= 0)
-			{
-				opened = paths[i];
-				break;
-			}
-		}
-
-		/* Say where the log went -- or that there is none.  Without this
-		 * line, "the console died and there is no file anywhere" is
-		 * indistinguishable from "the file is in a folder you did not
-		 * look in". */
-		con_write_msg(opened ? opened : "NONE - crash output will be lost");
+		said_where = 1;
+		con_write("log: ");
+		con_write(con_log >= 0 ? con_log_path : "NONE - crash output will be lost");
+		con_putc('\n');
 	}
 }
 
@@ -230,22 +277,41 @@ int psp_con_fflush (FILE *stream)
 FUNC_NORETURN void psp_con_panic (const char *what, const char *file, int line,
                                   const char *func, const char *expr)
 {
+	char buf[256];
+
 	con_ensure();
 	con_flush();
 
-	pspDebugScreenPrintf("\n*** %s ***\n", what ? what : "FAILED");
+	con_write("*** ");
+	con_write(what ? what : "FAILED");
+	con_write(" ***");
+	con_putc('\n');
 
 	if (file)
-		pspDebugScreenPrintf("  at %s:%d\n", file, line);
+	{
+		snprintf(buf, sizeof(buf), "  at %s:%d", file, line);
+		con_write(buf);
+		con_putc('\n');
+	}
 	if (func && func[0])
-		pspDebugScreenPrintf("  in %s()\n", func);
+	{
+		snprintf(buf, sizeof(buf), "  in %s()", func);
+		con_write(buf);
+		con_putc('\n');
+	}
 	if (expr)
-		pspDebugScreenPrintf("  %s\n", expr);
+	{
+		con_write("  ");
+		con_write(expr);
+		con_putc('\n');
+	}
 
-	pspDebugScreenPrintf("\n  (holding for 15s)\n");
+	con_write("  (holding for 30s)");
+	con_putc('\n');
+	con_log_sync();
 
 	/* Give the tester time to read it before the module dies. */
-	sceKernelDelayThread(15 * 1000 * 1000);
+	sceKernelDelayThread(30 * 1000 * 1000);
 	sceKernelExitGame();
 
 	for (;;)
@@ -263,4 +329,35 @@ void __assert_func (const char *file, int line, const char *func,
                     const char *expr)
 {
 	psp_con_panic("ASSERTION FAILED", file, line, func, expr);
+}
+
+/*
+ * psp_trace -- a breadcrumb the engine drops between the steps of something
+ * long (right now: Host_Init).
+ *
+ * The engine's own Con_Printf is useless this early: Con_Init() has not run
+ * yet, so it throws the text away.  This writes straight to the debug screen
+ * and to kabluk.log, and forces the card write, so whatever the last
+ * breadcrumb says is where the module died -- on screen while it is still
+ * alive, and in the file afterwards.
+ */
+void psp_trace (const char *step)
+{
+	char buf[96];
+
+	con_ensure();
+	con_flush();		/* finish a half line so the step stands on its own */
+
+	/* Free RAM on the same line: a step that fails only because the heap ran
+	 * out is then visible without a second guess. */
+	snprintf(buf, sizeof(buf), "  > %s  [free %d KB]",
+	         step ? step : "?", sceKernelTotalFreeMemSize() / 1024);
+
+	con_write(buf);
+	con_putc('\n');		/* flushes, logs and syncs */
+}
+
+void psp_con_logsync (void)
+{
+	con_log_sync();
 }
