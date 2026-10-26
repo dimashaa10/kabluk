@@ -125,7 +125,12 @@ LDFLAGS += -Wl,-zmax-page-size=128
 # build.mak does not add for user-mode programs.
 PSP_LIBS := -lpspdebug -lpspdisplay -lpspge -lpspctrl -lpspkernel
 TEST_LIBS := $(PSP_LIBS) -lm
-GAME_LIBS := $(TEST_LIBS) -lz -lSDL2
+# SDL2 for PSP is not a self-contained black box: its video backend talks to
+# sceGu directly, so linking it drags in the GU library, plus the VFPU, RTC and
+# power helpers the platform code uses.  libpspgu.a also carries vramalloc/
+# vfree/vrelptr (pspsdk src/gu/vram.c), which is where those came from.
+# Order matters: SDL2 first, then the libraries it depends on.
+GAME_LIBS := $(TEST_LIBS) -lz -lSDL2 -lpspgu -lpspgum -lpspvfpu -lpsprtc -lpsppower
 
 # Redirect the tests' stdio to the on-screen console.  The rename happens at
 # compile time and only for tests/*.c, so the engine sources keep using the
