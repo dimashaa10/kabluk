@@ -33,7 +33,7 @@ static int   con_len;
 
 /* Watchdog state: bumped by every finished line, read by the watchdog thread. */
 static volatile unsigned con_progress;
-static char  con_last_step[48] = "(startup)";
+static char  con_last_step[64] = "(startup)";
 
 static void con_ensure (void)
 {
@@ -463,6 +463,19 @@ void psp_tracef (const char *fmt, ...)
 	psp_trace(buf);
 }
 
+/*
+ * psp_mark -- a *cheap* breadcrumb: it only records the name, it prints nothing
+ * and touches no file.  For code that runs hundreds of times (every picture, every
+ * texture) a psp_trace() per iteration would cost a memory-stick write each time;
+ * this costs a string copy, and the watchdog prints the last one when the engine
+ * stops making progress.
+ */
+void psp_mark (const char *what)
+{
+	strncpy(con_last_step, what ? what : "?", sizeof(con_last_step) - 1);
+	con_last_step[sizeof(con_last_step) - 1] = '\0';
+}
+
 void psp_con_logsync (void)
 {
 	con_log_sync();
@@ -495,7 +508,7 @@ static int con_watchdog_thread (SceSize args, void *argp)
 
 	for (;;)
 	{
-		char msg[96];
+		char msg[160];
 
 		sceKernelDelayThread(1000 * 1000);
 

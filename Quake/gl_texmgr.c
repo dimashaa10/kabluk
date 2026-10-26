@@ -1680,9 +1680,23 @@ static void TexMgr_LoadLightmap(gltexture_t* glt, byte* data)
 TexMgr_LoadImage -- the one entry point for loading all textures
 ================
 */
+#if defined(PLATFORM_PSP) || defined(__psp__)
+extern void psp_mark (const char *what);
+#define TEX_MARK(x)	psp_mark(x)
+#else
+#define TEX_MARK(x)	do { } while (0)
+#endif
+
 gltexture_t* TexMgr_LoadImage(qmodel_t* owner, const char* name, int width, int height, enum srcformat format,
 	byte* data, const char* source_file, src_offset_t source_offset, unsigned flags)
 {
+	{
+		/* The prefix matters: it says whether the hang is before the texture
+		 * path (the wad lookup, "num_0") or inside it ("tex num_0"). */
+		char texmark[64];
+		snprintf(texmark, sizeof(texmark), "tex %s", name ? name : "?");
+		TEX_MARK(texmark);
+	}
 	unsigned short crc;
 	gltexture_t* glt = NULL;
 	int mark;

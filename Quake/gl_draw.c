@@ -226,8 +226,18 @@ void Scrap_Upload (void)
 Draw_PicFromWad
 ================
 */
+#if defined(PLATFORM_PSP) || defined(__psp__)
+/* Records the picture being loaded, so a hang inside the texture path is named
+ * by the watchdog instead of leaving "stuck in Sbar_Init" as the only clue. */
+extern void psp_mark (const char *what);
+#define DRAW_MARK(x)	psp_mark(x)
+#else
+#define DRAW_MARK(x)	do { } while (0)
+#endif
+
 qpic_t *Draw_PicFromWad2 (const char *name, unsigned int texflags)
 {
+	DRAW_MARK(name);
 	int i;
 	cachepic_t *pic;
 	qpic_t	*p;
@@ -392,6 +402,7 @@ Draw_CachePic
 */
 qpic_t	*Draw_TryCachePic (const char *path, unsigned int texflags)
 {
+	DRAW_MARK(path);
 	cachepic_t	*pic;
 	int			i;
 	qpic_t		*dat;

@@ -41,6 +41,11 @@ int  psp_con_fflush (FILE *stream);
 void psp_con_watchdog (void);
 
 void psp_trace (const char *step);
+
+/* Records a name for the watchdog without printing or logging anything.  For
+ * loops that run many times (every picture, every texture): the watchdog prints
+ * the last mark when nothing has moved for eight seconds. */
+void psp_mark (const char *what);
 void psp_tracef (const char *fmt, ...);
 
 /* Force the log out of the memory stick's cache.  Called after every line
