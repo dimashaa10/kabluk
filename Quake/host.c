@@ -1754,9 +1754,14 @@ Host_Init
  * call that killed it.  It is a diagnostic, not part of the port: on every
  * other platform HOST_TRACE compiles away to nothing. */
 extern void psp_trace (const char *step);
+extern void psp_tracef (const char *fmt, ...);
 #define HOST_TRACE(x)	psp_trace(x)
+/* Same thing with a formatted message: used where a *value* matters, not just
+ * how far we got (which directories the engine decided to look in). */
+#define HOST_TRACEF(...)	psp_tracef(__VA_ARGS__)
 #else
 #define HOST_TRACE(x)	do { } while (0)
+#define HOST_TRACEF(...)	do { } while (0)
 #endif
 
 void Host_Init (void)
@@ -1792,6 +1797,7 @@ void Host_Init (void)
 	COM_Init ();
 	HOST_TRACE ("COM_InitFilesystem");
 	COM_InitFilesystem ();
+	HOST_TRACEF ("basedir `%s`, gamedir `%s`", com_basedir, com_gamedir);
 	HOST_TRACE ("Host_InitLocal");
 	Host_InitLocal ();
 	HOST_TRACE ("W_LoadWadFile");

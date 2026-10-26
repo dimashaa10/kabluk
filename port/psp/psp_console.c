@@ -442,6 +442,18 @@ void psp_trace (const char *step)
 	}
 }
 
+void psp_tracef (const char *fmt, ...)
+{
+	char buf[160];
+	va_list args;
+
+	va_start(args, fmt);
+	vsnprintf(buf, sizeof(buf), fmt, args);
+	va_end(args);
+
+	psp_trace(buf);
+}
+
 void psp_con_logsync (void)
 {
 	con_log_sync();

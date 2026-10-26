@@ -57,6 +57,24 @@ int main (int argc, char *argv[])
 	host_parms = &parms;
 	memset(&parms, 0, sizeof(parms));
 	parms.basedir = ".";
+
+	/* userdir has to point at the same string as basedir, and the desktop
+	 * sys layer sets it with the comment "code elsewhere relies on this !".
+	 * It is not decoration: common.c compares the two *pointers*
+	 * (host_parms->userdir != host_parms->basedir) to decide whether to use
+	 * separate user directories, passes both through va("%s...") and hands
+	 * them to strcmp().
+	 *
+	 * Left NULL -- which is what a memset'ed struct gives you -- the first
+	 * of those comparisons says "yes, separate directories", the paths are
+	 * built from a NULL string, and COM_InitFilesystem dies inside
+	 * strcmp(com_basedir, host_parms->userdir) at
+	 *	 if (!COM_AddPackage(...) && strcmp(com_basedir, host_parms->userdir))
+	 * That is a data abort at address 0: no Sys_Error, no message, no log
+	 * line -- the screen simply goes out right after "COM_InitFilesystem",
+	 * which is exactly what the breadcrumbs showed. */
+	parms.userdir = parms.basedir;
+	parms.numcpus = 1;
 	parms.argc = argc;
 	parms.argv = argv;
 	parms.errstate = 0;

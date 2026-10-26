@@ -36,6 +36,7 @@ int  psp_con_fflush (FILE *stream);
 /* A breadcrumb for the steps of long initialisation code: screen + log, with
  * the card write forced.  The last one printed is where the module died. */
 void psp_trace (const char *step);
+void psp_tracef (const char *fmt, ...);
 
 /* Force the log out of the memory stick's cache.  Called after every line
  * already; here so a fatal path can do it explicitly. */
