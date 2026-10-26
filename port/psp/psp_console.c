@@ -98,49 +98,22 @@ static void con_write (const char *s)
 }
 
 /*
- * Exception handler.  Without one a fault takes the screen with it and all we
- * see is "the console turned off", which says nothing.  This one prints the
- * faulting PC, the return address and the cause register, writes the same to
- * the log, and then parks the thread so the screen stays readable.
+ * There is deliberately no exception handler here.
+ *
+ * pspDebugInstallErrorHandler() lives in libpspdebug's exception.o, and that
+ * object calls sceKernelRegisterDefaultExceptionHandler(), which is part of
+ * ExceptionManagerForKernel -- a kernel library.  Linking it from a user-mode
+ * EBOOT is the same mistake that produced 8002013C, only this time the linker
+ * says it plainly ("undefined reference", because we no longer link
+ * libpspkernel to provide the kernel stub).
+ *
+ * A crash therefore still takes the screen with it.  What survives is
+ * kabluk.log: every console line is written to it through sceIo as it is
+ * printed, so the last line before a fault says where the engine got to.
+ * The register dump can come back later, either through psplink (which runs
+ * the module under a host-side debugger) or by moving the handler into a
+ * kernel PRX, not by pulling a kernel library into the game.
  */
-
-
-static void con_fault (PspDebugRegBlock *regs)
-{
-	char buf[160];
-
-	con_ready = 0;
-	con_len = 0;
-
-	pspDebugScreenInit();
-	pspDebugScreenClear();
-
-	pspDebugScreenSetXY(0, 0);
-	pspDebugScreenPrintf("*** CRASH ***\n");
-	pspDebugScreenPrintf("pc       = %08x\n", (unsigned) regs->epc);
-	pspDebugScreenPrintf("ra       = %08x\n", (unsigned) regs->r[31]);
-	pspDebugScreenPrintf("sp       = %08x\n", (unsigned) regs->frame[0]);
-	pspDebugScreenPrintf("badvaddr = %08x\n", (unsigned) regs->badvaddr);
-	pspDebugScreenPrintf("cause    = %08x\n", (unsigned) regs->cause);
-	pspDebugScreenPrintf("status   = %08x\n", (unsigned) regs->status);
-	pspDebugScreenPrintf("a0..a3   = %08x %08x %08x %08x\n",
-	                     (unsigned) regs->r[4], (unsigned) regs->r[5],
-	                     (unsigned) regs->r[6], (unsigned) regs->r[7]);
-
-	snprintf(buf, sizeof(buf),
-	         "\n*** CRASH ***\npc=%08x ra=%08x sp=%08x\n"
-	         "badvaddr=%08x cause=%08x status=%08x\n"
-	         "a0..a3=%08x %08x %08x %08x\n",
-	         (unsigned) regs->epc, (unsigned) regs->r[31],
-	         (unsigned) regs->frame[0], (unsigned) regs->badvaddr,
-	         (unsigned) regs->cause, (unsigned) regs->status,
-	         (unsigned) regs->r[4], (unsigned) regs->r[5],
-	         (unsigned) regs->r[6], (unsigned) regs->r[7]);
-	con_logfmt(buf);
-
-	for (;;)
-		sceKernelDelayThread(1000000);
-}
 
 void psp_con_init (void)
 {
@@ -157,7 +130,6 @@ void psp_con_init (void)
 			                    PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
 	}
 
-	pspDebugInstallErrorHandler(con_fault);
 }
 
 int psp_con_puts (const char *s)
