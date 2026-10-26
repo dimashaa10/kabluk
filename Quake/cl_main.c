@@ -26,8 +26,8 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "pmove.h"
 
 #include "arch_def.h"
-#ifdef PLATFORM_UNIX
-//for unlink
+#if defined(PLATFORM_UNIX) || defined(PLATFORM_PSP)
+//for unlink -- PSP's libc has it too, through the newlib POSIX layer
 #include <unistd.h>
 #endif
 
