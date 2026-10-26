@@ -147,10 +147,28 @@ char *SDL_strtokr (char *s1, const char *s2, char **saveptr)
 /* ------------------------------------------------------------------ */
 /* threads, mutexes, conditions                                        */
 /*                                                                     */
-/* The port is single threaded: nothing here may block, and a "thread" */
-/* runs to completion inside SDL_CreateThread.  That is correct for    */
-/* the only caller (cl_main.c spawns the website check) and honest for */
-/* everything else.                                                    */
+/* Threads do not exist in this port: SDL_CreateThread hands back an   */
+/* object and NEVER calls the function.                                */
+/*                                                                     */
+/* It used to call it, "to completion", on the theory that the only    */
+/* caller was the website check.  That froze the console in URI_Init:   */
+/* pr_ext.c starts its URI worker that way, and the worker is           */
+/*                                                                     */
+/*     while (uri_worker_running) {                                     */
+/*         req = dequeue_request_blocking ();   <- SDL_CondWait        */
+/*         ...                                                          */
+/*     }                                                                */
+/*                                                                     */
+/* With a cond var that returns immediately (there is no other thread   */
+/* to wake it), "to completion" means spinning forever on the main      */
+/* thread, inside Host_Init, with no output and no crash -- the engine  */
+/* simply never came back from URI_Init.                                */
+/*                                                                     */
+/* Everything that starts a thread here is network work: the URI        */
+/* worker, the website check, Discord, server pings, the macOS HID      */
+/* thread.  An E1008 has no Wi-Fi at all, so not running them costs      */
+/* nothing.  The mutex/cond stubs stay, because code locks them while   */
+/* the worker is "not running".                                        */
 /* ------------------------------------------------------------------ */
 
 struct SDL_mutex { int owned; };
@@ -216,10 +234,16 @@ SDL_Thread *SDL_CreateThread (SDL_ThreadFunction fn, const char *name,
                               void *data)
 {
 	SDL_Thread *t = malloc(sizeof(*t));
+
+	/* fn is deliberately not called -- see the comment above. */
 	(void) name;
+	(void) fn;
+	(void) data;
+
 	if (!t)
 		return NULL;
-	t->status = fn ? fn(data) : 0;
+
+	t->status = 0;
 	return t;
 }
 

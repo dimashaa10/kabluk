@@ -35,6 +35,11 @@ int  psp_con_fflush (FILE *stream);
 
 /* A breadcrumb for the steps of long initialisation code: screen + log, with
  * the card write forced.  The last one printed is where the module died. */
+/* Starts a second thread that reports, on screen and in the log, when nothing
+ * has been printed for eight seconds.  A hang then names the step it hangs in,
+ * the same way a crash does.  Call once, after psp_con_init(). */
+void psp_con_watchdog (void);
+
 void psp_trace (const char *step);
 void psp_tracef (const char *fmt, ...);
 

@@ -63,6 +63,11 @@ int main (int argc, char *argv[])
 	 * EBOOT is still on the card (or in a second game folder). */
 	psp_con_printf("Kabluk for PSP -- build " __DATE__ " " __TIME__ "\n");
 
+	/* From here on a stall is visible: if nothing is printed for eight seconds
+	 * the watchdog names the step we are stuck in, on the screen and in the
+	 * log.  A hang used to look exactly like a healthy console. */
+	psp_con_watchdog();
+
 	/* We replaced SDL's main() (SDL_MAIN_HANDLED), so SDL has to be told that
 	 * the application is ready before any SDL_Init call. */
 	SDL_SetMainReady();

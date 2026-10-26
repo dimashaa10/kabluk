@@ -12,6 +12,7 @@
 #include <pspdebug.h>
 #include <pspdisplay.h>
 #include <pspiofilemgr.h>
+#include <pspthreadman.h>
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -29,6 +30,10 @@ static int   con_log_err;	/* last failing sceIo call, 0 while writes work */
 static int   con_log_err_said;	/* the error has been put on the screen once */
 static char  con_line[CON_COLS + 1];
 static int   con_len;
+
+/* Watchdog state: bumped by every finished line, read by the watchdog thread. */
+static volatile unsigned con_progress;
+static char  con_last_step[48] = "(startup)";
 
 static void con_ensure (void)
 {
@@ -125,6 +130,7 @@ static void con_flush (void)
 	pspDebugScreenPrintf("%s\n", con_line);
 	con_row++;
 	con_len = 0;
+	con_progress++;
 
 	con_logfmt(con_line);
 	con_logfmt("\n");
@@ -428,6 +434,9 @@ void psp_trace (const char *step)
 	snprintf(buf, sizeof(buf), "  > %s  [free %d KB]",
 	         step ? step : "?", sceKernelTotalFreeMemSize() / 1024);
 
+	strncpy(con_last_step, step ? step : "?", sizeof(con_last_step) - 1);
+	con_last_step[sizeof(con_last_step) - 1] = '\0';
+
 	con_write(buf);
 	con_putc('\n');		/* flushes, logs and syncs */
 
@@ -457,4 +466,82 @@ void psp_tracef (const char *fmt, ...)
 void psp_con_logsync (void)
 {
 	con_log_sync();
+}
+
+/*
+ * Hang watchdog.
+ *
+ * A fault at least takes the screen with it; a *hang* leaves it sitting there
+ * looking healthy, and there is no way to tell "still working on something
+ * slow" from "stuck in an endless loop" -- which is exactly how the console
+ * behaved when SDL_CreateThread ran the URI worker on the main thread and the
+ * engine never came back from URI_Init.
+ *
+ * So a second thread, at a lower priority than the game, watches the line
+ * counter.  When nothing has been printed for eight seconds it says so, on the
+ * last row of the screen and in kabluk.log, and repeats every ten seconds after
+ * that.  The last breadcrumb is printed with it, so the answer is on the screen
+ * even though nothing crashed.
+ */
+static int con_watchdog_thread (SceSize args, void *argp)
+{
+	unsigned seen;
+	int stalled = 0;
+
+	(void) args;
+	(void) argp;
+
+	seen = con_progress;
+
+	for (;;)
+	{
+		char msg[96];
+
+		sceKernelDelayThread(1000 * 1000);
+
+		if (con_progress != seen)
+		{
+			seen = con_progress;
+			stalled = 0;
+			continue;
+		}
+
+		stalled++;
+
+		if (stalled != 8 && (stalled % 10) != 8)
+			continue;
+
+		snprintf(msg, sizeof(msg), "watchdog: %d s without progress, last: %s",
+		         stalled, con_last_step);
+
+		pspDebugScreenSetXY(0, CON_ROWS - 1);
+		pspDebugScreenPrintf("%-67.67s", msg);
+		pspDebugScreenSetXY(0, con_row < CON_ROWS ? con_row : 0);
+
+		con_logfmt("*** ");
+		con_logfmt(msg);
+		con_logfmt("\n");
+	}
+
+	return 0;
+}
+
+void psp_con_watchdog (void)
+{
+	static int started;
+	SceUID th;
+
+	if (started)
+		return;
+	started = 1;
+
+	th = sceKernelCreateThread("kabluk_watchdog", con_watchdog_thread,
+	                           0x20, 0x4000, THREAD_ATTR_USER, NULL);
+	if (th < 0)
+	{
+		con_write("watchdog: could not be started\n");
+		return;
+	}
+
+	sceKernelStartThread(th, 0, NULL);
 }
