@@ -92,11 +92,17 @@ CFLAGS += -fno-strict-aliasing
 # given target does not reach (the renderer, for the test builds).
 CFLAGS += -ffunction-sections -fdata-sections
 
-LDFLAGS += -Wl,--gc-sections
+# No --gc-sections at link time: PSPSDK's link script expects to find the
+# module header section (PSP_MODULE_INFO) and the libcglue init tables, and
+# garbage collection has no way of knowing they are reachable -- nothing
+# references them from code.  Each test links a handful of objects anyway, so
+# there is nothing worth collecting.
 LDFLAGS += -Wl,-zmax-page-size=128
 
 # PSP user-mode libraries.  -lpspdebug is what our console prints through.
-PSP_LIBS := -lpspdebug -lpspdisplay -lpspge -lpspctrl
+# sceKernel* (DelayThread, ExitGame) live in libpspkernel, which pspsdk's
+# build.mak does not add for user-mode programs.
+PSP_LIBS := -lpspdebug -lpspdisplay -lpspge -lpspctrl -lpspkernel
 TEST_LIBS := $(PSP_LIBS) -lm
 
 # Redirect the tests' stdio to the on-screen console.  The rename happens at

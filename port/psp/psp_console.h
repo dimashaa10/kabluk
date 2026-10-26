@@ -2,7 +2,7 @@
  * port/psp/psp_console.h -- text output on a PSP without a desktop terminal.
  *
  * The gameplay tests in tests/ talk to stdout with puts()/printf().  A PSP has
- * no stdout, so port/psp/Makefile compiles tests/*.c with
+ * no stdout, so port/psp/Makefile compiles the test sources with
  *
  *     -Dputs=psp_con_puts -Dprintf=psp_con_printf ...
  *
