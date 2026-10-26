@@ -140,13 +140,13 @@ TEST_LIBS := $(PSP_LIBS) -lm
 # src/kernel/ThreadManForKernel.S and therefore in libpspkernel.a, which is
 # already in PSP_LIBS -- that is also why psp_boot.c's sceKernelDelayThread
 # links without it.
-# pspgl and libpspvram are not ours: the SDL2 build that pspdev ships was
-# compiled with its pspgl backend, so SDL_pspvideo/SDL_render_psp/SDL_pspgl
-# reference vramalloc/vfree/vrelptr/vabsptr/vmemavail/vlargestblock (libpspvram
-# + libpspvramalloc) and the whole EGL entry point set (inside libGL.a -- pspgl
-# implements EGL, there is no separate libEGL.a).
-GAME_LIB_NAMES := -lm -lz -lSDL2 -lGL -lGLU -lglut -lpspvram -lpspvramalloc \
-                  -lpspgu -lpspgum -lpspvfpu -lpsprtc \
+# No -lSDL2 and therefore no pspgl (-lGL -lGLU -lglut) and no libpspvram:
+# sdl_stub.c answers the 52 SDL entry points the engine calls.  Linking the
+# real SDL2 pulls in its pspgl/vram imports, and a module whose import list
+# names a library that is not resident at boot is refused by the firmware with
+# 8002013C (SCE_KERNEL_ERROR_LIBRARY_NOTFOUND) before a single instruction
+# runs.  These are the same libraries the test EBOOTs link, and they boot.
+GAME_LIB_NAMES := -lm -lz -lpspgu -lpspgum -lpspvfpu -lpsprtc \
                   -lpsppower -lpspaudiolib -lpspaudio -lpsphprm -lpspumd \
                   $(PSP_LIBS) -lpspsdk
 GAME_LIBS := -Wl,--start-group $(GAME_LIB_NAMES) -Wl,--end-group
@@ -275,7 +275,7 @@ tests: $(TEST_EBOOTS)
 # without them the module has no header and psp_con_* stay undefined.
 PSP_BACKEND := psp_boot.o psp_console.o \
                main_psp.o sys_psp.o pl_psp.o in_psp.o snd_psp.o cd_psp.o \
-               vid_psp.o gl_stub.o net_psp.o
+               vid_psp.o gl_stub.o sdl_stub.o net_psp.o
 
 GAME_ENGINE_OBJS := $(filter-out $(DESKTOP_ONLY) $(PSP_UNSUPPORTED),$(OBJS))
 GAME_DIR    := $(BUILD)/game
