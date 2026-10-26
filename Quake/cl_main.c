@@ -1080,7 +1080,7 @@ static void CL_ClientsidePowerupColor(entity_t* ent, int entnum)
 
 	/* Non-local ents: only known player models */
 	if (!is_local) {
-		if (!ent->model || !ent->model->name) return;
+		if (!ent->model) return;
 		if (strcmp(ent->model->name, "progs/player.mdl"))
 			return;
 	}

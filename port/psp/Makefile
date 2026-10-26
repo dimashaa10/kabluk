@@ -299,8 +299,12 @@ $(GAME_DIR)/port/%.o: $(HERE)/%.c
 # say) has to force a relink, otherwise make looks at the timestamps of the
 # .o files, sees them older than the existing .elf, and says "nothing to be
 # done" while the stale binary sits there.
+#
+# The command spells out $(GAME_OBJS) rather than using $^, because $^ is every
+# prerequisite -- including the Makefile and the linker fragment, which the
+# linker would then try to read as object files.
 $(GAME_DIR)/$(TARGET).elf: $(GAME_OBJS) $(MAKEFILE_LIST) $(HERE)/keep_sce.ld
-	$(CC) -o $@ $^ $(LDFLAGS) $(GAME_LDFLAGS) $(GAME_LIBS)
+	$(CC) -o $@ $(GAME_OBJS) $(LDFLAGS) $(GAME_LDFLAGS) $(GAME_LIBS)
 	$(FIXUP) $@
 
 $(GAME_DIR)/PARAM.SFO:

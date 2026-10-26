@@ -105,12 +105,10 @@ void GL_MakeAliasModelDisplayLists (qmodel_t *m, aliashdr_t *paliashdr)
 			if (v & 1)
 				s += paliashdr->skinwidth / 2;
 
-				desc[paliashdr->numverts_vbo].vertindex = vertindex;
-				desc[paliashdr->numverts_vbo].st[0] = s;
-
-				desc[paliashdr->numverts_vbo].st[1] = t;
-
-				remap[v] = ++paliashdr->numverts_vbo;
+			desc[paliashdr->numverts_vbo].vertindex = vertindex;
+			desc[paliashdr->numverts_vbo].st[0] = s;
+			desc[paliashdr->numverts_vbo].st[1] = t;
+			remap[v] = ++paliashdr->numverts_vbo;
 			}
 			indexes[paliashdr->numindexes++] = remap[v] - 1;
 		}
