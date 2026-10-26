@@ -17,10 +17,15 @@
 #include "quakedef.h"
 #include "psp_console.h"
 
-/* 64 MB usable on a PSP-E100x, but the engine's zone wants a contiguous block
- * and the frame buffers, GU display list and code sit above it.  24 MB is the
- * number to start from; -mem <MB> overrides it on the command line. */
-#define PSP_DEFAULT_MEMORY (24 * 1024 * 1024)
+/* The engine wants one contiguous block for its zone.  16 MB is what a PSP can
+ * actually spare once the module, the 20 MB newlib heap and the 2 MB of VRAM
+ * are accounted for; -mem <MB> overrides it on the command line.
+ *
+ * If even that does not fit, the allocation is retried smaller rather than
+ * killed outright: a slightly cramped Quake that boots is more useful than a
+ * "not enough memory" screen, and the amount that was obtained is printed. */
+#define PSP_DEFAULT_MEMORY (16 * 1024 * 1024)
+#define PSP_MIN_MEMORY     ( 8 * 1024 * 1024)
 
 static quakeparms_t	parms;
 
@@ -60,9 +65,24 @@ int main (int argc, char *argv[])
 			parms.memsize = Q_atoi(com_argv[p]) * 1024 * 1024;
 	}
 
-	parms.membase = malloc(parms.memsize);
+	Sys_Printf("Free RAM: %d KB total, %d KB contiguous\n",
+	           sceKernelTotalFreeMemSize() / 1024,
+	           sceKernelMaxFreeMemSize() / 1024);
+
+	while (parms.memsize >= PSP_MIN_MEMORY)
+	{
+		parms.membase = malloc(parms.memsize);
+		if (parms.membase)
+			break;
+		Sys_Printf("%d MB did not fit, retrying with %d MB\n",
+		           parms.memsize / (1024 * 1024),
+		           parms.memsize / 2 / (1024 * 1024));
+		parms.memsize /= 2;
+	}
+
 	if (!parms.membase)
-		Sys_Error("Not enough memory free; check the memstick\n");
+		Sys_Error("Not enough memory free: even %d MB failed\n",
+		          PSP_MIN_MEMORY / (1024 * 1024));
 
 	Sys_Printf("Host_Init (%d MB)\n", parms.memsize / (1024 * 1024));
 	Host_Init();
