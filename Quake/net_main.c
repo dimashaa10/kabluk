@@ -26,12 +26,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "net_defs.h"
 
 /* libcurl is used for one thing only: the external-IP lookup that the server
- * browser shows. Ports without it (PSP) build this file with FEATURE_CURL=0,
- * which drops the dependency and leaves my_public_ip at "UNKNOWN". */
-#ifndef FEATURE_CURL
-#define FEATURE_CURL 1
-#endif
-
+ * browser shows. Ports without it (PSP) build with FEATURE_CURL=0, which drops
+ * the dependency and leaves my_public_ip at "UNKNOWN".  The default lives in
+ * quakedef.h. */
 #if FEATURE_CURL
 #include <curl/curl.h> // woods #libcurl
 #endif

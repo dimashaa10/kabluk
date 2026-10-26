@@ -26,7 +26,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "quakedef.h"
 #include "q_ctype.h"
+#if FEATURE_CURL
 #include <curl/curl.h> // woods #uri
+#endif
 
 static float g_menu_vm_scale_override = 0.0f; // woods #spinnymodel
 static float PR_GetVMScale(void)
@@ -6672,6 +6674,8 @@ static uri_response_t *dequeue_completed(void) {
     return r;
 }
 
+#if FEATURE_CURL
+
 static size_t URI_WriteCallback(void *contents, size_t size, size_t nmemb, void *userp) {
     size_t realsize = size * nmemb;
     uri_response_t *response = (uri_response_t *)userp;
@@ -6768,6 +6772,18 @@ static void URI_PerformCurl(const uri_request_t *req, uri_response_t *out) {
     if (headers) curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
 }
+
+#else	/* !FEATURE_CURL */
+
+/* uri_* builtins still exist so QuakeC that references them loads; they just
+ * report a transport failure to the callback. */
+static void URI_PerformCurl(const uri_request_t *req, uri_response_t *out) {
+    (void)req;
+    out->ok = 0;
+    out->http_status = 0;
+}
+
+#endif	/* FEATURE_CURL */
 
 static int URI_Worker(void *unused) {
     (void)unused;

@@ -31,7 +31,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include <unistd.h>
 #endif
 
+#if FEATURE_CURL
 #include <curl/curl.h> // woods #webdl
+#endif
 #include "cfgfile.h" // woods #webdl
 #include "q_ctype.h" // woods #entcopy
 
@@ -1529,6 +1531,8 @@ qboolean IsGithubRepoPath(const char* s)
 	return true; // Must have at least 1 slash (user/repo)
 }
 
+#if FEATURE_CURL
+
 /*
 ==============================================================================
 * NormalizeGithubRepoPath
@@ -2077,6 +2081,26 @@ qboolean Curl_DownloadFile (const char* url, const char* filename, const char* l
 
 	return true; // File successfully downloaded
 }
+
+#else	/* !FEATURE_CURL -- no HTTP downloads without libcurl */
+
+/* The rest of the clipper still calls into this feature (gl_sky.c and the
+ * download paths), so keep the entry points and make them decline. */
+
+void WebCheckCallback_f (cvar_t* var)   { (void)var; }
+void Web2CheckCallback_f (cvar_t* var)  { (void)var; }
+void WebCheckInit (void)                { }
+
+qboolean Curl_DownloadFile (const char* url, const char* filename,
+                            const char* local_path, qboolean is_skybox,
+                            const char* display_name)
+{
+	(void)url; (void)filename; (void)local_path;
+	(void)is_skybox; (void)display_name;
+	return false;
+}
+
+#endif	/* FEATURE_CURL */
 
 //sent by the server to let us know that dp downloads can be used
 void CL_ServerExtension_Download_f(void)

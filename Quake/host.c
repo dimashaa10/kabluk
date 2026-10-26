@@ -282,7 +282,9 @@ void	Host_FindMaxClients (void)
 
 // 1. System/Standard
 #include <zlib.h>
+#if FEATURE_CURL
 #include <curl/curl.h>
+#endif
 
 // 2. Audio codecs
 #ifdef USE_CODEC_FLAC

@@ -89,6 +89,14 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define	MINIMUM_MEMORY	0x550000
 #define	MINIMUM_MEMORY_LEVELPAK	(MINIMUM_MEMORY + 0x100000)
 
+/* Optional third-party features.  A platform that cannot link the library
+ * turns the flag off (port/psp/Makefile does) and the feature compiles out;
+ * the default here keeps the desktop build exactly as it was.  Declaring the
+ * defaults in one place keeps every guarded source in agreement. */
+#ifndef FEATURE_CURL
+#define FEATURE_CURL 1		/* libcurl: external IP, map downloads, Discord, uri_* */
+#endif
+
 #define MAX_NUM_ARGVS	50
 
 // up / down
