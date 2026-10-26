@@ -74,6 +74,13 @@ CPPFLAGS += -D_PSP_FW_VERSION=$(PSP_FW_VERSION)
 # net_main.c rather than pulling another third-party library into the port.
 CPPFLAGS += -DFEATURE_CURL=0
 
+# SDL2 for PSP declares SDL_MAIN_AVAILABLE/NEEDED, which makes SDL_main.h do
+# "#define main SDL_main" and expect int SDL_main(int, char**).  Our entry
+# points are plain int main(void) (the tests) or will be our own module entry
+# (main_psp.c), so switch that substitution off with the documented flag.
+# Anything that does call SDL_Init() must call SDL_SetMainReady() first.
+CPPFLAGS += -DSDL_MAIN_HANDLED
+
 
 # gnu11, not the compiler default: GCC 15 defaults to gnu23, where true and
 # false are keywords, and q_stdinc.h declares them as enum constants.
