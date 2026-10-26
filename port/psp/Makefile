@@ -114,7 +114,8 @@ LDFLAGS += $(addprefix -L,$(LIBDIR))
 #
 # It does eat the NID table, though: .rodata.sceNid is only reached by the
 # loader, never by code, so nothing keeps it alive and psp-fixup-imports then
-# aborts with "no nid section found".  keep_sce.ld re-adds it with KEEP()
+# aborts with "no nid section found" (or with a size mismatch, once only half
+# of the pair survives).  keep_sce.ld re-adds both halves with KEEP()
 # without touching the default script (see the comment in that file).
 LDFLAGS += -Wl,--gc-sections
 LDFLAGS += -Wl,-T,$(HERE)/keep_sce.ld
@@ -318,6 +319,10 @@ check:
 	else echo "  MISSING $(PSPSDK)/lib/build.mak"; fi
 	@if [ -f "$(HERE)/keep_sce.ld" ]; then echo "  ok   $(HERE)/keep_sce.ld"; \
 	else echo "  MISSING $(HERE)/keep_sce.ld"; fi
+	@for sect in .sceStub.text .rodata.sceNid; do \
+		if grep -q "$$sect" "$(HERE)/keep_sce.ld" 2>/dev/null; then echo "  ok   KEEP $$sect"; \
+		else echo "  MISSING KEEP $$sect in keep_sce.ld"; fi; \
+	done
 	@for l in $(GAME_LIB_NAMES); do \
 		n=$${l#-l}; found=; \
 		for d in $(LIBDIR); do \
