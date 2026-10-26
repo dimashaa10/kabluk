@@ -183,8 +183,13 @@ void psp_con_panic (const char *what, const char *file, int line,
 		sceKernelDelayThread(1000 * 1000);
 }
 
-/* newlib's assert() calls this.  Our definition wins over the one in
- * libc.a because the linker resolves it from our object first. */
+/* newlib's assert() calls this.  Declared weak on purpose: libc.a carries its
+ * own __assert_func, and if the linker ends up pulling that object in as well
+ * a non-weak definition here would be a duplicate symbol error.  Weak lets
+ * ours win when nothing else provides it and step aside when something does. */
+void __assert_func (const char *file, int line, const char *func,
+                    const char *expr) __attribute__((weak));
+
 void __assert_func (const char *file, int line, const char *func,
                     const char *expr)
 {
