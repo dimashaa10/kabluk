@@ -17,15 +17,20 @@
 #include "quakedef.h"
 #include "psp_console.h"
 
-/* The engine wants one contiguous block for its zone.  16 MB is what a PSP can
- * actually spare once the module, the 20 MB newlib heap and the 2 MB of VRAM
- * are accounted for; -mem <MB> overrides it on the command line.
+/* The engine wants one contiguous block for its zone, and how much is
+ * available depends on whether the firmware granted the extra-memory request
+ * (MEMSIZE=1 in PARAM.SFO): about 52 MB of user partition with it, 24 MB
+ * without.
  *
- * If even that does not fit, the allocation is retried smaller rather than
- * killed outright: a slightly cramped Quake that boots is more useful than a
- * "not enough memory" screen, and the amount that was obtained is printed. */
-#define PSP_DEFAULT_MEMORY (16 * 1024 * 1024)
-#define PSP_MIN_MEMORY     ( 8 * 1024 * 1024)
+ * So the size is discovered rather than assumed: try these from the top down
+ * and take the first that malloc returns.  -mem <MB> overrides the list.
+ *
+ * 40 MB is not greed, it is the size of the data this game has to hold once
+ * the maps, models and sounds of a 64 MB set of packs are resident. */
+static const int psp_zone_sizes_mb[] = { 40, 32, 24, 20, 16, 12, 8 };
+#define PSP_NUM_ZONE_SIZES \
+	((int)(sizeof(psp_zone_sizes_mb) / sizeof(psp_zone_sizes_mb[0])))
+#define PSP_MIN_MEMORY (8 * 1024 * 1024)
 
 static quakeparms_t	parms;
 
@@ -57,27 +62,31 @@ int main (int argc, char *argv[])
 
 	Sys_Printf("Initializing " ENGINE_NAME_AND_VER "\n");
 
-	parms.memsize = PSP_DEFAULT_MEMORY;
-	if (COM_CheckParm("-mem"))
-	{
-		int p = COM_CheckParm("-mem") + 1;
-		if (p < com_argc)
-			parms.memsize = Q_atoi(com_argv[p]) * 1024 * 1024;
-	}
-
 	Sys_Printf("Free RAM: %d KB total, %d KB contiguous\n",
 	           sceKernelTotalFreeMemSize() / 1024,
 	           sceKernelMaxFreeMemSize() / 1024);
 
-	while (parms.memsize >= PSP_MIN_MEMORY)
+	if (COM_CheckParm("-mem"))
 	{
-		parms.membase = malloc(parms.memsize);
-		if (parms.membase)
-			break;
-		Sys_Printf("%d MB did not fit, retrying with %d MB\n",
-		           parms.memsize / (1024 * 1024),
-		           parms.memsize / 2 / (1024 * 1024));
-		parms.memsize /= 2;
+		int p = COM_CheckParm("-mem") + 1;
+		if (p < com_argc)
+		{
+			parms.memsize = Q_atoi(com_argv[p]) * 1024 * 1024;
+			parms.membase = malloc(parms.memsize);
+		}
+	}
+	else
+	{
+		int i;
+
+		for (i = 0; i < PSP_NUM_ZONE_SIZES; i++)
+		{
+			parms.memsize = psp_zone_sizes_mb[i] * 1024 * 1024;
+			parms.membase = malloc(parms.memsize);
+			if (parms.membase)
+				break;
+			Sys_Printf("Zone: %d MB did not fit\n", psp_zone_sizes_mb[i]);
+		}
 	}
 
 	if (!parms.membase)

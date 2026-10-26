@@ -341,9 +341,16 @@ $(GAME_DIR)/$(TARGET).elf: $(GAME_OBJS) $(MAKEFILE_LIST) $(HERE)/keep_sce.ld
 	fi
 	$(FIXUP) $@
 
+# MEMSIZE is the extra-memory request: without it the user partition is 24 MB,
+# with it (value 1 = "give me everything") a PSP-2000/3000/E1000 hands out
+# around 52 MB.  The game needs it: its data files alone are 64 MB, and while
+# Quake streams from the packs instead of loading them whole, the zone that
+# holds the loaded models, sounds and maps has to be far bigger than 16 MB.
+# Whether it is granted is the firmware's call, so the code must cope either
+# way -- see the zone sizes tried in main_psp.c.
 $(GAME_DIR)/PARAM.SFO:
 	@mkdir -p $(GAME_DIR)
-	$(MKSFO) -d MEMSIZE=2 'Kabluk' $@
+	$(MKSFO) -d MEMSIZE=1 'Kabluk' $@
 
 $(GAME_DIR)/EBOOT.PBP: $(GAME_DIR)/$(TARGET).elf $(GAME_DIR)/PARAM.SFO
 	$(STRIP) $(GAME_DIR)/$(TARGET).elf -o $(GAME_DIR)/data.psp

@@ -17,11 +17,15 @@ PSP_MAIN_THREAD_STACK_SIZE_KB(256);
  * largest number the module can afford -- with 2048 the first malloc(24 MB)
  * failed and the engine died with "Not enough memory free".
  *
- * 20 MB: a PSP-E1000 has 64 MB of RAM in total, but homebrew gets the 32 MB
- * main partition by default (the second half needs a request through
- * PARAM.SFO), and of that the system, the module itself and 2 MB of VRAM take
- * their share.  The heap is claimed at startup, so if this is ever too big the
- * module refuses to boot instead of failing later -- which is at least an
- * honest failure.
+ * The size is "as much as the kernel will give": with MEMSIZE=1 in PARAM.SFO
+ * the user partition is around 52 MB on a 2000/3000/E1000, without it 24 MB,
+ * and a hard-coded number would either waste one case or refuse to boot in the
+ * other.
+ *
+ * A negative size is pspsdk's documented way of saying "whatever is left":
+ * libcglue/glue.c, __psp_sbrk(), casts the value to int and, when it comes out
+ * negative, sizes the block as sceKernelMaxFreeMemSize() minus the 512 KB
+ * threshold it keeps for the rest of the SDK.  main_psp.c then finds the real
+ * figure by trying.
  */
-PSP_HEAP_SIZE_KB(20480);
+PSP_HEAP_SIZE_KB(-1);

@@ -11,6 +11,7 @@
 #include <pspkernel.h>
 #include <pspdebug.h>
 #include <pspdisplay.h>
+#include <pspiofilemgr.h>
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -23,6 +24,7 @@
 
 static int   con_ready;
 static int   con_row;
+static int   con_log = -1;	/* kabluk.log, so a crash still leaves evidence */
 static char  con_line[CON_COLS + 1];
 static int   con_len;
 
@@ -37,6 +39,12 @@ static void con_ensure (void)
 	con_row = 0;
 	con_len = 0;
 	con_line[0] = '\0';
+}
+
+static void con_logfmt (const char *s)
+{
+	if (con_log >= 0 && s)
+		sceIoWrite(con_log, s, (unsigned int) strlen(s));
 }
 
 static void con_flush (void)
@@ -55,6 +63,9 @@ static void con_flush (void)
 	pspDebugScreenPrintf("%s\n", con_line);
 	con_row++;
 	con_len = 0;
+
+	con_logfmt(con_line);
+	con_logfmt("\n");
 }
 
 static void con_putc (int c)
@@ -86,9 +97,67 @@ static void con_write (const char *s)
 		con_putc((unsigned char)*s++);
 }
 
+/*
+ * Exception handler.  Without one a fault takes the screen with it and all we
+ * see is "the console turned off", which says nothing.  This one prints the
+ * faulting PC, the return address and the cause register, writes the same to
+ * the log, and then parks the thread so the screen stays readable.
+ */
+
+
+static void con_fault (PspDebugRegBlock *regs)
+{
+	char buf[160];
+
+	con_ready = 0;
+	con_len = 0;
+
+	pspDebugScreenInit();
+	pspDebugScreenClear();
+
+	pspDebugScreenSetXY(0, 0);
+	pspDebugScreenPrintf("*** CRASH ***\n");
+	pspDebugScreenPrintf("pc       = %08x\n", (unsigned) regs->epc);
+	pspDebugScreenPrintf("ra       = %08x\n", (unsigned) regs->r[31]);
+	pspDebugScreenPrintf("sp       = %08x\n", (unsigned) regs->frame[0]);
+	pspDebugScreenPrintf("badvaddr = %08x\n", (unsigned) regs->badvaddr);
+	pspDebugScreenPrintf("cause    = %08x\n", (unsigned) regs->cause);
+	pspDebugScreenPrintf("status   = %08x\n", (unsigned) regs->status);
+	pspDebugScreenPrintf("a0..a3   = %08x %08x %08x %08x\n",
+	                     (unsigned) regs->r[4], (unsigned) regs->r[5],
+	                     (unsigned) regs->r[6], (unsigned) regs->r[7]);
+
+	snprintf(buf, sizeof(buf),
+	         "\n*** CRASH ***\npc=%08x ra=%08x sp=%08x\n"
+	         "badvaddr=%08x cause=%08x status=%08x\n"
+	         "a0..a3=%08x %08x %08x %08x\n",
+	         (unsigned) regs->epc, (unsigned) regs->r[31],
+	         (unsigned) regs->frame[0], (unsigned) regs->badvaddr,
+	         (unsigned) regs->cause, (unsigned) regs->status,
+	         (unsigned) regs->r[4], (unsigned) regs->r[5],
+	         (unsigned) regs->r[6], (unsigned) regs->r[7]);
+	con_logfmt(buf);
+
+	for (;;)
+		sceKernelDelayThread(1000000);
+}
+
 void psp_con_init (void)
 {
 	con_ensure();
+
+	if (con_log < 0)
+	{
+		/* Next to the EBOOT first (that is where the engine looks for its
+		 * paks), then the root of the stick as a fallback. */
+		con_log = sceIoOpen("kabluk.log",
+		                    PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
+		if (con_log < 0)
+			con_log = sceIoOpen("ms0:/kabluk.log",
+			                    PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
+	}
+
+	pspDebugInstallErrorHandler(con_fault);
 }
 
 int psp_con_puts (const char *s)
