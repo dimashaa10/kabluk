@@ -17,8 +17,8 @@
 #define PSP_SCREEN_WIDTH   480
 #define PSP_SCREEN_HEIGHT  272
 
-/* Bytes per row of every framebuffer we own.  sceGu wants a power-of-two
- * stride, and 480 is not one: 512 pixels * 4 bytes = 0x800 bytes. */
+/* Frame buffer stride, in PIXELS (the GU wants it in pixels, a multiple of
+ * 64, and 480 is not one): 512 pixels * 4 bytes = 0x800 bytes per row. */
 #define PSP_GU_STRIDE      512
 
 /* Returns 1 once the GU is up and frames can be submitted. */
