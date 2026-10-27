@@ -51,6 +51,11 @@ void psp_mark (const char *what);
  * boot trail is what matters, and the drawing code emits a mark per picture.
  * The watchdog still reports the last mark on screen. */
 void psp_con_boot_done (void);
+
+/* Hand the screen to the game.  pspDebugScreen* draws with the same GPU the
+ * game uses, so from here on console text goes to kabluk.log only, and a
+ * frame is never polluted with stray console triangles. */
+void psp_con_screen_off (void);
 void psp_tracef (const char *fmt, ...);
 
 /* Force the log out of the memory stick's cache.  Called after every line

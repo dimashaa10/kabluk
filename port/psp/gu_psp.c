@@ -28,6 +28,7 @@
 #include <pspgu.h>
 
 #include "gu_psp.h"
+#include "psp_console.h"
 
 /* One draw list for the whole frame.  A step-1 test pattern needs a handful of
  * vertices; the GL shim will want a good deal more, so the size is a named
@@ -46,11 +47,18 @@ static unsigned int gu_frames;
 static void        *gu_draw_buffer;
 static unsigned int gu_clear_color;
 
-/* 2D vertices for the step-1 test pattern. */
+/* 2D vertices for the step-1 test pattern.
+ *
+ * The stride must be a multiple of 4: the GPU reads the vertices back to back
+ * and a 10-byte struct puts every second one on an odd address, which the
+ * hardware does not tolerate -- the symptom is exactly "colours and positions
+ * smeared into noise".  There is no padding field for its own sake: it makes
+ * the struct 12 bytes. */
 typedef struct
 {
-	unsigned int color;
-	short        x, y, z;
+	unsigned int  color;
+	short         x, y, z;
+	unsigned int  pad;
 } gu_vertex_t;
 
 int psp_gu_ready (void)
@@ -184,6 +192,10 @@ void psp_gu_frame_begin (void)
 	sceGuStart(GU_DIRECT, gu_list);
 	gu_in_frame = 1;
 
+	/* sceGuSwapBuffers() returns the buffer that is now free to draw into;
+	 * the list has to be told again every frame. */
+	sceGuDrawBuffer(GU_PSM_8888, gu_draw_buffer, PSP_GU_STRIDE);
+
 	gu_clear_color = psp_gu_test_clear_color(gu_frames);
 	sceGuClearColor(gu_clear_color);
 	sceGuClear(GU_COLOR_BUFFER_BIT | GU_DEPTH_BUFFER_BIT);
@@ -200,19 +212,20 @@ void psp_gu_frame_end (void)
 	sceGuSync(0, 0);
 	gu_in_frame = 0;
 
+	/* Wait for the panel before flipping, not after: this is what keeps the
+	 * frame rate at 60 and stops a half-drawn buffer from being shown. */
+	sceDisplayWaitVblankStart();
 	gu_draw_buffer = sceGuSwapBuffers();
 	gu_frames++;
 
 	/* First presented frame: take the screen over from the debug console.
-	 * Everything printed before this point was already read; everything
-	 * after it goes to kabluk.log only. */
+	 * The console draws with the same GPU, so it has to stop here -- both its
+	 * characters and the game's triangles would share one command list and
+	 * one framebuffer.  Its output continues in kabluk.log. */
 	if (!gu_display_on)
 	{
-		sceDisplayWaitVblankStart();
+		psp_con_screen_off();
 		sceGuDisplay(GU_TRUE);
 		gu_display_on = 1;
-		return;
 	}
-
-	sceDisplayWaitVblankStart();
 }

@@ -28,6 +28,10 @@ static int   con_row;
 static const char *con_log_path;	/* kabluk.log, once we know it can live there */
 static int   con_log_err;	/* last failing sceIo call, 0 while writes work */
 static int   con_log_err_said;	/* the error has been put on the screen once */
+/* 0 once the game owns the display: pspDebugScreen* draws through the same
+ * GPU the game is using, so printing there would inject the console's own
+ * primitives into the game's frame.  Text keeps going to kabluk.log. */
+static int   con_screen_on = 1;
 static char  con_line[CON_COLS + 1];
 static int   con_len;
 
@@ -153,14 +157,18 @@ static void con_flush (void)
 
 	con_line[con_len] = '\0';
 
-	if (con_row >= CON_ROWS) {
-		pspDebugScreenClear();
-		con_row = 0;
+	if (con_screen_on)
+	{
+		if (con_row >= CON_ROWS) {
+			pspDebugScreenClear();
+			con_row = 0;
+		}
+
+		pspDebugScreenSetXY(0, con_row);
+		pspDebugScreenPrintf("%s\n", con_line);
+		con_row++;
 	}
 
-	pspDebugScreenSetXY(0, con_row);
-	pspDebugScreenPrintf("%s\n", con_line);
-	con_row++;
 	con_len = 0;
 	con_progress++;
 
@@ -392,6 +400,7 @@ FUNC_NORETURN void psp_con_panic (const char *what, const char *file, int line,
 {
 	char buf[256];
 
+	con_screen_on = 1;	/* a fatal message is worth a mangled frame */
 	con_ensure();
 	con_flush();
 
@@ -475,7 +484,7 @@ void psp_trace (const char *step)
 	/* The same text again, in row 0, where nothing else ever scrolls it
 	 * away.  Row 0 is the line to read when the screen is about to die:
 	 * it always names the last step that was reached. */
-	if (con_row > 1)
+	if (con_screen_on && con_row > 1)
 	{
 		pspDebugScreenSetXY(0, 0);
 		pspDebugScreenPrintf("LAST: %-60.60s", step ? step : "?");
@@ -523,6 +532,26 @@ void psp_con_boot_done (void)
 	         "mark: boot done -- breadcrumbs to the card are off");
 	con_log_line(line);
 	con_marks_live = 0;
+}
+
+/* The game is about to take the display over.
+ *
+ * pspDebugScreenPrintf() does not own a separate plain-text buffer: it draws
+ * its characters with the same sceGu primitives the game uses, into whatever
+ * framebuffer happens to be current.  Once the game swaps buffers, a console
+ * line is a handful of stray triangles and a texture bind in the middle of the
+ * game's own draw list -- which is exactly what "random blue and orange
+ * pixels smeared across the screen" looks like.
+ *
+ * So the screen is released here and everything keeps going to kabluk.log.
+ * psp_con_panic() still prints, because it is the one case where a message is
+ * worth a mangled frame. */
+void psp_con_screen_off (void)
+{
+	if (!con_screen_on)
+		return;
+
+	con_screen_on = 0;
 }
 
 void psp_mark (const char *what)
