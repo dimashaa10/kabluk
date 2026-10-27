@@ -986,8 +986,11 @@ static unsigned* TexMgr_ResampleTexture(unsigned* in, int inwidth, int inheight,
 	outheight = TexMgr_Pad(inheight);
 	out = (unsigned*)Hunk_Alloc(outwidth * outheight * 4);
 
-	xfrac = ((inwidth - 1) << 16) / (outwidth - 1);
-	yfrac = ((inheight - 1) << 16) / (outheight - 1);
+	/* A one-pixel dimension makes the divisor zero, and a division by zero on
+	 * the PSP is a trap exception, not an infinity: the module dies with no
+	 * message.  A single row or column needs no interpolation anyway. */
+	xfrac = (outwidth > 1) ? (unsigned)(((inwidth - 1) << 16) / (outwidth - 1)) : 0;
+	yfrac = (outheight > 1) ? (unsigned)(((inheight - 1) << 16) / (outheight - 1)) : 0;
 	y = outjump = 0;
 
 	for (i = 0; i < outheight; i++)
