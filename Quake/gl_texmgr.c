@@ -24,6 +24,19 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "quakedef.h"
 
+/* PSP breadcrumbs.
+ *
+ * psp_mark() (port/psp/psp_console.c) writes one line to the debug screen and
+ * to kabluk.log, so the last mark in the file names the step that died.  The
+ * macro has to be defined up here: it is used by the texture resampler and the
+ * 32-bit loader, which come *before* TexMgr_LoadImage in this file. */
+#if defined(PLATFORM_PSP) || defined(__psp__)
+extern void psp_mark (const char *what);
+#define TEX_MARK(x)	psp_mark(x)
+#else
+#define TEX_MARK(x)	do { } while (0)
+#endif
+
 const int	gl_solid_format = 3;
 const int	gl_alpha_format = 4;
 
@@ -1708,13 +1721,6 @@ static void TexMgr_LoadLightmap(gltexture_t* glt, byte* data)
 TexMgr_LoadImage -- the one entry point for loading all textures
 ================
 */
-#if defined(PLATFORM_PSP) || defined(__psp__)
-extern void psp_mark (const char *what);
-#define TEX_MARK(x)	psp_mark(x)
-#else
-#define TEX_MARK(x)	do { } while (0)
-#endif
-
 gltexture_t* TexMgr_LoadImage(qmodel_t* owner, const char* name, int width, int height, enum srcformat format,
 	byte* data, const char* source_file, src_offset_t source_offset, unsigned flags)
 {
