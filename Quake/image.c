@@ -272,6 +272,35 @@ byte *Image_LoadPNG(FILE *f, int *width, int *height, qboolean *malloced)
 		err = lodepng_decode32(&out, &w, &h, in, insize);
 		if (err || !out)
 		{
+			/* Some pictures decode and some do not, and from a
+			 * screenshot the two are indistinguishable: both arrive
+			 * at the texture upload as a 1x1 picture.  So the failure
+			 * says what lodepng objected to, and the IHDR fields say
+			 * what the file actually is -- a PNG whose header is
+			 * 640x400 of 16-bit interlaced RGBA is a different
+			 * problem from one that is only 40 bytes long. */
+#if defined(PLATFORM_PSP) || defined(__psp__)
+			{
+				extern void psp_tracef (const char *fmt, ...);
+				unsigned pw = 0, ph = 0, depth = 0, ctype = 0, inter = 0;
+
+				if (insize > 29 && !memcmp(in + 12, "IHDR", 4))
+				{
+					pw = ((unsigned)in[16] << 24) | ((unsigned)in[17] << 16) |
+					     ((unsigned)in[18] << 8) | (unsigned)in[19];
+					ph = ((unsigned)in[20] << 24) | ((unsigned)in[21] << 16) |
+					     ((unsigned)in[22] << 8) | (unsigned)in[23];
+					depth = in[24];
+					ctype = in[25];
+					inter = in[28];
+				}
+
+				psp_tracef("png: %s rc=%d, %d bytes, IHDR %ux%u depth %u "
+				           "ctype %u interlace %u",
+				           loadfilename, (int)err, (int)insize,
+				           pw, ph, depth, ctype, inter);
+			}
+#endif
 			free(out);
 			out = NULL;
 		}

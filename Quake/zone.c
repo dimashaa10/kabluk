@@ -207,7 +207,20 @@ void* Q_malloc(size_t size)
 	void* p;
 
 	if (!(p = malloc(size)))
+	{
+		/* On the console the message alone names nothing: it says the
+		 * malloc pool is empty, but not how big the request was or how
+		 * much of the pool was still free.  Both are printed first, so
+		 * the log line that ends the run actually describes the failure.
+		 * port/psp/psp_heap.c reads newlib's own accounting. */
+#if defined(PLATFORM_PSP) || defined(__psp__)
+		{
+			extern void psp_heap_report (const char *where);
+			psp_heap_report (va ("Q_malloc %d bytes failed", (int)size));
+		}
+#endif
 		Sys_Error("Not enough memory free; check disk space");
+	}
 
 	return p;
 }

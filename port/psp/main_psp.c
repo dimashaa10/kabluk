@@ -17,6 +17,17 @@
 #include "quakedef.h"
 #include "psp_console.h"
 
+/* port/psp/psp_heap.c -- newlib's own malloc accounting (weak mallinfo()). */
+extern unsigned int psp_heap_in_use (void);
+extern unsigned int psp_heap_free (void);
+extern unsigned int psp_heap_chunks (void);
+extern void         psp_heap_report (const char *where);
+
+/* port/psp/gl_shim.c -- how much memory the 16-bit copies of the pictures
+ * take.  They come out of the same pool as everything above. */
+extern size_t       psp_gl_shim_texture_bytes (void);
+
+
 /* The engine wants one contiguous block for its zone, and how much is
  * available depends on whether the firmware granted the extra-memory request
  * (MEMSIZE=1 in PARAM.SFO): about 52 MB of user partition with it, 24 MB
@@ -189,6 +200,11 @@ int main (int argc, char *argv[])
 	 * of the initialisers".  psp_trace() writes to the screen and to
 	 * kabluk.log, and forces the card write. */
 	psp_trace("Host_Init returned");
+	/* Baseline for everything that follows: what the engine asked malloc()
+	 * for while it was starting up.  Comparing this with the numbers the
+	 * two-second heartbeat prints is how a leak is told apart from a large
+	 * one-off allocation. */
+	psp_heap_report("after Host_Init");
 	psp_con_printf("entering main loop, state %d\n", (int)cls.state);
 
 	/* The breadcrumbs are NOT switched off here any more.  The first frames
@@ -221,8 +237,18 @@ int main (int argc, char *argv[])
 			 * matters. */
 			if (newtime >= nextbeat)
 			{
-				psp_con_printf("run: frame %d, state %d\n",
-				               frame, (int)cls.state);
+				/* The malloc numbers belong on this line, not on a
+				 * separate one: read side by side with the frame
+				 * count they show whether the pool grows per
+				 * frame (a leak) or was simply never big enough
+				 * for one large request. */
+				psp_tracef("run: frame %d, state %d, malloc %d KB in use "
+				           "+ %d KB free in %d chunks, %d KB of textures",
+				           frame, (int)cls.state,
+				           (int)(psp_heap_in_use() / 1024),
+				           (int)(psp_heap_free() / 1024),
+				           (int)psp_heap_chunks(),
+				           (int)(psp_gl_shim_texture_bytes() / 1024));
 				nextbeat = newtime + 2.0;
 			}
 

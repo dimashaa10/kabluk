@@ -336,7 +336,7 @@ tests: $(TEST_EBOOTS)
 # describes: main(), system, input, sound device, CD, video/GL device, network.
 # psp_boot.o carries PSP_MODULE_INFO and psp_console.o the on-screen console;
 # without them the module has no header and psp_con_* stay undefined.
-PSP_BACKEND := psp_boot.o psp_console.o \
+PSP_BACKEND := psp_boot.o psp_console.o psp_heap.o \
                main_psp.o sys_psp.o pl_psp.o in_psp.o snd_psp.o cd_psp.o \
                vid_psp.o gu_psp.o gl_shim.o gl_stub.o sdl_stub.o net_psp.o
 

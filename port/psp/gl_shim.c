@@ -294,38 +294,57 @@ static void shim_put_pixels (shim_texture_t *t, int x, int y, int w, int h,
 }
 
 /* Make sure the texture has storage for width x height at the wanted depth,
- * and keep the memory if it already fits. */
+ * and keep the memory if it already fits.
+ *
+ * "Fits" is the important word.  This used to free the block whenever the
+ * picture changed size or changed between the two 16-bit formats -- and both
+ * formats are exactly 2 bytes per pixel, so the replacement was the same size
+ * as the block that had just been released.  Every such free/malloc pair
+ * carves the pool into one more pair of pieces; a picture that alternates
+ * between GL_RGB and GL_RGBA uploads then walks the heap down until malloc
+ * cannot find a block at all, while the amount actually held never grows.
+ * Reusing the block removes the churn entirely. */
 static int shim_texture_alloc (shim_texture_t *t, int width, int height, int opaque)
 {
 	size_t need;
+	int changed;
 
-	if (t->pixels && (t->width != width || t->height != height ||
-	                  (t->psm == GU_PSM_5650) != (opaque != 0)))
+	t->tbw = (width + 3) & ~3;		/* row stride the GU can live with */
+	need = (size_t)t->tbw * (size_t)height * 2;
+
+	changed = (t->width != width || t->height != height ||
+	           (t->psm == GU_PSM_5650) != (opaque != 0));
+
+	if (t->pixels && t->bytes < need)
 	{
 		free(t->pixels);
 		shim_texture_bytes -= t->bytes;
 		t->pixels = NULL;
 		t->bytes = 0;
+		changed = 1;
 	}
 
 	t->width = width;
 	t->height = height;
-	t->tbw = (width + 3) & ~3;		/* row stride the GU can live with */
 	t->psm = opaque ? GU_PSM_5650 : GU_PSM_4444;
 
 	if (!t->pixels)
 	{
-		need = (size_t)t->tbw * (size_t)height * 2;
-
 		t->pixels = malloc(need);
 		if (!t->pixels)
 			return 0;
 
-		/* Zeroed, because a linear filter reads one texel past the end
-		 * of the picture at the right and bottom edge. */
-		memset(t->pixels, 0, need);
 		t->bytes = need;
 		shim_texture_bytes += need;
+		changed = 1;
+	}
+
+	if (changed)
+	{
+		/* A linear filter reads one texel past the end of the picture at
+		 * the right and bottom edge, and a reused block still holds the
+		 * previous picture there. */
+		memset(t->pixels, 0, (size_t)t->tbw * (size_t)height * 2);
 	}
 
 	t->dirty = 1;
