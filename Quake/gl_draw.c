@@ -386,6 +386,14 @@ static qboolean Draw_GetLocalizedPicPath(const char *path, char *localized_path,
 	if (!path || !localized_path || !path_size || strncmp(path, "gfx/", 4))
 		return false;
 
+	/* English is the language the pictures are authored in: they live directly
+	 * under gfx/, and a gfx/en/ tree is a second copy that never exists.  So
+	 * for English there is nothing to look up -- and asking anyway made the
+	 * engine try seven extensions in a directory that is not there for every
+	 * single picture (that is the "tex gfx/en/..." trail in the log). */
+	if (!strncmp(LOC_GetLanguageCode(), "en", 2))
+		return false;
+
 	relative_path = path + 4;
 	if (!*relative_path || strstr(relative_path, "..") ||
 		!strncmp(relative_path, "ru/", 3) || !strncmp(relative_path, "en/", 3))
