@@ -763,8 +763,25 @@ static int shim_arena_grow (size_t need)
 	if (chunk > SHIM_ARENA_CHUNK_MAX)
 		chunk = SHIM_ARENA_CHUNK_MAX;
 
+	/* The cap is the point of the cap: a request that the remaining 200 KB
+	 * of it can serve must not be refused because the *minimum* chunk is
+	 * 256 KB.  The log had exactly that shape --
+	 *
+	 *     tex: arena short for 256 KB: ... retry STILL FAILED
+	 *          (17 chunks, 4664 KB used of 4904 KB)
+	 *
+	 * -- with 216 KB of the 5120 KB cap still unused and unusable, and the
+	 * picture it wanted then fell out of the pool into a plain memalign(),
+	 * where nothing counts it, trims it or ever gets it back. */
 	if (tex_arena_size(&shim_arena) + chunk > SHIM_ARENA_LIMIT)
-		return 0;
+	{
+		size_t left = SHIM_ARENA_LIMIT - tex_arena_size(&shim_arena);
+
+		if (left < need + TEX_ARENA_ALIGN + 64u)
+			return 0;
+
+		chunk = left;
+	}
 
 	chunk = (chunk + 4095u) & ~(size_t)4095u;
 
@@ -945,11 +962,25 @@ static int shim_texture_alloc (shim_texture_t *t, int width, int height, int opa
 			/* The arena is capped and still full after the eviction
 			 * pass: rather than lose the picture, fall back to a plain
 			 * malloc.  It is the old, fragmented path -- but a picture
-			 * that fits is better than one that does not. */
+			 * that fits is better than one that does not.
+			 *
+			 * Say so, with the size: a picture out here is invisible to
+			 * every arena report, is never trimmed, and takes memory the
+			 * pool would otherwise reuse.  The emulator log ended with
+			 * "2 outside the arena" and no way to tell which two. */
 			t->pixels = memalign(16, need);
 			t->in_arena = 0;
 			if (t->pixels)
+			{
 				shim_arena_fallback++;
+
+				if (shim_arena_fallback <= 20)
+					psp_tracef("tex: %dx%d picture (%d KB box) does not fit the "
+					           "arena even after unloading: kept outside the "
+					           "pool, %d pictures outside it now",
+					           width, height, (int)(need / 1024),
+					           shim_arena_fallback);
+			}
 		}
 
 		if (!t->pixels)

@@ -196,6 +196,9 @@ int Draw_EvictCachePics (int min_idle_frames)
 {
 	cachepic_t *pic;
 	int i, released = 0;
+#ifdef PSP_CACHEPIC_DIAG
+	int live = 0, lowreq = 0, fresh = 0, notex = 0;
+#endif
 
 	if (!draw_initialized)
 		return 0;
@@ -207,17 +210,36 @@ int Draw_EvictCachePics (int min_idle_frames)
 		if (pic->evicted || !pic->name[0])
 			continue;
 
+#ifdef PSP_CACHEPIC_DIAG
+		live++;
+#endif
+
 		/* asked a handful of times at load and then remembered by the
 		 * caller: not ours to free */
 		if (pic->requests < CACHEPIC_REQUESTS_TO_EVICT)
+		{
+#ifdef PSP_CACHEPIC_DIAG
+			lowreq++;
+#endif
 			continue;
+		}
 
 		if ((int)r_framecount - pic->lastframe < min_idle_frames)
+		{
+#ifdef PSP_CACHEPIC_DIAG
+			fresh++;
+#endif
 			continue;
+		}
 
 		gl = (glpic_t *)pic->pic.data;
 		if ((uintptr_t)gl < 0x1000 || !gl->gltexture)
+		{
+#ifdef PSP_CACHEPIC_DIAG
+			notex++;
+#endif
 			continue;
+		}
 
 		TexMgr_FreeTexture(gl->gltexture);
 
@@ -231,6 +253,37 @@ int Draw_EvictCachePics (int min_idle_frames)
 		pic->evicted = true;
 		released++;
 	}
+
+	/* The emergency pass found nothing to give up while the pool is full.
+	 * That is not a state to guess about: say which rule stopped every
+	 * picture, because the three rules fail for very different reasons and
+	 * only one of them is a bug.
+	 *
+	 * This line is why it is here: a run on the emulator held
+	 *
+	 *     tex: arena short for 256 KB: 0 idle pictures unloaded, retry
+	 *          STILL FAILED (17 chunks, 4664 KB used of 4904 KB)
+	 *
+	 * with 124 pictures alive, so the pool was full and nothing could be
+	 * released -- and no number in the log said whether that is because the
+	 * menu really does use all of them in the last two frames, or because
+	 * the cache is not counting asks at all. */
+#ifdef PSP_CACHEPIC_DIAG
+	if (released == 0 && live > 0 && min_idle_frames <= 2)
+	{
+		static int reports;
+
+		if (reports < 20)
+		{
+			reports++;
+			PSP_NOTE("pic: pool full, nothing to unload: %d live pictures, "
+			         "%d asked fewer than %d times, %d drawn in the last %d "
+			         "frames, %d without a texture",
+			         live, lowreq, CACHEPIC_REQUESTS_TO_EVICT, fresh,
+			         min_idle_frames, notex);
+		}
+	}
+#endif
 
 	return released;
 }
@@ -330,9 +383,13 @@ Draw_PicFromWad
 /* Records the picture being loaded, so a hang inside the texture path is named
  * by the watchdog instead of leaving "stuck in Sbar_Init" as the only clue. */
 extern void psp_mark (const char *what);
+extern void psp_tracef (const char *fmt, ...);
 #define DRAW_MARK(x)	psp_mark(x)
+#define PSP_NOTE(...)	psp_tracef(__VA_ARGS__)
+#define PSP_CACHEPIC_DIAG	1
 #else
 #define DRAW_MARK(x)	do { } while (0)
+#define PSP_NOTE(...)	do { } while (0)
 #endif
 
 qpic_t *Draw_PicFromWad2 (const char *name, unsigned int texflags)

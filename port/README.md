@@ -794,6 +794,21 @@ port/
            `… retry STILL FAILED (N chunks, X KB used of Y KB)`. Второй
            вариант — это уже настоящая нехватка памяти, и с ним надо
            разбираться отдельно, а не считать, что «оно само»;
+        3b. две строки, добавленные после прогона в эмуляторе, где арена
+           упёрлась в потолок именно на `0 idle pictures unloaded`:
+           `pic: pool full, nothing to unload: N live pictures, X asked fewer
+           than 8 times, Y drawn in the last 2 frames, Z without a texture` —
+           аварийная выгрузка не нашла, что освободить, и эта строка говорит,
+           **какое именно правило** остановило каждую картинку (правил три, и
+           «сломано» из них может быть только одно); и
+           `tex: WxH picture (N KB box) does not fit the arena even after
+           unloading: kept outside the pool, N pictures outside it now` —
+           картинка, которой не хватило места и которую пришлось положить
+           обычным `memalign` мимо арены: её не видно ни в одном отчёте, её
+           никто не выгружает, и память под неё больше не переиспользуется.
+           Заодно `shim_arena_grow()` теперь добирает остаток потолка
+           (`4664 KB used of 4904 KB` при потолке 5120 KB — 216 КБ лежали
+           мёртвым грузом, потому что минимальный кусок 256 КБ);
         4. в лог добавлены честные строки: `tex: no room for a WxH picture
            (… box = N KB); X KB of Y KB arena in use (N chunks), largest free
            Z KB in R runs, cap reached/not reached` (раньше там стояло
