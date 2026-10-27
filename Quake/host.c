@@ -1559,6 +1559,7 @@ void _Host_Frame (double time)
 		profile_frame_start = profile_phase_start = Sys_DoubleTime();
 	}
 
+	FRAME_MARK("frame: input");
 	if (!isDedicated) // woods  -- don't call the input functions in dedicated servers (vkquake)
 	{ 
 		// get new key events
@@ -1574,8 +1575,10 @@ void _Host_Frame (double time)
 	Host_GetConsoleCommands ();
 
 // process console commands
+	FRAME_MARK("frame: cbuf (config/map commands)");
 	Cbuf_Execute ();
 
+	FRAME_MARK("frame: net");
 	NET_Poll();
 	URI_Frame(); // woods #uri
 
@@ -1645,6 +1648,7 @@ void _Host_Frame (double time)
 	}
 
 // fetch results from server
+	FRAME_MARK("frame: client");
 	if (cls.state == ca_connected)
 		CL_ReadFromServer ();
 
@@ -1662,6 +1666,7 @@ void _Host_Frame (double time)
 		profile_phase_start = Sys_DoubleTime();
 
 	// CPU submission time only; avoid glFinish so profiling does not stall the GPU.
+	FRAME_MARK("frame: screen");
 	SCR_UpdateScreen ();
 	if (profile_enabled)
 	{
@@ -1670,6 +1675,7 @@ void _Host_Frame (double time)
 		profile_phase_start = profile_now;
 	}
 
+	FRAME_MARK("frame: particles");
 	CL_RunParticles (); //johnfitz -- seperated from rendering
 	if (profile_enabled)
 	{
@@ -1684,6 +1690,7 @@ void _Host_Frame (double time)
 		profile_phase_start = Sys_DoubleTime();
 
 // update audio
+	FRAME_MARK("frame: audio");
 	BGM_Update();	// adds music raw samples and/or advances midi driver
 	if (cl.listener_defined)
 	{
@@ -1719,6 +1726,8 @@ void _Host_Frame (double time)
 
 	host_framecount++;
 
+	if (host_frame_marks < 100)
+		host_frame_marks++;
 }
 
 void Host_Frame (double time)
@@ -1779,6 +1788,20 @@ extern void psp_tracef (const char *fmt, ...);
 #else
 #define HOST_TRACE(x)	do { } while (0)
 #define HOST_TRACEF(...)	do { } while (0)
+#endif
+
+/* Frame breadcrumbs: the first few frames only.
+ *
+ * Host_Frame() is called thousands of times a second, so a mark per frame
+ * would turn the memory stick into the bottleneck.  But the first frames are
+ * where the engine executes its config files and precaches the level, and if
+ * one of them kills the module we need to know which phase of the frame did
+ * it.  After three frames these compile down to a comparison. */
+#if defined(PLATFORM_PSP) || defined(__psp__)
+static int host_frame_marks;
+#define FRAME_MARK(x)	do { if (host_frame_marks < 3) psp_trace(x); } while (0)
+#else
+#define FRAME_MARK(x)	do { } while (0)
 #endif
 
 void Host_Init (void)

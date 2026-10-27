@@ -26,6 +26,17 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "quakedef.h"
 
+/* PSP breadcrumbs for the model loader.  Same idea as TEX_MARK: one line to
+ * the screen and the card, so the last line of kabluk.log names the step that
+ * killed the console.  A model is loaded in stages (skins, verts, triangles,
+ * frames), and a fault in any of them looks identical from the outside. */
+#if defined(PLATFORM_PSP) || defined(__psp__)
+extern void psp_mark (const char *what);
+#define MDL_MARK(x)	psp_mark(x)
+#else
+#define MDL_MARK(x)	do { } while (0)
+#endif
+
 qmodel_t	*loadmodel;
 char	loadname[32];	// for hunk tags
 char	diskname[MAX_QPATH];	// for loading related name-based files.
@@ -411,6 +422,8 @@ static qmodel_t *Mod_LoadModel (qmodel_t *mod, qboolean crash)
 	}
 
 //
+MDL_MARK(va("model %s", mod->name));
+
 // load the file
 //
 	if (*mod->name == '*')
@@ -3780,6 +3793,8 @@ static void *Mod_LoadAllSkins (int numskins, daliasskintype_t *pskintype)
 
 	for (i=0 ; i<numskins ; i++)
 	{
+		MDL_MARK(va("mdl: skin %d/%d", i, numskins));
+
 		if (pskintype->type == ALIAS_SKIN_SINGLE)
 		{
 			Mod_FloodFillSkin( skin, pheader->skinwidth, pheader->skinheight );
@@ -4252,11 +4267,13 @@ static void Mod_LoadAliasModel (qmodel_t *mod, void *buffer, int pvtype)
 // load the skins
 //
 	pskintype = (daliasskintype_t *)&pinmodel[1];
+	MDL_MARK(va("mdl: %d skin(s)", pheader->numskins));
 	pskintype = (daliasskintype_t *) Mod_LoadAllSkins (pheader->numskins, pskintype);
 
 //
 // load base s and t vertices
 //
+	MDL_MARK("mdl: stverts");
 	pinstverts = (stvert_t *)pskintype;
 
 	for (i=0 ; i<pheader->numverts ; i++)
@@ -4269,6 +4286,7 @@ static void Mod_LoadAliasModel (qmodel_t *mod, void *buffer, int pvtype)
 //
 // load triangle lists
 //
+	MDL_MARK("mdl: triangles");
 	pintriangles = (dtriangle_t *)&pinstverts[pheader->numverts];
 
 	for (i=0 ; i<pheader->numtris ; i++)
@@ -4286,6 +4304,7 @@ static void Mod_LoadAliasModel (qmodel_t *mod, void *buffer, int pvtype)
 // load the frames
 //
 	posenum = 0;
+	MDL_MARK(va("mdl: %d frame(s)", numframes));
 	pframetype = (daliasframetype_t *)&pintriangles[pheader->numtris];
 
 	for (i=0 ; i<numframes ; i++)
@@ -4303,6 +4322,7 @@ static void Mod_LoadAliasModel (qmodel_t *mod, void *buffer, int pvtype)
 
 	mod->type = mod_alias;
 
+	MDL_MARK("mdl: bounds");
 	Mod_CalcAliasBounds (pheader); //johnfitz
 
 	//Spike: for setmodel compat with vanilla
@@ -4312,8 +4332,11 @@ static void Mod_LoadAliasModel (qmodel_t *mod, void *buffer, int pvtype)
 	//
 	// build the draw lists
 	//
+	MDL_MARK("mdl: display lists");
 	GL_MakeAliasModelDisplayLists (mod, pheader);
+	MDL_MARK("mdl: vertex buffer");
 	GLMesh_LoadVertexBuffer (mod, pheader);
+	MDL_MARK("mdl: to cache");
 
 //
 // move the complete, relocatable alias model to the cache
