@@ -114,6 +114,14 @@ static unsigned int   shim_tex_announced_id;
 static const void    *shim_tex_announced_pixels;
 static unsigned int   shim_tex_announced_psm;
 static int            shim_tex_announced_filter;
+/* sceGuTexImage() stores the size (as logarithms) and the row stride; if a
+ * picture is re-uploaded at a different size into a block that is still large
+ * enough, the pointer and the format do not change -- so the size has to be
+ * part of what "already announced" means, or the GE keeps sampling with the
+ * old geometry and the picture comes out squeezed into the wrong rectangle. */
+static int            shim_tex_announced_potw;
+static int            shim_tex_announced_poth;
+static int            shim_tex_announced_tbw;
 static int            shim_tex_state_valid;
 
 /* matrix state */
@@ -187,6 +195,7 @@ static unsigned short shim_big_tex[12];        /* textures already named */
 static int            shim_big_tex_n;
 static unsigned int   shim_trace_frames = 4;   /* dump every draw this early on */
 static unsigned int   shim_trace_early;
+static int shim_trace_menu;    /* ... and the same for the settled menu */
 
 /* ------------------------------------------------------------------ */
 /* the gate                                                           */
@@ -564,7 +573,10 @@ static void shim_upload_bound_texture (void)
 	    shim_tex_announced_id == shim_texture_bound &&
 	    shim_tex_announced_pixels == t->pixels &&
 	    shim_tex_announced_psm == t->psm &&
-	    shim_tex_announced_filter == t->filter)
+	    shim_tex_announced_filter == t->filter &&
+	    shim_tex_announced_potw == t->potw &&
+	    shim_tex_announced_poth == t->poth &&
+	    shim_tex_announced_tbw == t->tbw)
 		return;
 
 	/* Unswizzled: the engine's pictures are not power-of-two, and only
@@ -586,6 +598,9 @@ static void shim_upload_bound_texture (void)
 	shim_tex_announced_pixels = t->pixels;
 	shim_tex_announced_psm = t->psm;
 	shim_tex_announced_filter = t->filter;
+	shim_tex_announced_potw = t->potw;
+	shim_tex_announced_poth = t->poth;
+	shim_tex_announced_tbw = t->tbw;
 	shim_tex_state_valid = 1;
 }
 
@@ -648,9 +663,16 @@ static int shim_gu_primitive (int gl_mode)
 	case GL_TRIANGLES:      return GU_TRIANGLES;
 	case GL_TRIANGLE_STRIP: return GU_TRIANGLE_STRIP;
 	case GL_TRIANGLE_FAN:   return GU_TRIANGLE_FAN;
-	case GL_QUADS:
-	case GL_QUAD_STRIP:
-	case GL_POLYGON:        return GU_SPRITES;
+	/* GL_QUADS is handled on its own in glEnd() (one list of six-vertex
+	 * triangles per quad).  These used to be thrown in with it and come out
+	 * as GU_SPRITES, which takes TWO vertices per primitive and draws the
+	 * rectangle between them: a polygon of five vertices then became two
+	 * overlapping rectangles drawn from vertices that are not opposite
+	 * corners, i.e. the large crossing wedges over the picture.  A quad
+	 * strip is a triangle strip, and a polygon is a triangle fan. */
+	case GL_QUAD_STRIP:     return GU_TRIANGLE_STRIP;
+	case GL_POLYGON:        return GU_TRIANGLE_FAN;
+	case GL_LINE_LOOP:      return GU_LINE_STRIP;
 	default:                return GU_TRIANGLES;
 	}
 }
@@ -660,38 +682,65 @@ static int shim_gu_primitive (int gl_mode)
 static void shim_trace_draw (int count, const char *what)
 {
 	float minx, maxx, miny, maxy, area;
-	int i;
+	float minu, maxu, minv, maxv;
+	int i, logging;
 
 	if (count <= 0)
 		return;
 
 	minx = maxx = shim_vertices[0].x;
 	miny = maxy = shim_vertices[0].y;
+	minu = maxu = shim_vertices[0].u;
+	minv = maxv = shim_vertices[0].v;
 
 	for (i = 1; i < count; i++)
 	{
 		float x = shim_vertices[i].x, y = shim_vertices[i].y;
+		float u = shim_vertices[i].u, v = shim_vertices[i].v;
 
 		if (x < minx) minx = x;
 		if (x > maxx) maxx = x;
 		if (y < miny) miny = y;
 		if (y > maxy) maxy = y;
+		if (u < minu) minu = u;
+		if (u > maxu) maxu = u;
+		if (v < minv) minv = v;
+		if (v > maxv) maxv = v;
 	}
 
-	if (shim_frames < shim_trace_frames && shim_trace_early < 60)
+	/* Two windows.  The first frames describe the boot screen; the second
+	 * one describes the menu once it has settled, where the wide wedges and
+	 * the overlapping text actually appear.  Without the second window the
+	 * log only ever talks about the boot screen, which is why those went
+	 * unexplained for so long. */
+	logging = (shim_frames < shim_trace_frames && shim_trace_early < 60) ||
+	          (shim_frames >= 118 && shim_frames < 122 && shim_trace_menu < 70);
+
+	if (logging)
 	{
-		shim_trace_early++;
+		if (shim_frames >= 118)
+			shim_trace_menu++;
+		else
+			shim_trace_early++;
 		/* m15 and m3 come from the projection matrix and are the cheapest
 		 * way to tell a 2D canvas from a 3D one: an orthogonal projection
 		 * has m15 = 1 and m3 = 0, a perspective frustum has m15 = 0 and
 		 * a non-zero m3.  A picture with an 8x8 box under an ortho matrix
 		 * and the same picture spread over the panel under a frustum are
 		 * completely different bugs. */
-		psp_tracef("draw: f %d #%d %s tex %d verts %d box %d,%d %d,%d "
-		           "proj m15 %.3f m3 %.3f",
+		/* uv is in TEXELS of the announced texture (see
+		 * shim_uv_scale_update()), so "uv 0,0 240,112" for a 256x128
+		 * texture means the whole picture; a box that is too large with
+		 * correct uv is geometry, and wrong uv with a correct box is the
+		 * texture mapping. */
+		psp_tracef("draw: f %d #%d %s tex %d tsz %dx%d verts %d "
+		           "box %d,%d %d,%d uv %d,%d %d,%d proj m15 %.3f m3 %.3f",
 		           (int)shim_frames, (int)shim_frame_draws, what,
-		           (int)shim_texture_bound, count,
+		           (int)shim_texture_bound,
+		           (int)shim_tex_announced_potw, (int)shim_tex_announced_poth,
+		           count,
 		           (int)minx, (int)miny, (int)maxx, (int)maxy,
+		           (int)minu, (int)minv, (int)maxu, (int)maxv,
 		           (double)shim_projection.m[15], (double)shim_projection.m[3]);
 		return;
 	}
@@ -1506,6 +1555,11 @@ size_t psp_gl_shim_texture_bytes (void)
  * The state the card changes is re-applied by psp_gl_shim_begin_frame() at
  * the start of the next frame. */
 
+/* How many frames the reference card is drawn for, from the start of
+ * rendering.  Forever is wrong (it covers the menu), never is wrong (there is
+ * nothing to read on a photo), one second is the compromise. */
+#define SHIM_CARD_FRAMES   60
+
 #define SHIM_CARD_SIZE     32
 #define SHIM_CARD_SQUARES  5
 #define SHIM_CARD_ROWS     2
@@ -1620,6 +1674,14 @@ static void shim_card_row (int row, float y)
 void psp_gl_shim_test_card (void)
 {
 	if (!shim_frame_active)
+		return;
+
+	/* The card has done its job: it is what named the texel-coordinate bug
+	 * (every picture was one stretched texel).  It now lives in the build
+	 * for the first second only, so a screenshot taken after start-up shows
+	 * the menu and not the diagnostic.  Raise SHIM_CARD_FRAMES when a
+	 * picture on the panel needs explaining again. */
+	if (shim_frames > SHIM_CARD_FRAMES)
 		return;
 
 	if (!shim_card_built)
