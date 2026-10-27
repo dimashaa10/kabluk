@@ -613,71 +613,42 @@ static void shim_edge_extend (shim_texture_t *t)
  * memory (16 bits per pixel) and there is no VRAM to put them in: the GE
  * samples them straight out of the heap.  Each one used to be its own
  * memalign() block out of the general purpose pool the engine also decodes
- * pictures, demos and maps into.  That is how a pool with plenty of bytes
- * free in total ends up with no single block big enough -- the help screen
- * said so itself:
+ * pictures, demos and maps into, so the pool filled with a few dozen blocks of
+ * every size from 8x8 to 512x512 -- which is how a run reports plenty of
+ * memory free in total and still cannot provide one 256 KB picture.
  *
- *     tex: no memory for a 512x256 picture (752 KB free, 4198 KB of textures)
+ * Pictures now have an address space of their own: tex_arena.c, a first-fit
+ * allocator on a 16-byte grid that merges free neighbours, so it cannot be
+ * shredded.  It takes its memory in CHUNKS, on demand:
  *
- * for a box of 256 KB.  The pictures now have an address space of their own:
+ *   * a chunk is created only when an allocation cannot be satisfied from the
+ *     chunks that exist, so the footprint follows what is actually on screen;
+ *   * a chunk that has become completely empty is handed back to the heap;
+ *   * the total is capped, and when the cap is reached the port's eviction
+ *     hook is asked to unload pictures the interface has stopped drawing
+ *     before the allocation is reported as failed.
  *
- *   * one reservation, taken once on the first picture (4 MB, then 2 MB, then
- *     1 MB if the console will not give that much; if even that fails we fall
- *     back to one memalign per picture, which is the old behaviour);
- *   * inside it, tex_arena.c: a first-fit allocator that coalesces, so the
- *     pool cannot be shredded into pieces that are all a little too small;
- *   * honest reporting: what is handed out, the largest run still free, how
- *     many runs that is.  The old message quoted
- *     sceKernelTotalFreeMemSize(), which is the SYSTEM partition and reads
- *     752 KB whether we hold 1 MB of pictures or 6 -- it explained nothing.
+ * Chunks rather than one big reservation because a reservation is charged at
+ * the wrong moment.  The previous version took 4 MB before the interface had
+ * loaded a single picture; the very next thing that happened was
+ *
+ *     img: gfx/conchars_ru.png FAILED: outofmem
+ *
+ * -- the PNG decoder could not get a few hundred KB while 4 MB sat empty, and
+ * the Russian charset never appeared.  The arena has to grow into the memory a
+ * picture needs, not take it in advance and hope nobody else wanted it.
  *
  * 16 bits per pixel is what the GE samples and there is no second copy
  * anywhere, so "used" is the true cost of the pictures on screen. */
 
-#define SHIM_ARENA_MAX_BYTES   (4u * 1024u * 1024u)
-#define SHIM_ARENA_MIN_BYTES   (1u * 1024u * 1024u)
+#define SHIM_ARENA_CHUNK_MIN   (256u * 1024u)	/* smallest chunk we take    */
+#define SHIM_ARENA_CHUNK_MAX   (1024u * 1024u)	/* largest single chunk      */
+#define SHIM_ARENA_LIMIT       (5u * 1024u * 1024u)	/* pictures never exceed */
 
 static tex_arena_t  shim_arena;
-static int          shim_arena_tried;    /* reservation attempted once at most */
-static size_t       shim_arena_fallback; /* pictures that had to use memalign  */
-
-/* Take the reservation.  Returns 1 when there is an arena to allocate from. */
-static int shim_arena_init (void)
-{
-	static const size_t want[] = { SHIM_ARENA_MAX_BYTES,
-	                               2u * 1024u * 1024u,
-	                               SHIM_ARENA_MIN_BYTES };
-	unsigned int i;
-
-	if (shim_arena.first)
-		return 1;
-
-	if (shim_arena_tried)
-		return 0;
-
-	shim_arena_tried = 1;
-
-	for (i = 0; i < sizeof(want) / sizeof(want[0]); i++)
-	{
-		void *base = memalign(16, want[i]);
-
-		if (!base)
-			continue;
-
-		if (!tex_arena_init(&shim_arena, base, want[i]))
-		{
-			free(base);
-			continue;
-		}
-
-		psp_tracef("tex: arena %d KB reserved for pictures", (int)(want[i] / 1024));
-		return 1;
-	}
-
-	psp_tracef("tex: no room for a picture arena -- falling back to one "
-	           "malloc per picture, which is what runs out first");
-	return 0;
-}
+static int          shim_arena_ready;
+static int          shim_arena_refused;	/* the cap, for the log           */
+static int          shim_arena_fallback;	/* pictures that had to use memalign */
 
 /* Called when the arena cannot satisfy a request.  The pictures the engine is
  * no longer asking for are the ones worth their memory; the port plugs its
@@ -692,19 +663,119 @@ void psp_gl_shim_set_evict_hook (void (*fn)(void))
 /* One line that says the truth about the picture pool, for the frame card. */
 void psp_gl_shim_texture_report (void)
 {
-	if (!shim_arena.first)
+	if (!shim_arena_ready)
 	{
 		psp_tracef("tex: %d pictures, %d KB, no arena (one malloc each)",
 		           (int)shim_texture_count, (int)(shim_texture_bytes / 1024));
 		return;
 	}
 
-	psp_tracef("tex: %d pictures, %d KB in use of %d KB arena, largest free "
-	           "%d KB in %d runs, %d outside the arena",
+	psp_tracef("tex: %d pictures, %d KB in use of %d KB arena (%d chunks of "
+	           "256 KB-1 MB, cap %d KB), largest free %d KB in %d runs, "
+	           "%d outside the arena",
 	           (int)shim_texture_count, (int)(tex_arena_used(&shim_arena) / 1024),
-	           (int)(tex_arena_size(&shim_arena) / 1024),
+	           (int)(tex_arena_size(&shim_arena) / 1024), shim_arena.chunks,
+	           (int)(SHIM_ARENA_LIMIT / 1024),
 	           (int)(tex_arena_largest_free(&shim_arena) / 1024),
-	           tex_arena_free_runs(&shim_arena), (int)shim_arena_fallback);
+	           tex_arena_free_runs(&shim_arena), shim_arena_fallback);
+}
+
+/* Give back every chunk that holds nothing.  Called after a picture is
+ * released: on a console with no VRAM, memory that is not holding a picture
+ * should be back in the heap where the map and the decoder can use it. */
+static void shim_arena_trim (void)
+{
+	int index;
+
+	if (!shim_arena_ready)
+		return;
+
+	while ((index = tex_arena_idle_chunk(&shim_arena)) >= 0)
+	{
+		void *base = shim_arena.chunk[index].base;
+
+		tex_arena_remove_chunk(&shim_arena, index);
+		free(base);
+	}
+}
+
+/* Take one more chunk big enough for `need` and try again.  Returns 1 when the
+ * arena can now serve it. */
+static int shim_arena_grow (size_t need)
+{
+	size_t chunk = need + TEX_ARENA_ALIGN + 4096u;
+	void *base;
+
+	if (!shim_arena_ready)
+	{
+		tex_arena_init(&shim_arena);
+		shim_arena_ready = 1;
+	}
+
+	if (chunk < SHIM_ARENA_CHUNK_MIN)
+		chunk = SHIM_ARENA_CHUNK_MIN;
+
+	if (chunk > SHIM_ARENA_CHUNK_MAX)
+		chunk = SHIM_ARENA_CHUNK_MAX;
+
+	if (tex_arena_size(&shim_arena) + chunk > SHIM_ARENA_LIMIT)
+		return 0;
+
+	chunk = (chunk + 4095u) & ~(size_t)4095u;
+
+	base = memalign(16, chunk);
+	if (!base)
+		return 0;
+
+	if (!tex_arena_add_chunk(&shim_arena, base, chunk))
+	{
+		free(base);
+		return 0;
+	}
+
+	return 1;
+}
+
+/* Allocate picture storage: from the arena if possible, growing it or evicting
+ * what the interface has stopped drawing if not. */
+static void *shim_picture_alloc (size_t need)
+{
+	void *p;
+
+	if (!shim_arena_ready)
+	{
+		tex_arena_init(&shim_arena);
+		shim_arena_ready = 1;
+	}
+
+	p = tex_arena_alloc(&shim_arena, need);
+	if (p)
+		return p;
+
+	if (shim_arena_grow(need))
+	{
+		p = tex_arena_alloc(&shim_arena, need);
+		if (p)
+			return p;
+	}
+
+	/* Out of room: unload the pictures nobody is drawing any more and try
+	 * once more.  The chunks stay (they hold the pictures that survived). */
+	if (shim_evict_hook)
+	{
+		shim_evict_hook();
+
+		shim_arena_trim();
+
+		p = tex_arena_alloc(&shim_arena, need);
+		if (p)
+			return p;
+	}
+
+	if (tex_arena_size(&shim_arena) + need >= SHIM_ARENA_LIMIT)
+		shim_arena_refused = 1;
+
+	return NULL;
 }
 
 /* Make sure the texture has storage for width x height at the wanted depth,
@@ -766,7 +837,10 @@ static int shim_texture_alloc (shim_texture_t *t, int width, int height, int opa
 	if (t->pixels && t->bytes != need)
 	{
 		if (t->in_arena)
+		{
 			tex_arena_free(&shim_arena, t->pixels);
+			shim_arena_trim();
+		}
 		else
 			free(t->pixels);
 
@@ -785,30 +859,22 @@ static int shim_texture_alloc (shim_texture_t *t, int width, int height, int opa
 
 	if (!t->pixels && need)
 	{
-		int attempt;
-
 		/* 16-byte alignment is not optional: sceGuTexImage() asserts
 		 * "Texture buffer pointer must be 16-byte aligned".  The arena
-		 * guarantees it (SHIM_ARENA_HDR is a multiple of 16); the
-		 * memalign() fallback asks for it. */
-		for (attempt = 0; attempt < 2 && !t->pixels; attempt++)
+		 * guarantees it; the memalign() fallback asks for it. */
+		t->pixels = shim_picture_alloc(need);
+		t->in_arena = (t->pixels != NULL);
+
+		if (!t->pixels)
 		{
-			if (attempt == 1 && shim_evict_hook)
-				shim_evict_hook();	/* drop pictures nobody asks for */
-
-			if (shim_arena_init())
-			{
-				t->pixels = tex_arena_alloc(&shim_arena, need);
-				t->in_arena = (t->pixels != NULL);
-			}
-
-			if (!t->pixels)
-			{
-				t->pixels = memalign(16, need);
-				t->in_arena = 0;
-				if (t->pixels)
-					shim_arena_fallback++;
-			}
+			/* The arena is capped and still full after the eviction
+			 * pass: rather than lose the picture, fall back to a plain
+			 * malloc.  It is the old, fragmented path -- but a picture
+			 * that fits is better than one that does not. */
+			t->pixels = memalign(16, need);
+			t->in_arena = 0;
+			if (t->pixels)
+				shim_arena_fallback++;
 		}
 
 		if (!t->pixels)
@@ -842,15 +908,17 @@ static void shim_texture_memory_short (int width, int height)
 	 * says 752 KB whether we hold 1 MB of pictures or 6, so it explained
 	 * nothing.  What a picture that does not fit needs to know is how big
 	 * the box it wanted was and what the picture arena looks like now. */
-	if (shim_arena.first)
+	if (shim_arena_ready)
 		psp_tracef("tex: no room for a %dx%d picture (%dx%d box = %d KB); "
-		           "%d KB of %d KB arena in use, largest free %d KB in %d runs, "
-		           "%d pictures",
+		           "%d KB of %d KB arena in use (%d chunks), largest free "
+		           "%d KB in %d runs, %d pictures, cap %s",
 		           width, height, potw, poth, (int)((potw * poth * 2) / 1024),
 		           (int)(tex_arena_used(&shim_arena) / 1024),
 		           (int)(tex_arena_size(&shim_arena) / 1024),
+		           shim_arena.chunks,
 		           (int)(tex_arena_largest_free(&shim_arena) / 1024),
-		           tex_arena_free_runs(&shim_arena), (int)shim_texture_count);
+		           tex_arena_free_runs(&shim_arena), (int)shim_texture_count,
+		           shim_arena_refused ? "reached" : "not reached");
 	else
 		psp_tracef("tex: no room for a %dx%d picture and no arena (%d KB of "
 		           "pictures, %d KB free in the system partition)",
@@ -1177,7 +1245,7 @@ static void shim_trace_draw (int count, const char *what, int quad_mode)
 	 * guessing, because a filtered window always leaves something out. */
 	if (shim_frames == 120 || shim_frames == 121)
 	{
-		if (shim_trace_dump < 1200)
+		if (shim_trace_dump < 400)
 		{
 			shim_trace_dump++;
 			psp_tracef("d %d %d %c t%d %dx%d %d,%d-%d,%d u%d,%d-%d,%d%s",
@@ -1928,7 +1996,10 @@ void glDeleteTextures (GLsizei n, const GLuint *textures)
 		if (t->pixels)
 		{
 			if (t->in_arena)
+			{
 				tex_arena_free(&shim_arena, t->pixels);
+				shim_arena_trim();
+			}
 			else
 				free(t->pixels);
 

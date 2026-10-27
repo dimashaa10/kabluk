@@ -71,30 +71,36 @@ static void con_ensure (void)
  * existed and was zero bytes long -- created once, written to, and no content
  * ever reaching the card.  sceIoSync() was supposed to force it out and did not.
  *
- * So every line is written the durable way: open (append) -- write -- close.
- * close() is the operation the driver cannot skip, so the bytes are on the card
- * before we print the next line.  A handful of card operations per console line
- * is cheap next to losing the only evidence there is.
+ * So the log is written the durable way -- open (append) -- write -- close --
+ * and NOT through a descriptor that lives for the session.  close() is the
+ * operation the driver cannot skip.
+ *
+ * What changed later is the granularity: one close() per *line* turned out to
+ * cost more than the diagnostics were worth once the drawing code started
+ * tracing (see the note on con_log_append() below).  Lines are collected in RAM
+ * and reach the card as one write per buffer, still closed after every write.
  */
-static void con_log_sync (void)
-{
-	if (con_log_path)
-		sceIoSync("ms0:", 0);
-}
-
 static int con_log_try_open (void);
 static void con_write (const char *s);
 static void con_putc (int c);
+/* Give the log a few more chances: psp_con_init() runs before the memory
+ * stick is necessarily ready, and a card that answers on the second try is
+ * worth more than a clean error message. */
+#define CON_LOG_OPEN_TRIES 100
 
-/* One line, one write, one close.
+static int con_log_tries;
+
+static void con_log_lock (void);
+static void con_log_unlock (void);
+static void con_log_drain_locked (void);
+static void con_log_sync (void);
+
+/* One card write: open (append) -- write -- close, all of it in one place.
  *
- * con_logfmt() is fine for stitching a line together from pieces, but two
- * threads stitching at once produced log entries like
- *
- *	mark: COM_InitFilesystemPlaying registered version.
- *
- * A single write is atomic enough for the card and keeps every entry readable. */
-/* One attempt at one line.  Returns 0 if the card did not take it. */
+ * close() is the operation the driver cannot skip, so whatever this function
+ * was given is on the card when it returns.  Batch as much as possible into one
+ * call (see con_log_append below): what is expensive here is the round trip,
+ * not the bytes.  Returns 0 if the card did not take it. */
 static int con_log_try (const char *buf)
 {
 	SceUID fd;
@@ -118,59 +124,148 @@ static int con_log_try (const char *buf)
 	return 1;
 }
 
-static void con_log_line (const char *text)
+/*
+ * The log is written in batches, one card write per buffer.
+ *
+ * Every line used to be its own open()/write()/close() -- two of them, in fact,
+ * because con_flush() logged the text and the newline separately.  close() is
+ * what actually pushes the FAT cache at the card, so a line cost a card round
+ * trip: on real hardware several milliseconds, and much more when the card is
+ * busy.  That is invisible while a handful of lines are printed at startup and
+ * it is the whole frame budget once the drawing code starts tracing, where a
+ * burst of 1200 lines (the full-frame dump in gl_shim.c) is 2400 card
+ * operations: seconds of a black screen at frame 120, which is a freeze the
+ * player feels and the log cannot explain.
+ *
+ * So lines are collected in RAM and handed to the card in one go.  The buffer
+ * is drained when it fills, once a second by the watchdog thread, and at the
+ * end of a fatal error.  The trade is deliberate: a crash can lose the lines
+ * that were still in the buffer (at most the ones written in the last second),
+ * and everything before them is on the card.
+ *
+ * The buffer is touched from two threads (the engine and the watchdog), so the
+ * append and the drain take a mutex.  Without it a drain that copies while the
+ * other thread appends produces a log with a torn line in the middle -- the
+ * exact kind of hole this file exists to avoid.
+ */
+#define CON_LOGBUF_SIZE 4096
+
+static char        con_logbuf[CON_LOGBUF_SIZE];
+static size_t      con_logbuf_len;
+static SceUID      con_log_mutex = -1;
+static int         con_log_mutex_tried;
+
+static void con_log_lock (void)
 {
-	char buf[192];
+	/* Created on the first line, which is always printed by the engine thread
+	 * long before the watchdog starts.  The flag means a second thread can at
+	 * worst skip the lock once, rather than create a second mutex. */
+	if (con_log_mutex < 0 && !con_log_mutex_tried)
+	{
+		con_log_mutex_tried = 1;
+		con_log_mutex = sceKernelCreateMutex("kabluk_log", 0, 0, NULL);
+	}
+
+	if (con_log_mutex >= 0)
+		sceKernelLockMutex(con_log_mutex, 1, NULL);
+}
+
+static void con_log_unlock (void)
+{
+	if (con_log_mutex >= 0)
+		sceKernelUnlockMutex(con_log_mutex, 1);
+}
+
+/* Hand everything that has been collected to the card.  Called with the log
+ * lock held; con_log_sync() is the version the rest of the file uses. */
+static void con_log_drain_locked (void)
+{
 	int tries;
 
-	if (!con_log_path || !text)
+	if (!con_logbuf_len)
 		return;
 
-	snprintf(buf, sizeof(buf), "%s\n", text);
+	if (!con_log_path && con_log_tries < CON_LOG_OPEN_TRIES)
+	{
+		con_log_tries++;
+		con_log_try_open();
+	}
+
+	con_logbuf[con_logbuf_len] = '\0';
 
 	/* Twice, because the trail is only worth anything if it has no holes in
 	 * it: a single failed open (the card busy with another write, the FAT
 	 * cache flushing) used to drop one line out of the middle and leave a
 	 * log that looked like a crash in the wrong place. */
 	for (tries = 0; tries < 2; tries++)
-		if (con_log_try(buf))
+		if (con_log_try(con_logbuf))
+		{
+			con_logbuf_len = 0;
+			con_logbuf[0] = '\0';
 			return;
+		}
+
+	/* No card (or a broken one): the text is gone either way, and keeping it
+	 * would only push the next line out of a full buffer. */
+	con_logbuf_len = 0;
+	con_logbuf[0] = '\0';
+}
+
+static void con_log_append (const char *text)
+{
+	size_t len;
+
+	if (!text || !text[0])
+		return;
+
+	len = strlen(text);
+
+	con_log_lock();
+
+	if (len >= CON_LOGBUF_SIZE - 1)
+	{
+		/* A single line that does not fit the buffer at all.  Nothing in the
+		 * port prints one (the longest is 384 bytes), and half a line in the
+		 * log is worse than none, so it is dropped -- after the pending lines
+		 * have been written out, so the log does not lose them instead. */
+		con_log_drain_locked();
+		con_log_unlock();
+		return;
+	}
+
+	if (con_logbuf_len + len > CON_LOGBUF_SIZE - 1)
+		con_log_drain_locked();
+
+	memcpy(con_logbuf + con_logbuf_len, text, len);
+	con_logbuf_len += len;
+	con_logbuf[con_logbuf_len] = '\0';
+
+	con_log_unlock();
+}
+
+/* The one operation that gets the collected lines onto the card. */
+static void con_log_sync (void)
+{
+	con_log_lock();
+	con_log_drain_locked();
+	con_log_unlock();
+}
+
+static void con_log_line (const char *text)
+{
+	char buf[CON_LINE_MAX + 2];
+
+	if (!text)
+		return;
+
+	snprintf(buf, sizeof(buf), "%s\n", text);
+	con_log_append(buf);
 }
 
 static void con_logfmt (const char *s)
 {
-	SceUID fd;
-	int n;
-	size_t len;
-
-	if (!con_log_path || !s)
-		return;
-
-	len = strlen(s);
-	if (!len)
-		return;
-
-	fd = sceIoOpen(con_log_path,
-	               PSP_O_WRONLY | PSP_O_CREAT | PSP_O_APPEND, 0777);
-	if (fd < 0)
-	{
-		con_log_err = (int)fd;
-		return;
-	}
-
-	n = sceIoWrite(fd, s, (unsigned int)len);
-	sceIoClose(fd);
-
-	if (n < 0)
-		con_log_err = n;
+	con_log_append(s);
 }
-
-/* Give the log a few more chances: psp_con_init() runs before the memory
- * stick is necessarily ready, and a card that answers on the second try is
- * worth more than a clean error message. */
-#define CON_LOG_OPEN_TRIES 100
-
-static int con_log_tries;
 
 static void con_flush (void)
 {
@@ -341,6 +436,11 @@ void psp_con_init (void)
 		con_write(con_log_path ? con_log_path : "NONE - crash output will be lost");
 		con_putc('\n');
 
+		/* The line above is flushed on purpose: the very next thing this
+		 * function does is ask the filesystem how big the file is, and a
+		 * buffered line would make that answer a lie (always 0). */
+		con_log_sync();
+
 		/* Proof, on the screen, that the line above actually reached the
 		 * card: ask the filesystem how big the file is now.  A "0 bytes"
 		 * here means writes are not landing and the log is worthless, so
@@ -351,6 +451,7 @@ void psp_con_init (void)
 			         (int)st.st_size);
 			con_write(buf);
 			con_putc('\n');
+			con_log_sync();
 		}
 		else if (con_log_path)
 		{
@@ -517,7 +618,12 @@ void psp_trace (const char *step)
 	con_last_step[sizeof(con_last_step) - 1] = '\0';
 
 	con_write(buf);
-	con_putc('\n');		/* flushes, logs and syncs */
+	con_putc('\n');		/* flushes into the log buffer */
+
+	/* This one is a boot breadcrumb, and the whole point of it is that it is
+	 * already on the card when the very next step kills the module.  So it is
+	 * not batched: a card write here, none per frame later. */
+	con_log_sync();
 
 	/* The same text again, in row 0, where nothing else ever scrolls it
 	 * away.  Row 0 is the line to read when the screen is about to die:
@@ -629,6 +735,7 @@ void psp_mark (const char *what)
 	{
 		snprintf(line, sizeof(line), "mark: %s", step);
 		con_log_line(line);
+		con_log_sync();	/* a boot mark is the trail a crash needs */
 	}
 }
 
@@ -686,6 +793,11 @@ static int con_watchdog_thread (SceSize args, void *argp)
 				con_log_line(line);
 			}
 		}
+
+		/* Once a second, whatever the engine traced goes to the card.  The
+		 * game itself no longer pays a card round trip per line (see
+		 * con_log_append), and this thread is where the batch leaves. */
+		con_log_sync();
 
 		if (con_progress != seen)
 		{
