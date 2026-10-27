@@ -197,18 +197,35 @@ int Draw_EvictCachePics (int min_idle_frames)
 	cachepic_t *pic;
 	int i, released = 0;
 #ifdef PSP_CACHEPIC_DIAG
-	int live = 0, lowreq = 0, fresh = 0, notex = 0;
+	int live = 0, lowreq = 0, fresh = 0, notex = 0, gone = 0;
 #endif
 
 	if (!draw_initialized)
+	{
+#ifdef PSP_CACHEPIC_DIAG
+		static int premature;
+
+		if (premature < 5)
+		{
+			premature++;
+			PSP_NOTE("pic: eviction asked for before Draw_Init finished -- "
+			         "nothing can be released yet");
+		}
+#endif
 		return 0;
+	}
 
 	for (pic = menu_cachepics, i = 0; i < menu_numcachepics; pic++, i++)
 	{
 		glpic_t *gl;
 
 		if (pic->evicted || !pic->name[0])
+		{
+#ifdef PSP_CACHEPIC_DIAG
+			gone++;
+#endif
 			continue;
+		}
 
 #ifdef PSP_CACHEPIC_DIAG
 		live++;
@@ -269,18 +286,24 @@ int Draw_EvictCachePics (int min_idle_frames)
 	 * menu really does use all of them in the last two frames, or because
 	 * the cache is not counting asks at all. */
 #ifdef PSP_CACHEPIC_DIAG
-	if (released == 0 && live > 0 && min_idle_frames <= 2)
+	/* Printed even when the pass found no picture at all: the hardware log
+	 * had the shim saying "0 idle pictures unloaded" with the pool full, and
+	 * this line did not appear, which can only mean the pass walked over
+	 * nothing.  So the count itself is the finding, and it is in the line. */
+	if (released == 0)
 	{
 		static int reports;
 
 		if (reports < 20)
 		{
 			reports++;
-			PSP_NOTE("pic: pool full, nothing to unload: %d live pictures, "
-			         "%d asked fewer than %d times, %d drawn in the last %d "
-			         "frames, %d without a texture",
-			         live, lowreq, CACHEPIC_REQUESTS_TO_EVICT, fresh,
-			         min_idle_frames, notex);
+			PSP_NOTE("pic: nothing to unload: %d cached names (%d of them "
+			         "already evicted), %d live (%d asked fewer than %d times, "
+			         "%d drawn in the last %d frames, %d without a texture), "
+			         "draw_initialized %d",
+			         (int)menu_numcachepics, gone, live, lowreq,
+			         CACHEPIC_REQUESTS_TO_EVICT, fresh, min_idle_frames, notex,
+			         (int)draw_initialized);
 		}
 	}
 #endif
