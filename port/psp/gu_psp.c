@@ -177,6 +177,11 @@ void psp_gu_frame_end (void)
 	if (!gu_up || !gu_in_frame)
 		return;
 
+	/* The shim's reference card goes in last, so that nothing the engine
+	 * draws can cover it: it is the picture that says which part of the 2D
+	 * translation is wrong (see the note in gl_shim.c). */
+	psp_gl_shim_test_card();
+
 	psp_gl_shim_set_frame_active(0);
 	sceGuFinish();
 	sceGuSync(0, 0);

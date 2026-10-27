@@ -30,6 +30,12 @@ void psp_gl_shim_set_frame_active (int active);
  * same in kabluk.log without this line. */
 void psp_gl_shim_end_frame (void);
 
+/* Draw the reference card: three 64x64 squares in the top-left corner whose
+ * correct appearance is described in gl_shim.c.  Called from
+ * psp_gu_frame_end() so it lands on top of whatever the engine drew, and only
+ * while a draw list is open. */
+void psp_gl_shim_test_card (void);
+
 /* Main-memory bytes currently held by texture uploads.  The PSP has 64 MB
  * total and the engine's zone takes 33 of them, so this is worth logging. */
 size_t psp_gl_shim_texture_bytes (void);

@@ -793,9 +793,15 @@ void glTexCoord2f (GLfloat s, GLfloat t)
  * 0xAABBGGRR"), which is also the byte order a GL_RGBA array has on a
  * little-endian machine.  These three used to put red in bits 16..23 and blue
  * in bits 0..7, i.e. they swapped red and blue for every vertex of every
- * picture: a colour right in red came out blue.  glColor4ubv below, which
- * stores the GL bytes as they arrive, was always right -- and is the proof
- * that the layout above is the wrong way round. */
+ * picture: a colour right in red came out blue.
+ *
+ * The order is not a matter of taste: a GL_RGBA array holds the bytes R,G,B,A
+ * in memory, so on a little-endian machine the 32-bit word is A<<24 | B<<16 |
+ * G<<8 | R, which is exactly 0xAABBGGRR.  glColor4ubv() -- the one the engine
+ * uses for almost all 2D drawing, Draw_CharacterQuad() included -- unpacked
+ * the bytes the other way round (v[0] into bits 16..23), so the two families
+ * disagreed and every colour went through the pipeline depending on which
+ * function the caller happened to use.  Both now store 0xAABBGGRR. */
 void glColor3f (GLfloat r, GLfloat g, GLfloat b)
 {
 	shim_current_color = 0xFF000000u |
@@ -824,8 +830,9 @@ void glColor4fv (const GLfloat *v)
 
 void glColor4ubv (const GLubyte *v)
 {
-	shim_current_color = ((unsigned int)v[3] << 24) | ((unsigned int)v[0] << 16) |
-	                     ((unsigned int)v[1] << 8) | (unsigned int)v[2];
+	/* v = { R, G, B, A } in memory -> 0xAABBGGRR */
+	shim_current_color = ((unsigned int)v[3] << 24) | ((unsigned int)v[2] << 16) |
+	                     ((unsigned int)v[1] << 8) | (unsigned int)v[0];
 }
 
 /* ---- matrices ---- */
@@ -1362,6 +1369,170 @@ void glGetFloatv (GLenum pname, GLfloat *params)
 size_t psp_gl_shim_texture_bytes (void)
 {
 	return shim_texture_bytes;
+}
+
+/* ------------------------------------------------------------------ */
+/* the reference card                                                 */
+/* ------------------------------------------------------------------ */
+
+/* Everything above is a translation of GL state into GE state, and when the
+ * panel shows "a grey field with a blue bar and a teal block" that says nothing
+ * about *which* translation step is wrong: the geometry, the vertex colour, the
+ * channel order of the texture, the power-of-two box, or the alpha test.
+ *
+ * So the shim draws a card of its own on top of the engine's frame, every
+ * frame, in the top-left corner -- a picture whose correct appearance is known
+ * in advance:
+ *
+ *      (0,0)    64x64   four quadrants (white, red, green, blue) packed the way
+ *                       GU_PSM_4444 is supposed to want it: alpha in the high
+ *                       nibble, red in the low one
+ *      (64,0)   64x64   the same four quadrants packed the other way round
+ *                       (red in the high nibble, alpha in the low one)
+ *      (128,0)  64x64   no texture at all: vertex colour only, magenta
+ *
+ * and the whole row again 72 pixels lower with the alpha test switched off.
+ *
+ * The correct result is two rows of three squares.  Each of the first two
+ * squares is split into four: white and red on its top row, green and blue on
+ * its bottom row, and the two rows of the card are identical.  To their right
+ * is a plain magenta square.  What is actually on the panel then
+ * names the broken step:
+ *
+ *   - magenta square missing too   -> nothing reaches the panel; the problem is
+ *                                     the frame/draw-list plumbing, not the 2D
+ *                                     translation
+ *   - magenta there, both cards empty -> textures: upload, address, alignment
+ *   - the second card shows white and red only -> the channel order in
+ *                                     shim_px4444() is wrong (green and blue of
+ *                                     that packing come out with alpha 0 and the
+ *                                     alpha test drops them)
+ *   - the cards are there but the menu still is not -> the shim is fine and the
+ *                                     engine is handing it bad data, which is a
+ *                                     completely different hunt
+ *
+ * Deliberately drawn with the GE directly: using the shim's own gl* entry
+ * points would test the code with itself.  The state it changes is re-applied
+ * by psp_gl_shim_begin_frame() at the start of the next frame. */
+
+#define SHIM_CARD_SIZE 64
+
+static unsigned short shim_card_tex_abgr[SHIM_CARD_SIZE * SHIM_CARD_SIZE] __attribute__((aligned(16)));
+static unsigned short shim_card_tex_rgba[SHIM_CARD_SIZE * SHIM_CARD_SIZE] __attribute__((aligned(16)));
+static shim_vertex_t  shim_card_quads[3][6] __attribute__((aligned(16)));
+static int            shim_card_built;
+
+static void shim_card_build (void)
+{
+	int x, y;
+
+	for (y = 0; y < SHIM_CARD_SIZE; y++)
+	{
+		for (x = 0; x < SHIM_CARD_SIZE; x++)
+		{
+			int half_x = (x >= SHIM_CARD_SIZE / 2);
+			int half_y = (y >= SHIM_CARD_SIZE / 2);
+			int r = 0, g = 0, b = 0, a = 255;
+
+			if (!half_x && !half_y)             r = g = b = 255;  /* white  */
+			else if (half_x && !half_y)         r = 255;          /* red    */
+			else if (!half_x && half_y)         g = 255;          /* green  */
+			else                                b = 255;          /* blue   */
+
+			shim_card_tex_abgr[y * SHIM_CARD_SIZE + x] = shim_px4444(r, g, b, a);
+			shim_card_tex_rgba[y * SHIM_CARD_SIZE + x] =
+				(unsigned short)(((r >> 4) << 12) | ((g >> 4) << 8) |
+				                 ((b >> 4) << 4) | (a >> 4));
+		}
+	}
+
+	/* The GE reads main memory past the CPU cache: without the writeback it
+	 * samples whatever was in those lines before. */
+	sceKernelDcacheWritebackRange(shim_card_tex_abgr, sizeof(shim_card_tex_abgr));
+	sceKernelDcacheWritebackRange(shim_card_tex_rgba, sizeof(shim_card_tex_rgba));
+
+	shim_card_built = 1;
+}
+
+/* Six vertices of a screen-space quad.  The engine's own quads arrive as two
+ * triangles in this same order, so the card is wound and textured exactly like
+ * a menu picture. */
+static void shim_card_quad (shim_vertex_t *v, float x, float y, float w, float h,
+                            unsigned int color)
+{
+	v[0].u = 0.0f; v[0].v = 0.0f; v[0].color = color; v[0].x = x;     v[0].y = y;     v[0].z = 0.0f;
+	v[1].u = 1.0f; v[1].v = 0.0f; v[1].color = color; v[1].x = x + w; v[1].y = y;     v[1].z = 0.0f;
+	v[2].u = 1.0f; v[2].v = 1.0f; v[2].color = color; v[2].x = x + w; v[2].y = y + h; v[2].z = 0.0f;
+
+	v[3] = v[0];
+	v[4] = v[2];
+
+	v[5].u = 0.0f; v[5].v = 1.0f; v[5].color = color; v[5].x = x;     v[5].y = y + h; v[5].z = 0.0f;
+}
+
+/* One row of the card: the three squares with a known picture in them.  The
+ * same row is drawn twice, once with whatever alpha test the engine left in
+ * force and once with the alpha test off, so that "the picture is there but
+ * every pixel is discarded" cannot be confused with "the picture is not
+ * there". */
+static void shim_card_row (float y)
+{
+	sceGuDisable(GU_TEXTURE_2D);
+	shim_card_quad(shim_card_quads[2], 128.0f, y, SHIM_CARD_SIZE, SHIM_CARD_SIZE,
+	               0xFFFF00FFu);		/* 0xAABBGGRR: magenta */
+	sceGuDrawArray(GU_TRIANGLES, SHIM_VERTEX_FORMAT, 6, NULL, shim_card_quads[2]);
+
+	sceGuEnable(GU_TEXTURE_2D);
+	sceGuTexMode(GU_PSM_4444, 0, 0, 0);
+	sceGuTexFilter(GU_NEAREST, GU_NEAREST);
+	sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
+
+	sceGuTexImage(0, SHIM_CARD_SIZE, SHIM_CARD_SIZE, SHIM_CARD_SIZE, shim_card_tex_abgr);
+	shim_card_quad(shim_card_quads[0], 0.0f, y, SHIM_CARD_SIZE, SHIM_CARD_SIZE,
+	               0xFFFFFFFFu);
+	sceGuDrawArray(GU_TRIANGLES, SHIM_VERTEX_FORMAT, 6, NULL, shim_card_quads[0]);
+
+	sceGuTexImage(0, SHIM_CARD_SIZE, SHIM_CARD_SIZE, SHIM_CARD_SIZE, shim_card_tex_rgba);
+	shim_card_quad(shim_card_quads[1], (float)SHIM_CARD_SIZE, y,
+	               SHIM_CARD_SIZE, SHIM_CARD_SIZE, 0xFFFFFFFFu);
+	sceGuDrawArray(GU_TRIANGLES, SHIM_VERTEX_FORMAT, 6, NULL, shim_card_quads[1]);
+}
+
+void psp_gl_shim_test_card (void)
+{
+	int alpha_test = 0;
+
+	if (!shim_frame_active)
+		return;
+
+	if (!shim_card_built)
+		shim_card_build();
+
+	/* Nothing may hide the card, and it must not be culled or faded -- that
+	 * is the whole point of a reference picture. */
+	sceGuDisable(GU_SCISSOR_TEST);
+	sceGuDisable(GU_DEPTH_TEST);
+	sceGuDisable(GU_BLEND);
+	sceGuDisable(GU_CULL_FACE);
+	sceGuShadeModel(GU_FLAT);
+
+	/* The engine turns the alpha test on for all of its 2D drawing
+	 * (GL_Set2D(): glEnable(GL_ALPHA_TEST), glAlphaFunc(GL_GREATER, ...)).
+	 * Row 1 keeps that, row 2 drops it. */
+	alpha_test = shim_alpha_test;
+
+	shim_card_row(0.0f);
+
+	if (alpha_test)
+	{
+		sceGuDisable(GU_ALPHA_TEST);
+		shim_card_row(72.0f);
+		sceGuEnable(GU_ALPHA_TEST);
+	}
+	else
+	{
+		shim_card_row(72.0f);
+	}
 }
 
 /* ------------------------------------------------------------------ */
