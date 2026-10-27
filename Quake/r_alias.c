@@ -24,6 +24,17 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "quakedef.h"
 
+/* Same breadcrumbs as the renderer, sharing its first-three-frames counter
+ * (psp_render_frames in gl_rmain.c).  An alias model is drawn in stages and a
+ * fault in any of them looks identical from the outside. */
+#if defined(PLATFORM_PSP) || defined(__psp__)
+extern void psp_trace (const char *step);
+extern int psp_render_frames;
+#define ALIAS_MARK(x)	do { if (psp_render_frames < 3) psp_trace(x); } while (0)
+#else
+#define ALIAS_MARK(x)	do { } while (0)
+#endif
+
 extern cvar_t r_drawflat, gl_overbright_models, gl_fullbrights, r_lerpmodels, r_lerpmove; //johnfitz
 extern cvar_t scr_fov, cl_gun_fovscale, cl_gun_x, cl_gun_y, cl_gun_z;
 extern cvar_t r_coloredpowerupglow; // woods
@@ -1993,8 +2004,14 @@ void R_DrawAliasModel(entity_t* e)
 	// setup pose/lerp data -- do it first so we don't miss updates due to culling
 	//
 	paliashdr = (aliashdr_t *)Mod_Extradata (e->model);
+	ALIAS_MARK(va("alias: %s%s", e->model->name,
+	              paliashdr ? "" : "  [no extradata -- model cache full?]"));
+	if (!paliashdr)
+		return;	/* the model never made it into the cache: nothing to draw with */
+
 	R_SetupAliasFrame (paliashdr, e, &lerpdata);
 	R_SetupEntityTransform (e, &lerpdata);
+	ALIAS_MARK("alias: pose");
 
 	glsl = &r_alias_glsl[(paliashdr->poseverttype==PV_IQM&&lerpdata.bonestate)?ALIAS_GLSL_SKELETAL:ALIAS_GLSL_BASIC];
 
@@ -2119,10 +2136,12 @@ void R_DrawAliasModel(entity_t* e)
 	//
 	// set up lighting
 	//
+	ALIAS_MARK("alias: lighting");
 	R_SetupAliasLighting (e);
 
 	for(surf=0;;surf++)
 	{
+		ALIAS_MARK(va("alias: surf %d", surf));
 		rs_aliaspolys += paliashdr->numtris;
 
 		//
@@ -2205,6 +2224,7 @@ void R_DrawAliasModel(entity_t* e)
 		//
 		// draw it
 		//
+		ALIAS_MARK("alias: draw");
 		if (r_drawflat_cheatsafe)
 		{
 			glDisable (GL_TEXTURE_2D);
@@ -2381,6 +2401,7 @@ void R_DrawAliasModel(entity_t* e)
 	}
 
 cleanup:
+	ALIAS_MARK("alias: cleanup");
 	glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
 	glHint (GL_PERSPECTIVE_CORRECTION_HINT, GL_NICEST);
 	glShadeModel (GL_FLAT);

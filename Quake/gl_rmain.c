@@ -32,7 +32,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
  * an implicit function call and only shows up with -Werror. */
 #if defined(PLATFORM_PSP) || defined(__psp__)
 extern void psp_trace (const char *step);
-static int psp_render_frames;
+int psp_render_frames;	/* shared with r_alias.c: same first-three-frames window */
 #define RENDER_MARK(x)	do { if (psp_render_frames < 3) psp_trace(x); } while (0)
 #else
 #define RENDER_MARK(x)	do { } while (0)
@@ -946,6 +946,10 @@ void R_DrawEntitiesOnList (qboolean alphapass) //johnfitz -- added parameter
 		if (!r_drawflame.value) // woods
 			if (!strcmp(currententity->model->name, "progs/flame.mdl") || !strcmp(currententity->model->name, "progs/flame2.mdl"))
 				continue;
+
+		/* Which entity, of how many, and what kind of thing it is. */
+		RENDER_MARK(va("ent %d/%d type %d %s", i, cl_numvisedicts,
+		               (int)currententity->model->type, currententity->model->name));
 
 		switch (currententity->model->type)
 		{

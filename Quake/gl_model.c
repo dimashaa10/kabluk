@@ -4346,7 +4346,14 @@ static void Mod_LoadAliasModel (qmodel_t *mod, void *buffer, int pvtype)
 
 	Cache_Alloc (&mod->cache, total, loadname);
 	if (!mod->cache.data)
+	{	/* Silent until now: the model stayed 'mod_alias' with no extradata,
+		 * and the first thing that drew it dereferenced NULL.  On the PSP the
+		 * cache lives in the same 33 MB zone, so this is a real possibility. */
+		Con_Warning("Mod_LoadAliasModel: no cache memory for %s (%i bytes)\n",
+		            mod->name, total);
+		MDL_MARK("mdl: CACHE FULL");
 		return;
+	}
 	memcpy (mod->cache.data, pheader, total);
 
 	Hunk_FreeToLowMark (start);
