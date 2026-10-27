@@ -15,7 +15,6 @@ GLAPI void GLAPIENTRY glFogf (GLenum pname, GLfloat param) {  }
 GLAPI void GLAPIENTRY glFogfv (GLenum pname, const GLfloat *params) {  }
 GLAPI void GLAPIENTRY glFogi (GLenum pname, GLint param) {  }
 GLAPI void GLAPIENTRY glGetTexImage (GLenum target, GLint level, GLenum format, GLenum type, GLvoid *pixels) {  }
-GLAPI GLboolean GLAPIENTRY glIsEnabled (GLenum cap) { return 0; }
 GLAPI void GLAPIENTRY glLineWidth (GLfloat width) {  }
 GLAPI void GLAPIENTRY glPointSize (GLfloat size) {  }
 GLAPI void GLAPIENTRY glPolygonMode (GLenum face, GLenum mode) {  }

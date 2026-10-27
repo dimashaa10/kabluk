@@ -256,7 +256,8 @@ byte *Image_LoadPNG(FILE *f, int *width, int *height, qboolean *malloced)
 #ifdef LODEPNG_NO_COMPILE_DECODER
 	return Image_LoadSTBI (f, width, height);
 #else
-	unsigned w, h;
+	unsigned w = 0, h = 0;
+	unsigned err;
 	unsigned char *out = NULL, *in;
 	size_t insize = com_filesize;
 
@@ -268,8 +269,23 @@ byte *Image_LoadPNG(FILE *f, int *width, int *height, qboolean *malloced)
 	}
 	if (com_filesize == fread(in, 1, com_filesize, f))
 	{
-		*malloced = true;
-		lodepng_decode32(&out, &w, &h, in, insize);
+		err = lodepng_decode32(&out, &w, &h, in, insize);
+		if (err || !out)
+		{
+			free(out);
+			out = NULL;
+		}
+		else
+		{
+			/* lodepng hands the size back through its own w/h.  This
+			 * function used to ignore them, so every PNG arrived at
+			 * TexMgr_LoadImage() as a 0x0 picture: the menu logo and
+			 * the menu background were loaded, uploaded as a single
+			 * texel and then drawn with no area at all. */
+			*width = (int)w;
+			*height = (int)h;
+			*malloced = true;
+		}
 	}
 	free(in);
 	fclose(f);

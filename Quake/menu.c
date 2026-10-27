@@ -695,11 +695,23 @@ void M_DrawPic (int x, int y, qpic_t *pic)
 
 void M_DrawSubpic (int x, int y, qpic_t* pic, int left, int top, int width, int height) // woods #modsmenu (iw)
 {
-	float s1 = left / (float)pic->width;
-	float t1 = top / (float)pic->height;
-	float s2 = width / (float)pic->width;
-	float t2 = height / (float)pic->height;
-	Draw_SubPic (x, y, width, height, pic, s1, t1, s2, t2);
+	float s1;
+
+	/* A picture that failed to load has no size, and dividing by it puts
+	 * infinities into the texture coordinates.  A missing menu background
+	 * should cost a background, not the frame. */
+	if (!pic || pic->width <= 0 || pic->height <= 0 || width <= 0 || height <= 0)
+		return;
+
+	s1 = left / (float)pic->width;
+
+	{
+		float t1 = top / (float)pic->height;
+		float s2 = width / (float)pic->width;
+		float t2 = height / (float)pic->height;
+
+		Draw_SubPic (x, y, width, height, pic, s1, t1, s2, t2);
+	}
 }
 
 void M_DrawTransPicTranslate (int x, int y, qpic_t *pic, plcolour_t top, plcolour_t bottom) //johnfitz -- more parameters
@@ -1725,6 +1737,10 @@ void M_Menu_Main_f (void)
 void M_DrawLogo (void)
 {
 	qpic_t* p;
+	GLint saved_scissor[4];
+	GLboolean scissor_was_on = glIsEnabled(GL_SCISSOR_TEST);
+
+	glGetIntegerv(GL_SCISSOR_BOX, saved_scissor);
 
 	glDisable(GL_SCISSOR_TEST); // Отключаем clipping, если он включён
 	GL_SetCanvas(CANVAS_DEFAULT); // Переключаемся на полный экран (0,0 = верхний левый угол)
@@ -1738,7 +1754,18 @@ void M_DrawLogo (void)
 	M_DrawPic(logo_x, logo_y, p);
 
 	GL_SetCanvas(CANVAS_MENU); // Возвращаемся к меню-канвасу
-	glEnable(GL_SCISSOR_TEST); // Возвращаем clipping, если нужно
+
+	/* Put the scissor back the way it was found.  Enabling it unconditionally
+	 * (which this did) re-used whatever box the last glScissor() had left --
+	 * the sbar's scrolling-text strip, for one -- and everything drawn after
+	 * the logo (the menu background, the menu text, the cursor) was clipped
+	 * away.  That is exactly what "the screen shows only the console
+	 * background" looks like. */
+	glScissor(saved_scissor[0], saved_scissor[1], saved_scissor[2], saved_scissor[3]);
+	if (scissor_was_on)
+		glEnable(GL_SCISSOR_TEST);
+	else
+		glDisable(GL_SCISSOR_TEST);
 }
 
 void M_Main_Draw (void) // woods #modsmenu #demosmenu (iw)

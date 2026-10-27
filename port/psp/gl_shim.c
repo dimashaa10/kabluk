@@ -1028,6 +1028,24 @@ void glColorMask (GLboolean red, GLboolean green, GLboolean blue, GLboolean alph
 
 /* ---- capability queries ---- */
 
+/* The engine does save/restore GL state around a sub-draw (menu.c's
+ * M_DrawLogo does glIsEnabled(GL_SCISSOR_TEST) ... glGetIntegerv(GL_SCISSOR_BOX)
+ * ... glEnable again), so both of these have to answer the truth.  The
+ * scissor box is kept in GU coordinates -- top-left origin -- and has to come
+ * back in GL's bottom-left ones. */
+GLboolean glIsEnabled (GLenum cap)
+{
+	switch (cap)
+	{
+	case GL_TEXTURE_2D:   return shim_texture_2d ? GL_TRUE : GL_FALSE;
+	case GL_BLEND:        return shim_blend      ? GL_TRUE : GL_FALSE;
+	case GL_ALPHA_TEST:   return shim_alpha_test ? GL_TRUE : GL_FALSE;
+	case GL_DEPTH_TEST:   return shim_depth_test ? GL_TRUE : GL_FALSE;
+	case GL_SCISSOR_TEST: return shim_scissor_on ? GL_TRUE : GL_FALSE;
+	default:              return GL_FALSE;
+	}
+}
+
 void glGetIntegerv (GLenum pname, GLint *params)
 {
 	if (!params)
@@ -1040,7 +1058,8 @@ void glGetIntegerv (GLenum pname, GLint *params)
 	case GL_VIEWPORT:               params[0] = shim_vp_x; params[1] = shim_vp_y;
 	                                params[2] = shim_vp_w; params[3] = shim_vp_h;
 	                                break;
-	case GL_SCISSOR_BOX:            params[0] = shim_scr_x; params[1] = shim_scr_y;
+	case GL_SCISSOR_BOX:            params[0] = shim_scr_x;
+	                                params[1] = PSP_SCREEN_HEIGHT - (shim_scr_y + shim_scr_h);
 	                                params[2] = shim_scr_w; params[3] = shim_scr_h;
 	                                break;
 	default:                        *params = 0; break;
@@ -1089,9 +1108,13 @@ void psp_gl_shim_end_frame (void)
 	shim_frames++;
 
 	if (shim_frames <= 3 || (shim_frames % 120) == 0)
-		psp_tracef("gl: frame %u, %u draws, %u vertices, %d KB of textures",
+		psp_tracef("gl: frame %u, %u draws, %u vertices, %d KB of textures, "
+		           "scissor %s %d,%d %dx%d, viewport %d,%d %dx%d",
 		           shim_frames, shim_frame_draws, shim_frame_verts,
-		           (int)(shim_texture_bytes / 1024));
+		           (int)(shim_texture_bytes / 1024),
+		           shim_scissor_on ? "on" : "off",
+		           shim_scr_x, shim_scr_y, shim_scr_w, shim_scr_h,
+		           shim_vp_x, shim_vp_y, shim_vp_w, shim_vp_h);
 }
 
 void psp_gl_shim_set_frame_active (int active)
