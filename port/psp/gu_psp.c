@@ -205,4 +205,6 @@ void psp_gu_frame_end (void)
 	else if (gu_frames == 60)
 		psp_tracef("gu: 60 frames presented [%d KB of textures]",
 		           (int)(psp_gl_shim_texture_bytes() / 1024));
+
+	psp_gl_shim_end_frame();
 }

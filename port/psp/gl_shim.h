@@ -24,6 +24,12 @@ void psp_gl_shim_begin_frame (void);
  * sceGuStart() and back to 0 right after sceGuFinish(). */
 void psp_gl_shim_set_frame_active (int active);
 
+/* Called from psp_gu_frame_end(), after the frame has been presented: prints
+ * what the 2D path actually drew, for the first frames and then once a
+ * second.  An empty frame and a frame full of untextured rectangles look the
+ * same in kabluk.log without this line. */
+void psp_gl_shim_end_frame (void);
+
 /* Main-memory bytes currently held by texture uploads.  The PSP has 64 MB
  * total and the engine's zone takes 33 of them, so this is worth logging. */
 size_t psp_gl_shim_texture_bytes (void);

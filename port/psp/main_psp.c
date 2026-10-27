@@ -40,9 +40,17 @@ static const int psp_zone_sizes_mb[] = { 40, 36, 32, 28, 24, 20, 16, 12, 8 };
  * whole heap to the zone leaves 768 KB, and then "not enough memory" arrives
  * from somewhere unrelated and confusing.
  *
+ * 3 MB was not enough: the 2D GL shim keeps one copy of every uploaded picture
+ * for the GPU to sample (sceGu samples textures out of main memory, because
+ * EDRAM holds the frame buffers), and the menu alone loads a dozen of them
+ * before the first frame is drawn.  The log showed the reserve running dry
+ * ("tex: no memory for a 256x256 picture") and every later picture was drawn as
+ * a white rectangle.  10 MB leaves the zone at 30 MB -- still nearly four times
+ * the original Quake zone -- and gives the pictures room to live.
+ *
  * The block is therefore sized as "the biggest one that fits MINUS this", which
  * keeps a real reserve on top of the zone. */
-#define PSP_MALLOC_RESERVE (3 * 1024 * 1024)
+#define PSP_MALLOC_RESERVE (10 * 1024 * 1024)
 
 static quakeparms_t	parms;
 
@@ -183,10 +191,13 @@ int main (int argc, char *argv[])
 	psp_trace("Host_Init returned");
 	psp_con_printf("entering main loop, state %d\n", (int)cls.state);
 
-	/* From here on the engine draws pictures hundreds of times a second, and
-	 * every changed breadcrumb would be an open/write/close on the memory
-	 * stick.  The boot trail has done its job. */
-	psp_con_boot_done();
+	/* The breadcrumbs are NOT switched off here any more.  The first frames
+	 * of the main loop are the ones that crash -- the screen update, the HUD
+	 * and the menu all run for the first time there, and once the card
+	 * writes stop, a crash in frame 1 leaves a log that ends in the middle
+	 * of Host_Init.  Five frames are enough to get past the startup, and
+	 * the marks are deduplicated anyway, so this costs one burst of writes
+	 * and then falls silent.  See the frame loop below. */
 
 	oldtime = Sys_DoubleTime();
 
@@ -214,6 +225,11 @@ int main (int argc, char *argv[])
 				               frame, (int)cls.state);
 				nextbeat = newtime + 2.0;
 			}
+
+			/* Five frames drawn: the startup screens are behind us and the
+			 * card can stop being written to on every change. */
+			if (frame == 5)
+				psp_con_boot_done();
 
 			if (time < sys_ticrate.value)
 				sceKernelDelayThread(1000);	/* 1 ms: let the system breathe */

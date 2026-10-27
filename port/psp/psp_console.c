@@ -85,28 +85,47 @@ static void con_putc (int c);
  *	mark: COM_InitFilesystemPlaying registered version.
  *
  * A single write is atomic enough for the card and keeps every entry readable. */
-static void con_log_line (const char *text)
+/* One attempt at one line.  Returns 0 if the card did not take it. */
+static int con_log_try (const char *buf)
 {
 	SceUID fd;
-	char buf[192];
-
-	if (!con_log_path || !text)
-		return;
-
-	snprintf(buf, sizeof(buf), "%s\n", text);
 
 	fd = sceIoOpen(con_log_path,
 	               PSP_O_WRONLY | PSP_O_CREAT | PSP_O_APPEND, 0777);
 	if (fd < 0)
 	{
 		con_log_err = (int)fd;
-		return;
+		return 0;
 	}
 
 	if (sceIoWrite(fd, buf, (unsigned int)strlen(buf)) < 0)
+	{
 		con_log_err = -1;
+		sceIoClose(fd);
+		return 0;
+	}
 
 	sceIoClose(fd);
+	return 1;
+}
+
+static void con_log_line (const char *text)
+{
+	char buf[192];
+	int tries;
+
+	if (!con_log_path || !text)
+		return;
+
+	snprintf(buf, sizeof(buf), "%s\n", text);
+
+	/* Twice, because the trail is only worth anything if it has no holes in
+	 * it: a single failed open (the card busy with another write, the FAT
+	 * cache flushing) used to drop one line out of the middle and leave a
+	 * log that looked like a crash in the wrong place. */
+	for (tries = 0; tries < 2; tries++)
+		if (con_log_try(buf))
+			return;
 }
 
 static void con_logfmt (const char *s)

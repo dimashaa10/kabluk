@@ -74,11 +74,11 @@ typedef struct
 typedef struct
 {
 	int          used;
-	unsigned int psm;
+	unsigned int psm;             /* GU_PSM_4444 or GU_PSM_5650          */
 	int          width, height;   /* what the engine asked for          */
 	int          tbw;             /* row stride in pixels (multiple of 4) */
 	void        *pixels;          /* main-memory copy the GU samples     */
-	size_t       bytes;
+	size_t       bytes;           /* 2 bytes per pixel: tbw * height * 2 */
 	int          filter;          /* GU_NEAREST or GU_LINEAR             */
 	int          dirty;           /* needs a re-upload before drawing    */
 } shim_texture_t;
@@ -130,6 +130,13 @@ static unsigned int   shim_clear_color = 0xFF000000u;
 /* Non-zero while gu_psp.c has a draw list open: see the gate below. */
 static int            shim_frame_active;
 
+/* What the 2D path did this frame.  Printed for the first few frames and then
+ * every second or so: "no draws at all" and "a thousand draws" are different
+ * bugs, and the log cannot tell them apart otherwise. */
+static unsigned int   shim_frames;
+static unsigned int   shim_frame_draws;
+static unsigned int   shim_frame_verts;
+
 /* ------------------------------------------------------------------ */
 /* the gate                                                           */
 /* ------------------------------------------------------------------ */
@@ -165,7 +172,11 @@ static void shim_guTexImage (int mip, int w, int h, int tbw, const void *p)
 static void shim_guTexMode (int psm, int levels, int a2, int swz)
                                                   { if (shim_frame_active) sceGuTexMode(psm, levels, a2, swz); }
 static void shim_guDrawArray (int prim, unsigned int fmt, int count, const void *idx, const void *verts)
-                                                  { if (shim_frame_active) sceGuDrawArray(prim, fmt, count, idx, verts); }
+{
+	shim_frame_verts += (unsigned int)count;
+	if (shim_frame_active)
+		sceGuDrawArray(prim, fmt, count, idx, verts);
+}
 
 /* ------------------------------------------------------------------ */
 /* small helpers                                                      */
@@ -219,40 +230,119 @@ static shim_texture_t *shim_texture_for (unsigned int id, int create)
 	return shim_textures[id].used ? &shim_textures[id] : NULL;
 }
 
-/* Store an RGBA8 image (or a sub-rectangle of one) in main memory, in the
- * layout the GU expects: rows of tbw pixels, tbw a multiple of 4. */
-static int shim_texture_store (shim_texture_t *t, int x, int y, int w, int h,
-                               const unsigned char *rgba, int row_bytes)
+/* ---- 16-bit storage ----
+ *
+ * EDRAM belongs to the two frame buffers and the depth buffer, so the GE
+ * samples textures straight out of main memory -- and main memory here is the
+ * engine's few-megabyte malloc reserve, shared with picture decoding, map
+ * loading and everything else.  At 32 bits a 512x512 picture costs a megabyte;
+ * at 16 it costs half that, and the menu alone loads a dozen pictures before
+ * the first frame is finished.  The 32-bit version ran the reserve dry while
+ * Host_Init was still running (the log line "tex: no memory for a 256x256
+ * picture"), and every picture after that was drawn as a white rectangle.
+ *
+ * GU_PSM_4444 keeps alpha (nibbles A,B,G,R); GU_PSM_5650 keeps 5-6-5 colour
+ * with no alpha, which is exactly what an opaque picture needs -- one that
+ * arrives as GL_RGB or GL_LUMINANCE has no alpha channel to lose.
+ *
+ * The pixels are converted straight into the memory the GE samples: no
+ * intermediate RGBA8 buffer, because that would cost another megabyte. */
+
+static unsigned short shim_px4444 (int r, int g, int b, int a)
 {
-	unsigned char *dst;
+	return (unsigned short)(((a >> 4) << 12) | ((b >> 4) << 8) |
+	                        ((g >> 4) << 4) | (r >> 4));
+}
+
+static unsigned short shim_px5650 (int r, int g, int b)
+{
+	return (unsigned short)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+}
+
+static void shim_put_pixels (shim_texture_t *t, int x, int y, int w, int h,
+                             const unsigned char *src, int row_bytes, GLenum format)
+{
+	int row, col, opaque = (t->psm == GU_PSM_5650);
+	unsigned char *base = (unsigned char *)t->pixels +
+	                      (size_t)y * (size_t)t->tbw * 2 + (size_t)x * 2;
+
+	for (row = 0; row < h; row++)
+	{
+		const unsigned char *s = src + (size_t)row * (size_t)row_bytes;
+		unsigned short *d = (unsigned short *)(base + (size_t)row * (size_t)t->tbw * 2);
+
+		for (col = 0; col < w; col++)
+		{
+			int r, g, b, a;
+
+			switch (format)
+			{
+			case GL_RGBA:  r = s[0]; g = s[1]; b = s[2]; a = s[3]; s += 4; break;
+			case GL_BGRA:  b = s[0]; g = s[1]; r = s[2]; a = s[3]; s += 4; break;
+			case GL_RGB:   r = s[0]; g = s[1]; b = s[2]; a = 255;  s += 3; break;
+			case GL_LUMINANCE_ALPHA:
+			               r = g = b = s[0]; a = s[1]; s += 2; break;
+			case GL_LUMINANCE:
+			               r = g = b = s[0]; a = 255;  s += 1; break;
+			case GL_ALPHA: r = g = b = 255;  a = s[0]; s += 1; break;
+			default:       r = s[0]; g = s[1]; b = s[2]; a = s[3]; s += 4; break;
+			}
+
+			d[col] = opaque ? shim_px5650(r, g, b) : shim_px4444(r, g, b, a);
+		}
+	}
+}
+
+/* Make sure the texture has storage for width x height at the wanted depth,
+ * and keep the memory if it already fits. */
+static int shim_texture_alloc (shim_texture_t *t, int width, int height, int opaque)
+{
 	size_t need;
-	int row;
 
-	if (!t || w <= 0 || h <= 0)
-		return 0;
+	if (t->pixels && (t->width != width || t->height != height ||
+	                  (t->psm == GU_PSM_5650) != (opaque != 0)))
+	{
+		free(t->pixels);
+		shim_texture_bytes -= t->bytes;
+		t->pixels = NULL;
+		t->bytes = 0;
+	}
 
-	need = (size_t)t->tbw * (size_t)t->height * 4;
+	t->width = width;
+	t->height = height;
+	t->tbw = (width + 3) & ~3;		/* row stride the GU can live with */
+	t->psm = opaque ? GU_PSM_5650 : GU_PSM_4444;
+
 	if (!t->pixels)
 	{
+		need = (size_t)t->tbw * (size_t)height * 2;
+
 		t->pixels = malloc(need);
 		if (!t->pixels)
 			return 0;
-		shim_texture_bytes += need;
+
+		/* Zeroed, because a linear filter reads one texel past the end
+		 * of the picture at the right and bottom edge. */
+		memset(t->pixels, 0, need);
 		t->bytes = need;
-	}
-
-	if (x < 0 || y < 0 || x + w > t->tbw || y + h > t->height)
-		return 0;
-
-	dst = (unsigned char *)t->pixels + (size_t)y * t->tbw * 4 + (size_t)x * 4;
-	for (row = 0; row < h; row++)
-	{
-		memcpy(dst, rgba + (size_t)row * row_bytes, (size_t)w * 4);
-		dst += t->tbw * 4;
+		shim_texture_bytes += need;
 	}
 
 	t->dirty = 1;
 	return 1;
+}
+
+static void shim_texture_memory_short (int width, int height)
+{
+	static int warned;
+
+	if (warned)
+		return;
+
+	warned = 1;
+	psp_tracef("tex: no memory for a %dx%d picture (%d KB free, %d KB of textures)",
+	           width, height, sceKernelTotalFreeMemSize() / 1024,
+	           (int)(shim_texture_bytes / 1024));
 }
 
 static void shim_upload_bound_texture (void)
@@ -362,6 +452,8 @@ static void shim_flush_quads (void)
 {
 	int i, n = 0;
 
+	shim_frame_draws++;
+
 	for (i = 0; i + 3 < shim_vertex_count; i += 4)
 	{
 		if (n + 6 > SHIM_MAX_TRI_VERTICES)
@@ -424,6 +516,7 @@ void glEnd (void)
 
 	shim_guDrawArray(shim_gu_primitive(shim_primitive), SHIM_VERTEX_FORMAT,
 	               shim_vertex_count, NULL, shim_vertices);
+	shim_frame_draws++;
 	shim_vertex_count = 0;
 }
 
@@ -816,65 +909,11 @@ void glBindTexture (GLenum target, GLuint texture)
 	shim_texture_bound = texture;
 }
 
-/* Convert one pixel row of whatever the engine handed us into RGBA8. */
-static void shim_convert_rows (unsigned char *dst, const unsigned char *src,
-                               int w, int h, int row_bytes, GLenum format)
-{
-	int y, x;
-
-	for (y = 0; y < h; y++)
-	{
-		const unsigned char *s = src + (size_t)y * row_bytes;
-		unsigned char *d = dst + (size_t)y * w * 4;
-
-		switch (format)
-		{
-		case GL_RGBA:
-			memcpy(d, s, (size_t)w * 4);
-			break;
-		case GL_BGRA:
-			for (x = 0; x < w; x++, s += 4, d += 4)
-			{
-				d[0] = s[2]; d[1] = s[1]; d[2] = s[0]; d[3] = s[3];
-			}
-			break;
-		case GL_RGB:
-			for (x = 0; x < w; x++, s += 3, d += 4)
-			{
-				d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; d[3] = 255;
-			}
-			break;
-		case GL_LUMINANCE_ALPHA:
-			for (x = 0; x < w; x++, s += 2, d += 4)
-			{
-				d[0] = d[1] = d[2] = s[0]; d[3] = s[1];
-			}
-			break;
-		case GL_LUMINANCE:
-			for (x = 0; x < w; x++, s += 1, d += 4)
-			{
-				d[0] = d[1] = d[2] = s[0]; d[3] = 255;
-			}
-			break;
-		case GL_ALPHA:
-			for (x = 0; x < w; x++, s += 1, d += 4)
-			{
-				d[0] = d[1] = d[2] = 255; d[3] = s[0];
-			}
-			break;
-		default:
-			memcpy(d, s, (size_t)w * 4);
-			break;
-		}
-	}
-}
-
 void glTexImage2D (GLenum target, GLint level, GLint internalFormat,
                    GLsizei width, GLsizei height, GLint border,
                    GLenum format, GLenum type, const GLvoid *pixels)
 {
 	shim_texture_t *t;
-	unsigned char *tmp;
 	int row_bytes;
 
 	(void)internalFormat;
@@ -886,61 +925,31 @@ void glTexImage2D (GLenum target, GLint level, GLint internalFormat,
 	if (width <= 0 || height <= 0 || !pixels)
 		return;
 
+	if (type != GL_UNSIGNED_BYTE)
+		return;	/* nothing in the 2D path asks for another type */
+
 	t = shim_texture_for(shim_texture_bound, 1);
 	if (!t)
 		return;
 
-	switch (type)
-	{
-	case GL_UNSIGNED_BYTE:
-		break;
-	default:
-		return;	/* nothing in the 2D path asks for another type */
-	}
-
 	switch (format)
 	{
-	case GL_RGBA: case GL_BGRA:    row_bytes = width * 4; break;
-	case GL_RGB:                   row_bytes = width * 3; break;
-	case GL_LUMINANCE_ALPHA:       row_bytes = width * 2; break;
-	case GL_LUMINANCE: case GL_ALPHA: row_bytes = width; break;
-	default:                       row_bytes = width * 4; break;
+	case GL_RGBA: case GL_BGRA:       row_bytes = width * 4; break;
+	case GL_RGB:                      row_bytes = width * 3; break;
+	case GL_LUMINANCE_ALPHA:          row_bytes = width * 2; break;
+	case GL_LUMINANCE: case GL_ALPHA: row_bytes = width;     break;
+	default:                          row_bytes = width * 4; break;
 	}
 
-	if (t->pixels && (t->width != width || t->height != height))
+	if (!shim_texture_alloc(t, width, height,
+	                        format == GL_RGB || format == GL_LUMINANCE))
 	{
-		free(t->pixels);
-		shim_texture_bytes -= t->bytes;
-		t->pixels = NULL;
-	}
-
-	t->width = width;
-	t->height = height;
-	t->tbw = (width + 3) & ~3;	/* row stride the GU can live with */
-	t->psm = GU_PSM_8888;
-	t->bytes = (size_t)t->tbw * (size_t)height * 4;
-
-	tmp = malloc((size_t)width * (size_t)height * 4);
-	if (!tmp)
-		return;
-
-	shim_convert_rows(tmp, (const unsigned char *)pixels, width, height, row_bytes, format);
-
-	if (!shim_texture_store(t, 0, 0, width, height, tmp, width * 4))
-	{
-		static int warned_about_memory;
-
-		if (!warned_about_memory)
-		{
-			warned_about_memory = 1;
-			psp_tracef("tex: no memory for a %dx%d picture (%d KB free)",
-			           width, height, sceKernelTotalFreeMemSize() / 1024);
-		}
-		free(tmp);
+		shim_texture_memory_short(width, height);
 		return;
 	}
 
-	free(tmp);
+	shim_put_pixels(t, 0, 0, width, height, (const unsigned char *)pixels,
+	                row_bytes, format);
 }
 
 void glTexSubImage2D (GLenum target, GLint level, GLint xoffset, GLint yoffset,
@@ -948,28 +957,29 @@ void glTexSubImage2D (GLenum target, GLint level, GLint xoffset, GLint yoffset,
                       const GLvoid *pixels)
 {
 	shim_texture_t *t = shim_texture_for(shim_texture_bound, 0);
-	unsigned char *tmp;
 	int row_bytes;
 
 	(void)target; (void)level; (void)type;
 
-	if (!t || width <= 0 || height <= 0 || !pixels)
+	if (!t || !t->pixels || width <= 0 || height <= 0 || !pixels)
+		return;
+
+	if (xoffset < 0 || yoffset < 0 ||
+	    xoffset + width > t->width || yoffset + height > t->height)
 		return;
 
 	switch (format)
 	{
-	case GL_RGBA: case GL_BGRA:    row_bytes = width * 4; break;
-	case GL_RGB:                   row_bytes = width * 3; break;
-	default:                       row_bytes = width * 4; break;
+	case GL_RGBA: case GL_BGRA:       row_bytes = width * 4; break;
+	case GL_RGB:                      row_bytes = width * 3; break;
+	case GL_LUMINANCE_ALPHA:          row_bytes = width * 2; break;
+	case GL_LUMINANCE: case GL_ALPHA: row_bytes = width;     break;
+	default:                          row_bytes = width * 4; break;
 	}
 
-	tmp = malloc((size_t)width * (size_t)height * 4);
-	if (!tmp)
-		return;
-
-	shim_convert_rows(tmp, (const unsigned char *)pixels, width, height, row_bytes, format);
-	shim_texture_store(t, xoffset, yoffset, width, height, tmp, width * 4);
-	free(tmp);
+	shim_put_pixels(t, xoffset, yoffset, width, height,
+	                (const unsigned char *)pixels, row_bytes, format);
+	t->dirty = 1;
 }
 
 void glTexParameterf (GLenum target, GLenum pname, GLfloat param)
@@ -1074,6 +1084,16 @@ size_t psp_gl_shim_texture_bytes (void)
  * With this in place the shim never has to care whether a GL call lands
  * inside a frame or not -- the state it set is always in force by the time
  * the first picture of the frame is drawn. */
+void psp_gl_shim_end_frame (void)
+{
+	shim_frames++;
+
+	if (shim_frames <= 3 || (shim_frames % 120) == 0)
+		psp_tracef("gl: frame %u, %u draws, %u vertices, %d KB of textures",
+		           shim_frames, shim_frame_draws, shim_frame_verts,
+		           (int)(shim_texture_bytes / 1024));
+}
+
 void psp_gl_shim_set_frame_active (int active)
 {
 	shim_frame_active = active;
@@ -1081,6 +1101,9 @@ void psp_gl_shim_set_frame_active (int active)
 
 void psp_gl_shim_begin_frame (void)
 {
+	shim_frame_draws = 0;
+	shim_frame_verts = 0;
+
 	if (shim_texture_2d)
 		shim_guEnable(GU_TEXTURE_2D);
 	else
