@@ -773,6 +773,15 @@ void TexMgr_NewGame(void)
 {
 	TexMgr_ColormapTexture_Free(NULL);
 
+	/* Everything below is about to stop existing, and the picture cache in
+	 * gl_draw.c is holding raw pointers into this list.  Tell it first:
+	 * otherwise it hands those pointers back to TexMgr_FreeTexture() later,
+	 * which either answers "not found" or -- when the struct has already
+	 * been reused by a different texture -- deletes a live one.  The log of
+	 * that is fifty "TexMgr_FreeTexture: not found" lines in a row followed
+	 * by picture memory collapsing and every later PNG failing to decode. */
+	Draw_ForgetTextures();
+
 	TexMgr_FreeTextures(0, TEXPREF_PERSIST); //deletes all textures where TEXPREF_PERSIST is unset
 	TexMgr_LoadPalette();
 }

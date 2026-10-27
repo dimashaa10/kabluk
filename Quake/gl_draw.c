@@ -288,6 +288,37 @@ int Draw_EvictCachePics (int min_idle_frames)
 	return released;
 }
 
+/* Drop every cached picture's texture without freeing it, because the texture
+ * manager is about to drop all of them itself.
+ *
+ * This is what went wrong in the field: Draw_ReloadTextures() calls
+ * TexMgr_NewGame() (which frees every non-persist texture) and then
+ * Draw_NewGame() (which, ours, freed the cached pictures' textures again).
+ * Every pointer the second pass handed over had already been given back, so
+ * TexMgr_FreeTexture() answered "not found" -- fifty times in one reload in the
+ * log -- and, whenever the freed gltexture_t had already been handed out to a
+ * new texture, it found that one instead and deleted a LIVE texture.  The
+ * result was the rest of that run: picture memory collapsing from 4502 KB to
+ * 952 KB, full-screen quads bound to texture 0, and image loads failing with
+ * "bad png sig" on files whose first eight bytes were the correct PNG
+ * signature, because the broken bookkeeping had already damaged the heap the
+ * file layer reads through.
+ *
+ * The names stay: the next Draw_CachePic() finds the entry marked evicted and
+ * reloads the picture into the same qpic_t, exactly like a normal eviction. */
+void Draw_ForgetTextures (void)
+{
+	cachepic_t *pic;
+	int i;
+
+	for (pic = menu_cachepics, i = 0; i < menu_numcachepics; pic++, i++)
+	{
+		memset(pic->pic.data, 0, sizeof(glpic_t));
+		pic->pic.width = pic->pic.height = 0;
+		pic->evicted = true;
+		pic->requests = 0;
+	}
+}
 
 byte		menuplyr_pixels[4096];
 

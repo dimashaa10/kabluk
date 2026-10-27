@@ -80,6 +80,14 @@ void Draw_NewGame (void);
  * were released.  Called by the PSP port when the picture arena is short on
  * room and once in a while on a timer; a no-op before Draw_Init(). */
 int Draw_EvictCachePics (int min_idle_frames);
+/* The texture manager has just released every texture there is (TexMgr_NewGame
+ * does exactly that).  The cached pictures still hold pointers into that
+ * texture list, so they are told to forget them: without this the next
+ * Draw_NewGame()/Draw_EvictCachePics() hands TexMgr_FreeTexture() a pointer to a
+ * gltexture_t that no longer exists -- or worse, one that has been reused by a
+ * different texture, which is a live texture deleted by mistake.  Names are
+ * kept, so the next Draw_CachePic() reloads into the same slot. */
+void Draw_ForgetTextures (void);
 void Draw_ReloadLocalizedPics (void);
 void Draw_GetMenuTransform(vrect_t* bounds, vrect_t* viewport); // woods #mousemenu (iw)
 qboolean Draw_ReloadTextures(qboolean force);
