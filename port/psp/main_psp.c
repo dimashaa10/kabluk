@@ -183,6 +183,11 @@ int main (int argc, char *argv[])
 	psp_trace("Host_Init returned");
 	psp_con_printf("entering main loop, state %d\n", (int)cls.state);
 
+	/* From here on the engine draws pictures hundreds of times a second, and
+	 * every changed breadcrumb would be an open/write/close on the memory
+	 * stick.  The boot trail has done its job. */
+	psp_con_boot_done();
+
 	oldtime = Sys_DoubleTime();
 
 	{

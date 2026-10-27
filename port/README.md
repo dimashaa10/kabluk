@@ -190,7 +190,12 @@ port/
       выравнивания, `double` vs `float`)
 * [x] **M3** — платформенный слой: `main_psp.c`, `sys_psp.c` (файлы через
       `sceIo`, время через `sceKernelGetSystemTimeWide`), `in_psp.c` (`sceCtrl`),
-      `snd_psp.c`, `net_psp.c`, `cd_psp.c`, `pl_psp.c`, `vid_psp.c` + `gl_stub.c`
+      `snd_psp.c`, `net_psp.c`, `cd_psp.c`, `pl_psp.c`, `vid_psp.c` + `gl_stub.c`.
+      **Игра запускается на железе:** `Host_Init` проходит целиком (зона 33 МБ),
+      главный цикл крутится (`run: frame N, state 1`), меню грузит свои
+      картинки, `soldier.mdl` рисуется в меню с циклической анимацией.
+      Экрана пока нет — `vid_psp.c` не подключает `sceGu`, поэтому видна только
+      отладочная консоль; это M4.
 * [ ] **M4** — видеослой: `vid_psp.c` на `sceGu` + шим GL→sceGu
       (`port/psp/gl_shim/`), начиная с 2D-части (консоль, HUD, меню)
 * [ ] **M5** — 3D: мир, алиасные модели, спрайты, текстуры

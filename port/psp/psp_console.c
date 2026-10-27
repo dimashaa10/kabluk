@@ -502,6 +502,29 @@ void psp_tracef (const char *fmt, ...)
  * this costs a string copy, and the watchdog prints the last one when the engine
  * stops making progress.
  */
+/* While the engine is starting up, every changed mark goes to the card: that
+ * is how a crash inside an initialiser gets a name.  Once the frame loop is
+ * running there is no "stuck initialiser" left to find, and the drawing code
+ * marks a picture per draw call -- several hundred a second, each one an
+ * open/write/close on the memory stick.  That is the difference between a
+ * game and a slideshow, so the card writes are switched off at that point
+ * (psp_con_boot_done()).  The marks themselves keep working: the watchdog
+ * still names the last step it saw.*/
+static int con_marks_live = 1;
+
+void psp_con_boot_done (void)
+{
+	char line[96];
+
+	if (!con_marks_live)
+		return;
+
+	snprintf(line, sizeof(line),
+	         "mark: boot done -- breadcrumbs to the card are off");
+	con_log_line(line);
+	con_marks_live = 0;
+}
+
 void psp_mark (const char *what)
 {
 	char line[96];
@@ -530,8 +553,11 @@ void psp_mark (const char *what)
 	 * fast death leaves nothing behind.  One small write per changed step
 	 * costs a few milliseconds per picture and turns the log into an exact
 	 * trail. */
-	snprintf(line, sizeof(line), "mark: %s", step);
-	con_log_line(line);
+	if (con_marks_live)
+	{
+		snprintf(line, sizeof(line), "mark: %s", step);
+		con_log_line(line);
+	}
 }
 
 void psp_con_logsync (void)

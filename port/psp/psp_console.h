@@ -46,6 +46,11 @@ void psp_trace (const char *step);
  * loops that run many times (every picture, every texture): the watchdog prints
  * the last mark when nothing has moved for eight seconds. */
 void psp_mark (const char *what);
+
+/* Called once the frame loop starts: stops writing marks to the card.  The
+ * boot trail is what matters, and the drawing code emits a mark per picture.
+ * The watchdog still reports the last mark on screen. */
+void psp_con_boot_done (void);
 void psp_tracef (const char *fmt, ...);
 
 /* Force the log out of the memory stick's cache.  Called after every line
