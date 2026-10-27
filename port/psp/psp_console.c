@@ -474,6 +474,10 @@ void psp_mark (const char *what)
 {
 	strncpy(con_last_step, what ? what : "?", sizeof(con_last_step) - 1);
 	con_last_step[sizeof(con_last_step) - 1] = '\0';
+
+	/* Counts as progress: loading sixty pictures in a row is slow, not stuck,
+	 * and the watchdog must not shout at it. */
+	con_progress++;
 }
 
 void psp_con_logsync (void)
@@ -500,17 +504,33 @@ static int con_watchdog_thread (SceSize args, void *argp)
 {
 	unsigned seen;
 	int stalled = 0;
+	char logged[64];
 
 	(void) args;
 	(void) argp;
 
 	seen = con_progress;
+	logged[0] = '\0';
 
 	for (;;)
 	{
 		char msg[160];
 
 		sceKernelDelayThread(1000 * 1000);
+
+		/* A crash takes the screen with it, so the last thing the engine was
+		 * doing has to reach the card *while it is still alive*.  One line per
+		 * change of step, once a second, is cheap and turns the log into a
+		 * timeline: its last entry is where the engine died. */
+		if (strcmp(logged, con_last_step) != 0)
+		{
+			strncpy(logged, con_last_step, sizeof(logged) - 1);
+			logged[sizeof(logged) - 1] = '\0';
+
+			con_logfmt("mark: ");
+			con_logfmt(logged);
+			con_logfmt("\n");
+		}
 
 		if (con_progress != seen)
 		{

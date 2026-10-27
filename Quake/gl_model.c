@@ -44,7 +44,19 @@ static const char *Mod_ParseWorldspawnKey(qmodel_t *mod, const char *wantkey, ch
 static cvar_t	external_ents = {"external_ents", "1", CVAR_ARCHIVE};
 static cvar_t	external_ents_dir = {"external_ents_dir", "", CVAR_ARCHIVE};
 static cvar_t   external_lits_dir = {"external_lits_dir", "", CVAR_ARCHIVE}; // woods #litdir
+#if defined(PLATFORM_PSP) || defined(__psp__)
+/* Off by default on the PSP.
+ *
+ * With it on, every picture looks for a hi-res replacement first: seven
+ * extensions per lookup, times every search path, each one a stat() on the
+ * memory stick.  Sbar_Init alone loads ~60 pictures, and the startup spent ten
+ * seconds and more just asking the card whether gfx/inv2_sshotgun.png exists.
+ * There are no hi-res packs on a PSP card to find; the cvar stays, so it can be
+ * turned back on from the config. */
+cvar_t	gl_load24bit = {"gl_load24bit", "0", CVAR_ARCHIVE};
+#else
 cvar_t	gl_load24bit = {"gl_load24bit", "1", CVAR_ARCHIVE};
+#endif
 static cvar_t	mod_ignorelmscale = {"mod_ignorelmscale", "0"};
 static cvar_t	mod_lightscale_broken = {"mod_lightscale_broken", "1"};	//match vanilla's brokenness bug with dlights and scaled textures. decoupled_lm bypasses this obviously buggy setting because zomgletmefixstuffffs
 cvar_t	mod_lightgrid = {"mod_lightgrid", "1"};	//mostly for debugging, I dunno. just leave it set to 1.
