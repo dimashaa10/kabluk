@@ -102,8 +102,46 @@ static inline int Buf_GetC(stdio_buffer_t *buf)
 static byte *Image_LoadSTBI(FILE *f, int *width, int *height)
 {
 	int bytesPerPixel;
-	byte *heap = stbi_load_from_file(f, width, height, &bytesPerPixel, 4);
+	byte *heap;
+
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	/* This is the PNG decoder on the console: image.c defines
+	 * LODEPNG_NO_COMPILE_DECODER at the top, so Image_LoadPNG() hands the
+	 * file straight here and lodepng never runs.  A decode that fails
+	 * leaves *width and *height untouched, the picture arrives in the engine as
+	 * 0x0, is uploaded as a single texel and drawn with no area at all --
+	 * which is exactly what the log showed for logo1.png and
+	 * mainmenu1.png, while ademos1.png worked.  So both outcomes are named,
+	 * with the file's own first bytes: that tells a file stb cannot read
+	 * from a file that is not a PNG at all, from one whose allocation did
+	 * not fit. */
+	{
+		extern void psp_tracef (const char *fmt, ...);
+		unsigned char sig[8];
+		long mark = ftell(f);
+		size_t got = fread(sig, 1, sizeof(sig), f);
+
+		fseek(f, mark, SEEK_SET);
+
+		heap = stbi_load_from_file(f, width, height, &bytesPerPixel, 4);
+		fclose(f);
+
+		if (heap)
+			psp_tracef("img: %s ok %dx%d (%d bytes)", loadfilename,
+			           *width, *height, (int)com_filesize);
+		else
+			psp_tracef("img: %s FAILED: %s (%d bytes, sig %02X %02X %02X %02X %02X %02X %02X %02X)",
+			           loadfilename, stbi_failure_reason(),
+			           (int)com_filesize, got > 0 ? sig[0] : 0, got > 1 ? sig[1] : 0,
+			           got > 2 ? sig[2] : 0, got > 3 ? sig[3] : 0,
+			           got > 4 ? sig[4] : 0, got > 5 ? sig[5] : 0,
+			           got > 6 ? sig[6] : 0, got > 7 ? sig[7] : 0);
+	}
+#else
+	heap = stbi_load_from_file(f, width, height, &bytesPerPixel, 4);
 	fclose(f);
+#endif
+
 	if (heap)
 	{	//this is silly, but we do it for consistency.
 		//frankly, most people should be using tga-inside-pk3.

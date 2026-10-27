@@ -495,10 +495,18 @@ static void shim_trace_draw (int count, const char *what)
 	if (shim_frames < shim_trace_frames && shim_trace_early < 60)
 	{
 		shim_trace_early++;
-		psp_tracef("draw: f %d #%d %s tex %d verts %d box %d,%d %d,%d",
+		/* m15 and m3 come from the projection matrix and are the cheapest
+		 * way to tell a 2D canvas from a 3D one: an orthogonal projection
+		 * has m15 = 1 and m3 = 0, a perspective frustum has m15 = 0 and
+		 * a non-zero m3.  A picture with an 8x8 box under an ortho matrix
+		 * and the same picture spread over the panel under a frustum are
+		 * completely different bugs. */
+		psp_tracef("draw: f %d #%d %s tex %d verts %d box %d,%d %d,%d "
+		           "proj m15 %.3f m3 %.3f",
 		           (int)shim_frames, (int)shim_frame_draws, what,
 		           (int)shim_texture_bound, count,
-		           (int)minx, (int)miny, (int)maxx, (int)maxy);
+		           (int)minx, (int)miny, (int)maxx, (int)maxy,
+		           (double)shim_projection.m[15], (double)shim_projection.m[3]);
 		return;
 	}
 

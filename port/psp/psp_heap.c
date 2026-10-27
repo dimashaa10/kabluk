@@ -37,24 +37,33 @@
 #include <string.h>
 
 #include <malloc.h>
+#include <sys/reent.h>	/* struct _reent and _REENT, for _mallinfo_r() */
 #include <pspkernel.h>
 
 #include "psp_console.h"
 
-/* Weak, because mallocr.o may or may not export it; a missing symbol must not
- * stop the EBOOT from linking.  (MALLOC_PROVIDED / a libc built without the
- * SVID/XPG mallinfo would be such a case.) */
+/* newlib exports the allocator's accounting under two names: mallinfo() when
+ * the library was built for a single thread, and `_mallinfo_r(_REENT)` when it
+ * was built reentrant -- which is what pspdev's newlib is.  The first build of
+ * this file only asked for mallinfo(), the symbol was not there, and the
+ * console printed "in use 0 KB, free 0 KB of 0 KB in 0 chunks" for the whole
+ * run.  Both are referenced weakly so that neither the reentrant nor the
+ * single-threaded libc can break the link. */
 extern struct mallinfo mallinfo (void) __attribute__((weak));
+extern struct mallinfo _mallinfo_r (struct _reent *) __attribute__((weak));
 
 static unsigned int heap_read (int field)
 {
 	struct mallinfo mi;
 
-	if (!mallinfo)
-		return 0;
-
 	memset(&mi, 0, sizeof(mi));
-	mi = mallinfo();
+
+	if (mallinfo)
+		mi = mallinfo();
+	else if (_mallinfo_r)
+		mi = _mallinfo_r(_REENT);
+	else
+		return 0;
 
 	switch (field)
 	{
@@ -76,6 +85,15 @@ unsigned int psp_heap_chunks (void)  { return heap_read(3); }
  * allocation fails, so it stays cheap: no formatting of its own. */
 void psp_heap_report (const char *where)
 {
+	if (!mallinfo && !_mallinfo_r)
+	{
+		/* Neither name exists: say so instead of printing four zeros that
+		 * look like an empty heap. */
+		psp_tracef("heap: %s: no mallinfo in this libc, cannot account [system free %d KB]",
+		           where ? where : "?", sceKernelTotalFreeMemSize() / 1024);
+		return;
+	}
+
 	psp_tracef("heap: %s: in use %d KB, free %d KB of %d KB in %d chunks [system free %d KB]",
 	           where ? where : "?",
 	           (int)(psp_heap_in_use() / 1024),
