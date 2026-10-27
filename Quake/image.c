@@ -59,6 +59,12 @@ typedef struct stdio_buffer_s {
 static stdio_buffer_t *Buf_Alloc(FILE *f)
 {
 	stdio_buffer_t *buf = (stdio_buffer_t *) calloc(1, sizeof(stdio_buffer_t));
+
+	/* calloc() returning NULL used to be a write through a NULL pointer, which
+	 * on the PSP is the screen going out without a word. */
+	if (!buf)
+		Sys_Error ("Buf_Alloc: out of memory reading '%s'", loadfilename);
+
 	buf->f = f;
 	return buf;
 }
@@ -1106,6 +1112,8 @@ byte *Image_LoadPCX (FILE *f, int *width, int *height)
 	byte		palette[768];
 	stdio_buffer_t  *buf;
 
+	IMG_MARK("pcx: header");
+
 	start = ftell (f); //save start of file (since we might be inside a pak file, SEEK_SET might not be the start of the pcx)
 
 	if (fread(&pcx, sizeof(pcx), 1, f) != 1) // woods
@@ -1131,9 +1139,11 @@ byte *Image_LoadPCX (FILE *f, int *width, int *height)
 	if (w <= 0 || h <= 0 || w > 8192 || h > 8192)
 		Sys_Error ("'%s' has bad dimensions %ix%i", loadfilename, w, h);
 
+	IMG_MARK("pcx: allocating");
 	data = (byte *) Hunk_Alloc((w*h+1)*4); //+1 to allow reading padding byte on last line
 
 	//load palette
+	IMG_MARK("pcx: palette");
 	fseek (f, start + com_filesize - 768, SEEK_SET);
 	if (fread(palette, 1, 768, f) != 768) // woods
 		Sys_Error("Failed to read PCX palette from '%s'", loadfilename);
@@ -1141,6 +1151,7 @@ byte *Image_LoadPCX (FILE *f, int *width, int *height)
 	//back to start of image data
 	fseek (f, start + sizeof(pcx), SEEK_SET);
 
+	IMG_MARK("pcx: rows");
 	buf = Buf_Alloc(f);
 
 	for (y=0; y<h; y++)
@@ -1185,6 +1196,7 @@ byte *Image_LoadPCX (FILE *f, int *width, int *height)
 		}
 	}
 
+	IMG_MARK("pcx: done");
 	Buf_Free(buf);
 	fclose(f);
 

@@ -999,13 +999,33 @@ static unsigned* TexMgr_ResampleTexture(unsigned* in, int inwidth, int inheight,
 
 		for (j = 0; j < outwidth; j++)
 		{
+			unsigned ix = x >> 16;
+			unsigned iy = injump / (unsigned)inwidth;
+			unsigned ix1, iy1;
+
 			modx = (x >> 8) & 0xFF;
 			imodx = 256 - modx;
 
-			nwpx = (byte*)(in + (x >> 16) + injump);
-			nepx = nwpx + 4;
-			swpx = nwpx + inwidth * 4;
-			sepx = swpx + 4;
+			/* Clamp the four neighbours inside the source image.
+			 *
+			 * The routine was written for *downscaling*, where (x>>16) never
+			 * reaches the last column.  Upscaling happens for every non
+			 * power-of-two picture, and there nwpx on the bottom row points
+			 * one full row past the end of the buffer, swpx two rows past it.
+			 * On a desktop that reads whatever is next in the heap; on the PSP
+			 * those bytes can be past the end of the block we own. */
+			if (ix > (unsigned)(inwidth - 1))
+				ix = inwidth - 1;
+			if (iy > (unsigned)(inheight - 1))
+				iy = inheight - 1;
+
+			ix1 = (ix + 1 < (unsigned)inwidth) ? ix + 1 : ix;
+			iy1 = (iy + 1 < (unsigned)inheight) ? iy + 1 : iy;
+
+			nwpx = (byte*)(in + iy * inwidth + ix);
+			nepx = (byte*)(in + iy * inwidth + ix1);
+			swpx = (byte*)(in + iy1 * inwidth + ix);
+			sepx = (byte*)(in + iy1 * inwidth + ix1);
 
 			dest = (byte*)(out + outjump + j);
 
@@ -1261,6 +1281,8 @@ static void TexMgr_LoadImage32(gltexture_t* glt, unsigned* data)
 	if (glt->flags & TEXPREF_PREMULTIPLY)
 		data = (unsigned*)TexMgr_PreMultiply32((byte*)data, glt->width, glt->height);
 
+	TEX_MARK("tex32: resample");
+
 	if (!gl_texture_NPOT)
 	{
 		// resample up
@@ -1312,6 +1334,8 @@ static void TexMgr_LoadImage32(gltexture_t* glt, unsigned* data)
 		mipheight = TexMgr_SafeTextureSize3(glt->height >> picmip);
 	}
 
+	TEX_MARK("tex32: mipmap");
+
 	while ((int)glt->width > mipwidth)
 	{
 		TexMgr_MipMapW(data, glt->width, glt->height);
@@ -1328,6 +1352,7 @@ static void TexMgr_LoadImage32(gltexture_t* glt, unsigned* data)
 	}
 
 	// upload
+	TEX_MARK("tex32: upload");
 	GL_Bind(glt);
 	internalformat = (glt->flags & TEXPREF_ALPHA) ? gl_alpha_format : gl_solid_format;
 	glTexImage2D(GL_TEXTURE_2D, 0, internalformat, glt->width, glt->height, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
@@ -1741,6 +1766,8 @@ gltexture_t* TexMgr_LoadImage(qmodel_t* owner, const char* name, int width, int 
 	glt->source_width = width;
 	glt->source_height = height;
 	glt->source_crc = crc;
+
+	TEX_MARK("tex: convert");
 
 	//upload it
 	mark = Hunk_LowMark();
