@@ -28,6 +28,23 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include <setjmp.h>
 #include "time.h" // woods #cfgbackup
 
+/* Frame breadcrumbs: the first few frames only.
+ *
+ * Host_Frame() is called thousands of times a second, so a mark per frame
+ * would turn the memory stick into the bottleneck.  But the first frames are
+ * where the engine executes its config files and precaches the level, and if
+ * one of them kills the module we need to know which phase of the frame did
+ * it.  After three frames these compile down to a comparison -- but the macro
+ * has to live up here, because _Host_Frame() comes long before the HOST_TRACE
+ * block that declares psp_trace(). */
+#if defined(PLATFORM_PSP) || defined(__psp__)
+extern void psp_trace (const char *step);
+static int host_frame_marks;
+#define FRAME_MARK(x)	do { if (host_frame_marks < 3) psp_trace(x); } while (0)
+#else
+#define FRAME_MARK(x)	do { } while (0)
+#endif
+
 void URI_Init(void); // woods #uri
 void URI_Shutdown(void); // woods #uri
 void URI_Frame(void); // woods #uri
@@ -1726,8 +1743,10 @@ void _Host_Frame (double time)
 
 	host_framecount++;
 
+#if defined(PLATFORM_PSP) || defined(__psp__)
 	if (host_frame_marks < 100)
 		host_frame_marks++;
+#endif
 }
 
 void Host_Frame (double time)
@@ -1790,19 +1809,6 @@ extern void psp_tracef (const char *fmt, ...);
 #define HOST_TRACEF(...)	do { } while (0)
 #endif
 
-/* Frame breadcrumbs: the first few frames only.
- *
- * Host_Frame() is called thousands of times a second, so a mark per frame
- * would turn the memory stick into the bottleneck.  But the first frames are
- * where the engine executes its config files and precaches the level, and if
- * one of them kills the module we need to know which phase of the frame did
- * it.  After three frames these compile down to a comparison. */
-#if defined(PLATFORM_PSP) || defined(__psp__)
-static int host_frame_marks;
-#define FRAME_MARK(x)	do { if (host_frame_marks < 3) psp_trace(x); } while (0)
-#else
-#define FRAME_MARK(x)	do { } while (0)
-#endif
 
 void Host_Init (void)
 {
