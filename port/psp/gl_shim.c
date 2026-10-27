@@ -768,7 +768,7 @@ static void shim_trace_vertices (int count, int maxv)
 		           (int)shim_vertices[i].u, (int)shim_vertices[i].v);
 }
 
-static void shim_trace_draw (int count, const char *what)
+static void shim_trace_draw (int count, const char *what, int quad_mode)
 {
 	float minx, maxx, miny, maxy, area;
 	float minu, maxu, minv, maxv;
@@ -800,7 +800,9 @@ static void shim_trace_draw (int count, const char *what)
 	}
 
 	area = (maxx - minx) * (maxy - miny);
-	skewed = (count % 4 == 0) && !shim_quads_axis_aligned(count);
+	/* Only a run of quads is *supposed* to be made of rectangles: a
+	 * strip or a line list is naturally any shape at all. */
+	skewed = quad_mode && (count % 4 == 0) && !shim_quads_axis_aligned(count);
 
 	/* ---- 2. anomalies, whenever they happen ---- */
 	if (shim_frames >= 60 && anomaly_lines < 60)
@@ -814,7 +816,11 @@ static void shim_trace_draw (int count, const char *what)
 			           (int)shim_texture_bound, count,
 			           (int)minx, (int)miny, (int)maxx, (int)maxy,
 			           (int)minu, (int)minv, (int)maxu, (int)maxv);
-			shim_trace_vertices(count, skewed ? 8 : 4);
+			/* The vertices themselves are the evidence, but eight
+			 * lines per anomaly times sixty anomalies is a log
+			 * nobody reads: the first few carry the detail. */
+			if (anomaly_lines <= 8)
+				shim_trace_vertices(count, skewed ? 8 : 4);
 		}
 	}
 
@@ -959,7 +965,7 @@ static void shim_flush_quads (void)
 	int done = 0;
 
 	shim_frame_draws++;
-	shim_trace_draw(shim_vertex_count, shim_prim_name(GL_QUADS));
+	shim_trace_draw(shim_vertex_count, shim_prim_name(GL_QUADS), 1);
 	shim_trace_big_once(shim_vertex_count, shim_prim_name(GL_QUADS));
 
 	/* As many quads as the ring still has room for, in one command, then the
@@ -1055,7 +1061,7 @@ void glEnd (void)
 		shim_vertex_t *v = shim_ge_alloc((unsigned int)shim_vertex_count);
 
 		shim_frame_draws++;
-		shim_trace_draw(shim_vertex_count, shim_prim_name(shim_primitive));
+		shim_trace_draw(shim_vertex_count, shim_prim_name(shim_primitive), 0);
 		shim_trace_big_once(shim_vertex_count, shim_prim_name(shim_primitive));
 
 		if (v)
