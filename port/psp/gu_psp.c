@@ -37,13 +37,14 @@
 #include <pspge.h>
 #include <pspgu.h>
 
+#include "gl_shim.h"
 #include "gu_psp.h"
 #include "psp_console.h"
 
 /* One draw list for the whole frame.  A step-1 test pattern needs a handful of
  * vertices; the GL shim will want a good deal more, so the size is a named
  * constant that is easy to raise (and, later, to allocate from the heap). */
-#define GU_LIST_SIZE  (16 * 1024)
+#define GU_LIST_SIZE  (32 * 1024)
 static unsigned int gu_list[GU_LIST_SIZE] __attribute__((aligned(16)));
 
 /* sceGuDrawBuffer()/DispBuffer()/DepthBuffer() take byte offsets from the
@@ -61,24 +62,7 @@ static int          gu_display_on;
 static unsigned int gu_frames;
 static unsigned int gu_draw_buffer;	/* EDRAM offset of the buffer to draw into */
 static unsigned int gu_disp_buffer = GU_FB1_OFFSET;	/* ...and of the one on screen */
-static unsigned int gu_clear_color;
-
-/* 2D vertices for the step-1 test pattern.
- *
- * A colour plus three *floats*: 16 bytes, which is what the GU wants -- the
- * vertices are read back to back, so the stride has to be a multiple of 4 and
- * the base pointer 16-byte aligned.  Mixing a 4-byte colour with three shorts
- * gives a 10-byte stride and puts every second vertex on an odd address; that
- * misreads colours as coordinates, which looks exactly like coloured noise. */
-typedef struct
-{
-	unsigned int color;
-	float        x, y, z;
-} gu_vertex_t;
-
-/* One aligned block for the pattern's vertices: sceGuGetMemory() is simpler,
- * but a static buffer keeps this file's step-1 code obviously correct. */
-static gu_vertex_t gu_pattern_vertices[4] __attribute__((aligned(16)));
+static unsigned int gu_clear_color = 0xFF101820u;
 
 int psp_gu_ready (void)
 {
@@ -135,7 +119,6 @@ int psp_gu_init (void)
 
 	/* The display stays with the debug console until the first real frame. */
 	gu_display_on = 0;
-	gu_clear_color = 0xFF101820;
 	gu_frames = 0;
 	gu_in_frame = 0;
 	gu_up = 1;
@@ -160,60 +143,8 @@ void psp_gu_shutdown (void)
 	gu_up = 0;
 }
 
-/* A slow colour breathing from navy to teal: if the screen is not a flat dead
- * panel any more and the tint moves, then the list, the clear, the swap and
- * the vsync wait are all working.  Replaced by the GL shim in step 2. */
-static unsigned int psp_gu_test_clear_color (unsigned int frame)
-{
-	static const unsigned char navy[3] = { 0x10, 0x18, 0x20 };
-	static const unsigned char teal[3] = { 0x12, 0x42, 0x3C };
-	unsigned int phase = (frame / 4) & 63;
-	unsigned int mix = (phase < 32) ? phase * 2 : (64 - phase) * 2;
-	unsigned char r = (unsigned char)(navy[0] + ((teal[0] - navy[0]) * (int)mix) / 64);
-	unsigned char g = (unsigned char)(navy[1] + ((teal[1] - navy[1]) * (int)mix) / 64);
-	unsigned char b = (unsigned char)(navy[2] + ((teal[2] - navy[2]) * (int)mix) / 64);
-
-	return 0xFF000000u | ((unsigned int)r << 16) | ((unsigned int)g << 8) | b;
-}
-
-/* The moving bar: 40x40 squares marching across the middle of the screen.
- * Pure geometry, no textures, so it says nothing about the texture path --
- * that is what the shim will be for. */
-static void psp_gu_test_pattern (unsigned int frame)
-{
-	gu_vertex_t *v = gu_pattern_vertices;
-	const float band_y = 116.0f;
-	const float band_h = 40.0f;
-	float bar_x;
-
-	sceGuDisable(GU_TEXTURE_2D);
-	sceGuDisable(GU_DEPTH_TEST);
-	sceGuDisable(GU_BLEND);
-
-	/* GU_SPRITES takes *pairs* of vertices -- top-left, then bottom-right --
-	 * two per primitive, not four per quad.  Four vertices per quad would be
-	 * read as two overlapping rectangles. */
-	v[0].color = 0xFF2E4A57;
-	v[0].x = 0.0f;    v[0].y = band_y;            v[0].z = 0.0f;
-	v[1].color = 0xFF2E4A57;
-	v[1].x = 480.0f;  v[1].y = band_y + band_h;   v[1].z = 0.0f;
-
-	sceGuDrawArray(GU_SPRITES,
-	               GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_2D,
-	               2, NULL, v);
-
-	/* The marker marching along the band. */
-	bar_x = (float)(((unsigned int)frame * 3u) % 480u);
-
-	v[2].color = 0xFFFFB030;
-	v[2].x = bar_x;        v[2].y = band_y;          v[2].z = 0.0f;
-	v[3].color = 0xFFFFB030;
-	v[3].x = bar_x + 24.0f; v[3].y = band_y + band_h; v[3].z = 0.0f;
-
-	sceGuDrawArray(GU_SPRITES,
-	               GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_2D,
-	               2, NULL, v + 2);
-}
+/* Stage M4 step 2: the GL shim (gl_shim.c) draws the real interface, so the
+ * step-1 test pattern is gone.  What is left here is the frame plumbing. */
 
 void psp_gu_frame_begin (void)
 {
@@ -223,16 +154,22 @@ void psp_gu_frame_begin (void)
 	sceGuStart(GU_DIRECT, gu_list);
 	gu_in_frame = 1;
 
+	/* From here until sceGuFinish() there is a live draw list, and the GL
+	 * shim may send GE commands; before this line it may only record. */
+	psp_gl_shim_set_frame_active(1);
+
 	/* sceGuSwapBuffers() only swaps its own bookkeeping and the display
 	 * pointer -- it sends no GE command (see src/gu/sceGuSwapBuffers.c), so
 	 * the new draw buffer has to be announced in every frame's list. */
 	sceGuDrawBuffer(GU_PSM_8888, GU_OFFSET(gu_draw_buffer), PSP_GU_STRIDE);
 
-	gu_clear_color = psp_gu_test_clear_color(gu_frames);
 	sceGuClearColor(gu_clear_color);
 	sceGuClear(GU_COLOR_BUFFER_BIT | GU_DEPTH_BUFFER_BIT);
 
-	psp_gu_test_pattern(gu_frames);
+	/* Everything the engine asked for with glEnable()/glBlendFunc()/...
+	 * during Host_Init and in earlier frames is recorded by the shim and
+	 * sent to the GE here, now that there is a draw list to send it into. */
+	psp_gl_shim_begin_frame();
 }
 
 void psp_gu_frame_end (void)
@@ -240,6 +177,7 @@ void psp_gu_frame_end (void)
 	if (!gu_up || !gu_in_frame)
 		return;
 
+	psp_gl_shim_set_frame_active(0);
 	sceGuFinish();
 	sceGuSync(0, 0);
 	gu_in_frame = 0;
@@ -265,5 +203,6 @@ void psp_gu_frame_end (void)
 		           gu_disp_buffer, gu_draw_buffer);
 	}
 	else if (gu_frames == 60)
-		psp_trace("gu: 60 frames presented");
+		psp_tracef("gu: 60 frames presented [%d KB of textures]",
+		           (int)(psp_gl_shim_texture_bytes() / 1024));
 }
