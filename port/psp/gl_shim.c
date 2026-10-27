@@ -102,6 +102,20 @@ static unsigned int   shim_texture_count;
 static size_t         shim_texture_bytes;
 static unsigned int   shim_texture_bound;
 
+/* What the GE has already been told about texturing.
+ *
+ * sceGuTexMode()/TexImage()/TexFilter()/TexFunc()/TexFlush() are GE commands,
+ * not free-standing state: they cost about seven words of the frame's 32 KB
+ * draw list.  glEnd() used to re-send all of them for every picture of every
+ * frame -- on a 392-draw frame that is roughly 11 KB of the list spent saying
+ * the same thing over and over, which is a third of the budget the frame
+ * actually needs.  Nothing is sent now unless it changed. */
+static unsigned int   shim_tex_announced_id;
+static const void    *shim_tex_announced_pixels;
+static unsigned int   shim_tex_announced_psm;
+static int            shim_tex_announced_filter;
+static int            shim_tex_state_valid;
+
 /* matrix state */
 static shim_matrix_t  shim_projection;
 static shim_matrix_t  shim_modelview;
@@ -503,7 +517,20 @@ static void shim_upload_bound_texture (void)
 		 * without the writeback it samples stale bytes. */
 		sceKernelDcacheWritebackRange(t->pixels, (unsigned int)t->bytes);
 		t->dirty = 0;
+
+		/* The bytes behind the address the GE is holding just changed,
+		 * so whatever it cached about this texture is worthless. */
+		shim_tex_state_valid = 0;
 	}
+
+	/* Already announced, and nothing about it changed: sending the same
+	 * five commands again would only eat the draw list. */
+	if (shim_tex_state_valid &&
+	    shim_tex_announced_id == shim_texture_bound &&
+	    shim_tex_announced_pixels == t->pixels &&
+	    shim_tex_announced_psm == t->psm &&
+	    shim_tex_announced_filter == t->filter)
+		return;
 
 	/* Unswizzled: the engine's pictures are not power-of-two, and only
 	 * swizzled textures have to be. */
@@ -511,7 +538,20 @@ static void shim_upload_bound_texture (void)
 	shim_guTexImage(0, t->potw, t->poth, t->tbw, t->pixels);
 	shim_guTexFilter(t->filter, t->filter);
 	shim_guTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
+
+	/* TEX_FLUSH is what tells the GE's texture cache that the memory behind
+	 * the address it was just given has been written by the CPU
+	 * (pspsdk src/gu/sceGuTexFlush.c: one TEX_FLUSH command).  Without it
+	 * the GE keeps sampling whatever it cached from that address, which is
+	 * at least a frame of the previous picture and at worst the zeroes the
+	 * block was allocated with. */
 	shim_guTexFlush();
+
+	shim_tex_announced_id = shim_texture_bound;
+	shim_tex_announced_pixels = t->pixels;
+	shim_tex_announced_psm = t->psm;
+	shim_tex_announced_filter = t->filter;
+	shim_tex_state_valid = 1;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1376,50 +1416,72 @@ size_t psp_gl_shim_texture_bytes (void)
 /* ------------------------------------------------------------------ */
 
 /* Everything above is a translation of GL state into GE state, and when the
- * panel shows "a grey field with a blue bar and a teal block" that says nothing
- * about *which* translation step is wrong: the geometry, the vertex colour, the
- * channel order of the texture, the power-of-two box, or the alpha test.
+ * panel shows "a grey field with a blue bar and a teal block" that says
+ * nothing about *which* translation step is wrong: the geometry, the vertex
+ * colour, the channel order of the texture, the power-of-two box, the alpha
+ * test or the texture cache.
  *
  * So the shim draws a card of its own on top of the engine's frame, every
- * frame, in the top-left corner -- a picture whose correct appearance is known
- * in advance:
+ * frame, in the top-left corner -- a picture whose correct appearance is
+ * known in advance.  It is drawn with GE calls, not through the shim's own
+ * gl* entry points, because testing the translation with the translation
+ * would only prove it agrees with itself.
  *
- *      (0,0)    64x64   four quadrants (white, red, green, blue) packed the way
- *                       GU_PSM_4444 is supposed to want it: alpha in the high
- *                       nibble, red in the low one
- *      (64,0)   64x64   the same four quadrants packed the other way round
- *                       (red in the high nibble, alpha in the low one)
- *      (128,0)  64x64   no texture at all: vertex colour only, magenta
+ *      a black backdrop 160x72, so that "nothing was drawn" is black and
+ *      not "white on a pale menu"
  *
- * and the whole row again 72 pixels lower with the alpha test switched off.
+ *      row 1 (y = 0)   the engine's alpha test left in force
+ *      row 2 (y = 40)  the alpha test switched off
  *
- * The correct result is two rows of three squares.  Each of the first two
- * squares is split into four: white and red on its top row, green and blue on
- * its bottom row, and the two rows of the card are identical.  To their right
- * is a plain magenta square.  What is actually on the panel then
- * names the broken step:
+ *      each row, five 32x32 squares left to right:
  *
- *   - magenta square missing too   -> nothing reaches the panel; the problem is
- *                                     the frame/draw-list plumbing, not the 2D
- *                                     translation
- *   - magenta there, both cards empty -> textures: upload, address, alignment
- *   - the second card shows white and red only -> the channel order in
- *                                     shim_px4444() is wrong (green and blue of
- *                                     that packing come out with alpha 0 and the
- *                                     alpha test drops them)
- *   - the cards are there but the menu still is not -> the shim is fine and the
- *                                     engine is handing it bad data, which is a
- *                                     completely different hunt
+ *        (0)    texture, GU_PSM_4444, GU_TFX_REPLACE  -- raw texels
+ *        (32)   same texture, GU_TFX_MODULATE, white  -- what the menu does
+ *        (64)   same picture as GU_PSM_8888, MODULATE -- rules out the nibbles
+ *        (96)   no texture: magenta vertex colour
+ *        (128)  no texture: white vertex colour
  *
- * Deliberately drawn with the GE directly: using the shim's own gl* entry
- * points would test the code with itself.  The state it changes is re-applied
- * by psp_gl_shim_begin_frame() at the start of the next frame. */
+ * The texture is red on its left half and blue on its right: two colours
+ * that cannot hide against anything.  The correct result is two identical
+ * rows of:
+ *
+ *      [ red | blue ][ red | blue ][ red | blue ][magenta][ white ]
+ *
+ * and what is actually there names the broken step:
+ *
+ *   - not even the black backdrop  -> the frame's draw list is not reaching
+ *                                     the panel at all
+ *   - backdrop but no magenta/white -> the vertex colour path (the GE is
+ *                                     drawing, but not these vertices)
+ *   - magenta and white, squares 1-3 black -> the textured path: the texture
+ *                                     address, the cache (sceGuTexFlush), the
+ *                                     format or the texture coordinates
+ *   - squares 1-3 show red and blue swapped -> shim_px4444()'s nibble order
+ *                                     for 4444, the 8888 square still right
+ *   - 4444 in colour, 8888 black           -> GU_PSM_8888 set-up only
+ *   - row 1 empty, row 2 fine              -> the engine's alpha test is
+ *                                     discarding the frame
+ *   - a striped or diagonal mess           -> the GE is reading vertices it
+ *                                     should not (draw list overflow, or a
+ *                                     vertex array reused before the GE has
+ *                                     finished with it)
+ *
+ * The state the card changes is re-applied by psp_gl_shim_begin_frame() at
+ * the start of the next frame. */
 
-#define SHIM_CARD_SIZE 64
+#define SHIM_CARD_SIZE     32
+#define SHIM_CARD_SQUARES  5
+#define SHIM_CARD_ROWS     2
+#define SHIM_CARD_ROW_GAP  (SHIM_CARD_SIZE + 8)
 
-static unsigned short shim_card_tex_abgr[SHIM_CARD_SIZE * SHIM_CARD_SIZE] __attribute__((aligned(16)));
-static unsigned short shim_card_tex_rgba[SHIM_CARD_SIZE * SHIM_CARD_SIZE] __attribute__((aligned(16)));
-static shim_vertex_t  shim_card_quads[3][6] __attribute__((aligned(16)));
+static unsigned short shim_card_tex4444[SHIM_CARD_SIZE * SHIM_CARD_SIZE] __attribute__((aligned(16)));
+static unsigned int   shim_card_tex8888[SHIM_CARD_SIZE * SHIM_CARD_SIZE] __attribute__((aligned(16)));
+
+/* Every draw gets its own vertices: sceGuDrawArray() only hands the GE the
+ * address of the array and the GE keeps reading it after the CPU has moved
+ * on, so one shared array would be rewritten under the card's own feet. */
+static shim_vertex_t  shim_card_quads[SHIM_CARD_ROWS][SHIM_CARD_SQUARES][6] __attribute__((aligned(16)));
+static shim_vertex_t  shim_card_backdrop[6] __attribute__((aligned(16)));
 static int            shim_card_built;
 
 static void shim_card_build (void)
@@ -1430,33 +1492,33 @@ static void shim_card_build (void)
 	{
 		for (x = 0; x < SHIM_CARD_SIZE; x++)
 		{
-			int half_x = (x >= SHIM_CARD_SIZE / 2);
-			int half_y = (y >= SHIM_CARD_SIZE / 2);
-			int r = 0, g = 0, b = 0, a = 255;
+			int red_half = (x < SHIM_CARD_SIZE / 2);
 
-			if (!half_x && !half_y)             r = g = b = 255;  /* white  */
-			else if (half_x && !half_y)         r = 255;          /* red    */
-			else if (!half_x && half_y)         g = 255;          /* green  */
-			else                                b = 255;          /* blue   */
+			shim_card_tex4444[y * SHIM_CARD_SIZE + x] =
+				red_half ? shim_px4444(255, 0, 0, 255)
+				         : shim_px4444(0, 0, 255, 255);
 
-			shim_card_tex_abgr[y * SHIM_CARD_SIZE + x] = shim_px4444(r, g, b, a);
-			shim_card_tex_rgba[y * SHIM_CARD_SIZE + x] =
-				(unsigned short)(((r >> 4) << 12) | ((g >> 4) << 8) |
-				                 ((b >> 4) << 4) | (a >> 4));
+			/* GU_PSM_8888 wants the byte order a GL_RGBA array has: R,G,B,A
+			 * in memory, i.e. 0xAABBGGRR in the word (pspgl's format table
+			 * lists GL_RGBA/GL_UNSIGNED_BYTE as TF_NATIVE on GE_RGBA_8888). */
+			shim_card_tex8888[y * SHIM_CARD_SIZE + x] =
+				red_half ? 0xFF0000FFu : 0xFFFF0000u;
 		}
 	}
 
 	/* The GE reads main memory past the CPU cache: without the writeback it
 	 * samples whatever was in those lines before. */
-	sceKernelDcacheWritebackRange(shim_card_tex_abgr, sizeof(shim_card_tex_abgr));
-	sceKernelDcacheWritebackRange(shim_card_tex_rgba, sizeof(shim_card_tex_rgba));
+	sceKernelDcacheWritebackRange(shim_card_tex4444, sizeof(shim_card_tex4444));
+	sceKernelDcacheWritebackRange(shim_card_tex8888, sizeof(shim_card_tex8888));
 
 	shim_card_built = 1;
+	psp_tracef("card: 2 rows x %d squares of %dx%d over a black backdrop %dx%d",
+	           SHIM_CARD_SQUARES, SHIM_CARD_SIZE, SHIM_CARD_SIZE,
+	           SHIM_CARD_SQUARES * SHIM_CARD_SIZE, SHIM_CARD_SIZE + 8 + SHIM_CARD_SIZE);
 }
 
-/* Six vertices of a screen-space quad.  The engine's own quads arrive as two
- * triangles in this same order, so the card is wound and textured exactly like
- * a menu picture. */
+/* Six vertices of a screen-space quad: two triangles, wound like the quads the
+ * engine itself hands over. */
 static void shim_card_quad (shim_vertex_t *v, float x, float y, float w, float h,
                             unsigned int color)
 {
@@ -1470,68 +1532,89 @@ static void shim_card_quad (shim_vertex_t *v, float x, float y, float w, float h
 	v[5].u = 0.0f; v[5].v = 1.0f; v[5].color = color; v[5].x = x;     v[5].y = y + h; v[5].z = 0.0f;
 }
 
-/* One row of the card: the three squares with a known picture in them.  The
- * same row is drawn twice, once with whatever alpha test the engine left in
- * force and once with the alpha test off, so that "the picture is there but
- * every pixel is discarded" cannot be confused with "the picture is not
- * there". */
-static void shim_card_row (float y)
+/* One row of the card.  The five squares differ only in the texture state the
+ * GE is in when they are drawn, so one photo of the panel says which of those
+ * states the hardware is unhappy with. */
+static void shim_card_row (int row, float y)
 {
-	sceGuDisable(GU_TEXTURE_2D);
-	shim_card_quad(shim_card_quads[2], 128.0f, y, SHIM_CARD_SIZE, SHIM_CARD_SIZE,
-	               0xFFFF00FFu);		/* 0xAABBGGRR: magenta */
-	sceGuDrawArray(GU_TRIANGLES, SHIM_VERTEX_FORMAT, 6, NULL, shim_card_quads[2]);
+	shim_vertex_t (*q)[6] = shim_card_quads[row];
 
+	/* (0) the picture with texturing left to do all the work */
 	sceGuEnable(GU_TEXTURE_2D);
 	sceGuTexMode(GU_PSM_4444, 0, 0, 0);
 	sceGuTexFilter(GU_NEAREST, GU_NEAREST);
+	sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
+	sceGuTexImage(0, SHIM_CARD_SIZE, SHIM_CARD_SIZE, SHIM_CARD_SIZE, shim_card_tex4444);
+	sceGuTexFlush();
+	shim_card_quad(q[0], 0.0f, y, SHIM_CARD_SIZE, SHIM_CARD_SIZE, 0xFFFFFFFFu);
+	sceGuDrawArray(GU_TRIANGLES, SHIM_VERTEX_FORMAT, 6, NULL, q[0]);
+
+	/* (1) the same, modulated by a white vertex colour -- the menu's case */
 	sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
+	shim_card_quad(q[1], (float)SHIM_CARD_SIZE, y, SHIM_CARD_SIZE, SHIM_CARD_SIZE, 0xFFFFFFFFu);
+	sceGuDrawArray(GU_TRIANGLES, SHIM_VERTEX_FORMAT, 6, NULL, q[1]);
 
-	sceGuTexImage(0, SHIM_CARD_SIZE, SHIM_CARD_SIZE, SHIM_CARD_SIZE, shim_card_tex_abgr);
-	shim_card_quad(shim_card_quads[0], 0.0f, y, SHIM_CARD_SIZE, SHIM_CARD_SIZE,
-	               0xFFFFFFFFu);
-	sceGuDrawArray(GU_TRIANGLES, SHIM_VERTEX_FORMAT, 6, NULL, shim_card_quads[0]);
+	/* (2) the same picture as a 32-bit texture: if this one draws and the
+	 * two above do not, the 4-bit nibble packing is what is wrong. */
+	sceGuTexMode(GU_PSM_8888, 0, 0, 0);
+	sceGuTexImage(0, SHIM_CARD_SIZE, SHIM_CARD_SIZE, SHIM_CARD_SIZE, shim_card_tex8888);
+	sceGuTexFlush();
+	shim_card_quad(q[2], 2.0f * SHIM_CARD_SIZE, y, SHIM_CARD_SIZE, SHIM_CARD_SIZE, 0xFFFFFFFFu);
+	sceGuDrawArray(GU_TRIANGLES, SHIM_VERTEX_FORMAT, 6, NULL, q[2]);
 
-	sceGuTexImage(0, SHIM_CARD_SIZE, SHIM_CARD_SIZE, SHIM_CARD_SIZE, shim_card_tex_rgba);
-	shim_card_quad(shim_card_quads[1], (float)SHIM_CARD_SIZE, y,
-	               SHIM_CARD_SIZE, SHIM_CARD_SIZE, 0xFFFFFFFFu);
-	sceGuDrawArray(GU_TRIANGLES, SHIM_VERTEX_FORMAT, 6, NULL, shim_card_quads[1]);
+	/* (3) and (4) no texture at all: these test the geometry and the vertex
+	 * colour path on their own. */
+	sceGuDisable(GU_TEXTURE_2D);
+	shim_card_quad(q[3], 3.0f * SHIM_CARD_SIZE, y, SHIM_CARD_SIZE, SHIM_CARD_SIZE,
+	               0xFFFF00FFu);		/* 0xAABBGGRR: magenta */
+	sceGuDrawArray(GU_TRIANGLES, SHIM_VERTEX_FORMAT, 6, NULL, q[3]);
+
+	shim_card_quad(q[4], 4.0f * SHIM_CARD_SIZE, y, SHIM_CARD_SIZE, SHIM_CARD_SIZE,
+	               0xFFFFFFFFu);		/* white */
+	sceGuDrawArray(GU_TRIANGLES, SHIM_VERTEX_FORMAT, 6, NULL, q[4]);
 }
 
 void psp_gl_shim_test_card (void)
 {
-	int alpha_test = 0;
-
 	if (!shim_frame_active)
 		return;
 
 	if (!shim_card_built)
 		shim_card_build();
 
-	/* Nothing may hide the card, and it must not be culled or faded -- that
-	 * is the whole point of a reference picture. */
+	/* Nothing may hide the card, and it must not be culled, faded or
+	 * tested -- that is the whole point of a reference picture. */
 	sceGuDisable(GU_SCISSOR_TEST);
 	sceGuDisable(GU_DEPTH_TEST);
 	sceGuDisable(GU_BLEND);
 	sceGuDisable(GU_CULL_FACE);
+	sceGuDisable(GU_ALPHA_TEST);
+	sceGuDisable(GU_TEXTURE_2D);
 	sceGuShadeModel(GU_FLAT);
 
-	/* The engine turns the alpha test on for all of its 2D drawing
-	 * (GL_Set2D(): glEnable(GL_ALPHA_TEST), glAlphaFunc(GL_GREATER, ...)).
-	 * Row 1 keeps that, row 2 drops it. */
-	alpha_test = shim_alpha_test;
+	/* The backdrop first: the menu behind the card is pale, so a white
+	 * square on it would be invisible, and "drawn in white" is exactly what
+	 * this card must be able to tell apart from "not drawn". */
+	shim_card_quad(shim_card_backdrop, 0.0f, 0.0f,
+	               (float)(SHIM_CARD_SQUARES * SHIM_CARD_SIZE),
+	               (float)(SHIM_CARD_SIZE + 8 + SHIM_CARD_SIZE), 0xFF000000u);
+	sceGuDrawArray(GU_TRIANGLES, SHIM_VERTEX_FORMAT, 6, NULL, shim_card_backdrop);
 
-	shim_card_row(0.0f);
-
-	if (alpha_test)
+	/* Row 1 keeps whatever alpha test the engine left in force, row 2 drops
+	 * it, so "the picture is there but every pixel is discarded" cannot be
+	 * mistaken for "the picture is not there". */
+	if (shim_alpha_test)
 	{
-		sceGuDisable(GU_ALPHA_TEST);
-		shim_card_row(72.0f);
 		sceGuEnable(GU_ALPHA_TEST);
+		sceGuAlphaFunc(shim_alpha_func, (unsigned int)(shim_alpha_ref * 255.0f), 0xFF);
+		shim_card_row(0, 0.0f);
+		sceGuDisable(GU_ALPHA_TEST);
+		shim_card_row(1, (float)SHIM_CARD_ROW_GAP);
 	}
 	else
 	{
-		shim_card_row(72.0f);
+		shim_card_row(0, 0.0f);
+		shim_card_row(1, (float)SHIM_CARD_ROW_GAP);
 	}
 }
 
@@ -1625,7 +1708,13 @@ void psp_gl_shim_begin_frame (void)
 
 	/* Whatever texture was current at the end of the last frame has to be
 	 * re-announced to the GE: the engine binds gl-world textures by the
-	 * dozen inside a frame, but the one left bound must still be valid. */
+	 * dozen inside a frame, but the one left bound must still be valid.
+	 *
+	 * The reference card of the previous frame drew with texture state of
+	 * its own (GU_TFX_REPLACE, an 8888 texture, texturing switched off
+	 * again), so nothing cached about texturing survives into a new
+	 * frame. */
+	shim_tex_state_valid = 0;
 	shim_uv_scale_update();
 	shim_upload_bound_texture();
 }

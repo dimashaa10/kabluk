@@ -58,6 +58,23 @@ static unsigned int gu_list[GU_LIST_SIZE] __attribute__((aligned(16)));
 
 static int          gu_up;
 static int          gu_in_frame;
+/* sceGuFinish() returns the size of the list it just closed -- in WORDS, not
+ * bytes (pspsdk src/gu/sceGuFinishId.c: (current - start) on a unsigned int*,
+ * so 131072 words = 512 KB is not what this list is).  That number
+ * matters: pspsdk's sendCommandi() (src/gu/guInternal.h) is nothing but
+ *
+ *      *(gu_list->current++) = (cmd << 24) | argument;
+ *
+ * with no bounds check anywhere.  A frame that needs more than GU_LIST_SIZE
+ * words therefore writes straight past the end of gu_list into whatever the
+ * linker put next -- silently, with the draw list still being submitted, so
+ * the GE runs a mixture of real commands and neighbouring variables.  The
+ * symptom of that is not "one picture missing", it is "the panel shows
+ * nonsense that changes with unrelated code".  Measured here every frame so
+ * that it can never be an unknown again. */
+static int          gu_list_words;
+static int          gu_list_peak;
+static int          gu_list_warned;
 static int          gu_display_on;
 static unsigned int gu_frames;
 static unsigned int gu_draw_buffer;	/* EDRAM offset of the buffer to draw into */
@@ -183,9 +200,23 @@ void psp_gu_frame_end (void)
 	psp_gl_shim_test_card();
 
 	psp_gl_shim_set_frame_active(0);
-	sceGuFinish();
+	gu_list_words = sceGuFinish();          /* words, see the note above */
 	sceGuSync(0, 0);
 	gu_in_frame = 0;
+
+	if (gu_list_words > gu_list_peak)
+		gu_list_peak = gu_list_words;
+
+	/* Three quarters of the list is the point to shout: past it the next
+	 * frame's extra pictures are what overflows it. */
+	if (!gu_list_warned && gu_list_words > GU_LIST_SIZE * 3 / 4)
+	{
+		gu_list_warned = 1;
+		psp_tracef("gu: draw list %d of %d words (%d of %d bytes) -- too "
+		           "close to the end, frames beyond this overflow it",
+		           gu_list_words, GU_LIST_SIZE,
+		           gu_list_words * 4, GU_LIST_SIZE * 4);
+	}
 
 	/* Wait for the panel before flipping, not after: this is what keeps the
 	 * frame rate at 60 and stops a half-drawn buffer from being shown. */
@@ -208,8 +239,10 @@ void psp_gu_frame_end (void)
 		           gu_disp_buffer, gu_draw_buffer);
 	}
 	else if (gu_frames == 60)
-		psp_tracef("gu: 60 frames presented [%d KB of textures]",
-		           (int)(psp_gl_shim_texture_bytes() / 1024));
+		psp_tracef("gu: 60 frames presented [%d KB of textures], "
+		           "draw list %d of %d words, peak %d",
+		           (int)(psp_gl_shim_texture_bytes() / 1024),
+		           gu_list_words, GU_LIST_SIZE, gu_list_peak);
 
 	psp_gl_shim_end_frame();
 }
