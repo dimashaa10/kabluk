@@ -316,10 +316,39 @@ static void shim_uv_scale_update (void)
 {
 	shim_texture_t *t = shim_texture_for(shim_texture_bound, 0);
 
-	if (t && t->width > 0 && t->height > 0 && t->potw > 0 && t->poth > 0)
+	/* TEXELS, not fractions.
+	 *
+	 * GL hands the vertex stage a u in 0..1 and hands the hardware a u in
+	 * 0..1 as well, so the obvious translation is to pass it straight
+	 * through -- and that is what this did, with the picture scaled by
+	 * width/potw to fit its power-of-two box.  The GE in through mode
+	 * (GU_TRANSFORM_2D) does NOT take 0..1: it takes TEXEL coordinates
+	 * directly.  pspsdk's own 2D texture sample says so plainly
+	 * (src/samples/gu/font/font.c):
+	 *
+	 *	vertices[i*2].u   = 0;
+	 *	vertices[i*2 + 1].u = widths[i];        // <- a texel count
+	 *	vertices[i*2].v   = i * lineHeight;     // <- and so is this
+	 *	vertices[i*2 + 1].v = (i + 1) * lineHeight;
+	 *	sceGuDrawArray(GU_SPRITES, GU_TEXTURE_32BITF | GU_COLOR_8888 |
+	 *	               GU_VERTEX_16BIT | GU_TRANSFORM_2D, ...)
+	 *
+	 * intraFont does the same (glyph->x, glyph->y straight into u and v)
+	 * and never calls sceGuTexScale, which is what makes it work: the
+	 * sampler divides by the size it was given in sceGuTexImage().  Pass
+	 * 0..1 to it and it samples the 0..1 TEXEL box, i.e. the single texel
+	 * in the top-left corner, stretched over the whole picture.  On the
+	 * panel that is a flat field of one colour per picture -- the pale
+	 * background, the blue bar, the cyan block -- and text made of blobs,
+	 * because every glyph shows the colour of its own corner texel.
+	 *
+	 * So the picture's own size is the scale: u 0..1 becomes 0..width.
+	 * Multiplying by the PICTURE size (not potw) is what keeps a 240x112
+	 * picture inside the corner of its 256x128 box. */
+	if (t && t->width > 0 && t->height > 0)
 	{
-		shim_u_scale = (float)t->width / (float)t->potw;
-		shim_v_scale = (float)t->height / (float)t->poth;
+		shim_u_scale = (float)t->width;
+		shim_v_scale = (float)t->height;
 	}
 	else
 	{
@@ -598,6 +627,8 @@ static void shim_emit_vertex (float x, float y, float z)
 	sy = (float)PSP_SCREEN_HEIGHT -
 	     ((float)shim_vp_y + (cy * 0.5f + 0.5f) * (float)shim_vp_h);
 
+	/* GL's 0..1 becomes the GE's 0..width/0..height -- see
+	 * shim_uv_scale_update(). */
 	shim_vertices[shim_vertex_count].u = shim_current_u * shim_u_scale;
 	shim_vertices[shim_vertex_count].v = shim_current_v * shim_v_scale;
 	shim_vertices[shim_vertex_count].color = shim_current_color;
@@ -1528,14 +1559,20 @@ static void shim_card_build (void)
 static void shim_card_quad (shim_vertex_t *v, float x, float y, float w, float h,
                             unsigned int color)
 {
+	/* The texture coordinates are 0..SHIM_CARD_SIZE, not 0..1: the GE in
+	 * through mode counts texels (the same thing that made every picture on
+	 * the panel one stretched texel -- see shim_uv_scale_update()).  The
+	 * squares that carry no texture ignore u and v. */
+	const float m = (float)SHIM_CARD_SIZE;
+
 	v[0].u = 0.0f; v[0].v = 0.0f; v[0].color = color; v[0].x = x;     v[0].y = y;     v[0].z = 0.0f;
-	v[1].u = 1.0f; v[1].v = 0.0f; v[1].color = color; v[1].x = x + w; v[1].y = y;     v[1].z = 0.0f;
-	v[2].u = 1.0f; v[2].v = 1.0f; v[2].color = color; v[2].x = x + w; v[2].y = y + h; v[2].z = 0.0f;
+	v[1].u = m;    v[1].v = 0.0f; v[1].color = color; v[1].x = x + w; v[1].y = y;     v[1].z = 0.0f;
+	v[2].u = m;    v[2].v = m;    v[2].color = color; v[2].x = x + w; v[2].y = y + h; v[2].z = 0.0f;
 
 	v[3] = v[0];
 	v[4] = v[2];
 
-	v[5].u = 0.0f; v[5].v = 1.0f; v[5].color = color; v[5].x = x;     v[5].y = y + h; v[5].z = 0.0f;
+	v[5].u = 0.0f; v[5].v = m;    v[5].color = color; v[5].x = x;     v[5].y = y + h; v[5].z = 0.0f;
 }
 
 /* One row of the card.  The five squares differ only in the texture state the
