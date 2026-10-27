@@ -137,6 +137,23 @@ static unsigned int   shim_frames;
 static unsigned int   shim_frame_draws;
 static unsigned int   shim_frame_verts;
 
+/* Draw tracer.
+ *
+ * The screen has been showing large pale wedges across the whole panel since
+ * the 2D shim went in, and nothing in the log said *which* draw they come
+ * from: "37 draws" a frame is not a name.  So every draw that ends up bigger
+ * than a quarter of the panel is reported with its texture, its vertex count
+ * and its bounding box, and the periodic frame line carries a running count.
+ * A picture correctly drawn is 8x8 for a character or a few hundred pixels
+ * wide for a menu bar; anything that covers the screen that was not asked to
+ * is exactly what we are looking for. */
+static unsigned int   shim_big_draws;          /* whole frame, reset each frame */
+static unsigned int   shim_big_logged;         /* total lines printed */
+static unsigned short shim_big_tex[12];        /* textures already named */
+static int            shim_big_tex_n;
+static unsigned int   shim_trace_frames = 4;   /* dump every draw this early on */
+static unsigned int   shim_trace_early;
+
 /* ------------------------------------------------------------------ */
 /* the gate                                                           */
 /* ------------------------------------------------------------------ */
@@ -452,6 +469,64 @@ static int shim_gu_primitive (int gl_mode)
 	}
 }
 
+/* Report a draw that covers far more of the panel than a picture of its kind
+ * should.  Bounds are in screen pixels, y downwards, as emitted. */
+static void shim_trace_draw (int count, const char *what)
+{
+	float minx, maxx, miny, maxy, area;
+	int i;
+
+	if (count <= 0)
+		return;
+
+	minx = maxx = shim_vertices[0].x;
+	miny = maxy = shim_vertices[0].y;
+
+	for (i = 1; i < count; i++)
+	{
+		float x = shim_vertices[i].x, y = shim_vertices[i].y;
+
+		if (x < minx) minx = x;
+		if (x > maxx) maxx = x;
+		if (y < miny) miny = y;
+		if (y > maxy) maxy = y;
+	}
+
+	if (shim_frames < shim_trace_frames && shim_trace_early < 60)
+	{
+		shim_trace_early++;
+		psp_tracef("draw: f %d #%d %s tex %d verts %d box %d,%d %d,%d",
+		           (int)shim_frames, (int)shim_frame_draws, what,
+		           (int)shim_texture_bound, count,
+		           (int)minx, (int)miny, (int)maxx, (int)maxy);
+		return;
+	}
+
+	area = (maxx - minx) * (maxy - miny);
+
+	if (area < (float)(PSP_SCREEN_WIDTH * PSP_SCREEN_HEIGHT) / 4.0f)
+		return;
+
+	shim_big_draws++;
+
+	/* Name each offending texture once: a picture drawn full-screen every
+	 * frame would otherwise bury the log in identical lines. */
+	for (i = 0; i < shim_big_tex_n; i++)
+		if (shim_big_tex[i] == (unsigned short)shim_texture_bound)
+			return;
+
+	if (shim_big_tex_n >= (int)(sizeof(shim_big_tex) / sizeof(shim_big_tex[0])))
+		return;
+
+	shim_big_tex[shim_big_tex_n++] = (unsigned short)shim_texture_bound;
+	shim_big_logged++;
+
+	psp_tracef("big: f %d %s tex %d verts %d box %d,%d %d,%d (%d of %d)",
+	           (int)shim_frames, what, (int)shim_texture_bound, count,
+	           (int)minx, (int)miny, (int)maxx, (int)maxy,
+	           (int)shim_big_logged, (int)shim_big_tex_n);
+}
+
 /* Turn the GL_QUADS accumulated since glBegin() into one triangle list.
  *
  * Every quad the engine draws arrives in the order
@@ -472,6 +547,7 @@ static void shim_flush_quads (void)
 	int i, n = 0;
 
 	shim_frame_draws++;
+	shim_trace_draw(shim_vertex_count, "quads");
 
 	for (i = 0; i + 3 < shim_vertex_count; i += 4)
 	{
@@ -533,9 +609,10 @@ void glEnd (void)
 		return;
 	}
 
+	shim_frame_draws++;
+	shim_trace_draw(shim_vertex_count, "array");
 	shim_guDrawArray(shim_gu_primitive(shim_primitive), SHIM_VERTEX_FORMAT,
 	               shim_vertex_count, NULL, shim_vertices);
-	shim_frame_draws++;
 	shim_vertex_count = 0;
 }
 
@@ -1085,6 +1162,16 @@ void glGetIntegerv (GLenum pname, GLint *params)
 	}
 }
 
+/* The matrices are kept column-major, exactly as glLoadMatrixf() reads them,
+ * so handing one back is a straight copy. */
+static void shim_copy_matrix (const shim_matrix_t *src, GLfloat *out)
+{
+	int i;
+
+	for (i = 0; i < 16; i++)
+		out[i] = src->m[i];
+}
+
 void glGetFloatv (GLenum pname, GLfloat *params)
 {
 	if (!params)
@@ -1096,6 +1183,11 @@ void glGetFloatv (GLenum pname, GLfloat *params)
 		params[0] = (GLfloat)shim_vp_x; params[1] = (GLfloat)shim_vp_y;
 		params[2] = (GLfloat)shim_vp_w; params[3] = (GLfloat)shim_vp_h;
 		break;
+	/* Needed twice over: the engine unprojects through them (gl_screen.c),
+	 * and the menu saves and restores them around the 3D model preview so
+	 * that the 2D drawing after it is not projected through a frustum. */
+	case GL_PROJECTION_MATRIX: shim_copy_matrix(&shim_projection, params); break;
+	case GL_MODELVIEW_MATRIX:  shim_copy_matrix(&shim_modelview, params); break;
 	default:
 		*params = 0.0f;
 		break;
@@ -1127,13 +1219,21 @@ void psp_gl_shim_end_frame (void)
 	shim_frames++;
 
 	if (shim_frames <= 3 || (shim_frames % 120) == 0)
-		psp_tracef("gl: frame %u, %u draws, %u vertices, %d KB of textures, "
-		           "scissor %s %d,%d %dx%d, viewport %d,%d %dx%d",
+		psp_tracef("gl: frame %u, %u draws, %u vertices, %u screen-size draws, "
+		           "%d KB of textures, scissor %s %d,%d %dx%d, "
+		           "viewport %d,%d %dx%d",
 		           shim_frames, shim_frame_draws, shim_frame_verts,
+		           shim_big_draws,
 		           (int)(shim_texture_bytes / 1024),
 		           shim_scissor_on ? "on" : "off",
 		           shim_scr_x, shim_scr_y, shim_scr_w, shim_scr_h,
 		           shim_vp_x, shim_vp_y, shim_vp_w, shim_vp_h);
+
+	/* The counters describe one frame; the textures already named above
+	 * stay named, so the log keeps one line per offending picture. */
+	shim_frame_draws = 0;
+	shim_frame_verts = 0;
+	shim_big_draws = 0;
 }
 
 void psp_gl_shim_set_frame_active (int active)

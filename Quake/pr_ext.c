@@ -8169,6 +8169,16 @@ void DrawSpinningModelToMenuPixels(const char* modelname,
 	float firstframe, float framecount,
 	float shootframe, float shootframes)
 {
+	/* Whatever 2D state the caller was drawing with, restored on the way
+	 * out: this function renders a 3D scene in between. */
+	GLfloat saved_projection[16], saved_modelview[16];
+	GLint saved_viewport[4];
+
+	glGetIntegerv(GL_VIEWPORT, saved_viewport);
+	glMatrixMode(GL_PROJECTION);
+	glGetFloatv(GL_PROJECTION_MATRIX, saved_projection);
+	glMatrixMode(GL_MODELVIEW);
+	glGetFloatv(GL_MODELVIEW_MATRIX, saved_modelview);
 	/* Offscreen FBO: render model, then draw textured quad at pixel rect. */
 	if (MenuPreviewFBO_Ensure((int)pixel_w, (int)pixel_h))
 	{
@@ -8208,6 +8218,12 @@ void DrawSpinningModelToMenuPixels(const char* modelname,
 		float mh = pixel_h / s;
 		GL_SetCanvas(CANVAS_MENU);
 		MenuPreview_DrawQuad(preview_fbo.color_tex, mx, my, mw, mh);
+
+		glMatrixMode(GL_PROJECTION);
+		glLoadMatrixf(saved_projection);
+		glMatrixMode(GL_MODELVIEW);
+		glLoadMatrixf(saved_modelview);
+		glDisable(GL_DEPTH_TEST);
 		return;
 	}
 
@@ -8220,6 +8236,22 @@ void DrawSpinningModelToMenuPixels(const char* modelname,
 		afov, zbias,
 		firstframe, framecount, shootframe, shootframes);
 	g_menu_vm_scale_override = prev_override;
+
+	/* PF_cl_renderscene() draws a 3D scene: it leaves a frustum in the
+	 * projection, a view matrix in the modelview, the viewport set to the
+	 * preview rectangle and the depth test on.  This function is called in
+	 * the middle of 2D menu and HUD drawing, so all four have to go back:
+	 * otherwise the next glVertex2f() goes through that frustum, and a menu
+	 * picture or a line of text lands wherever the projection throws it.
+	 * (That is what the large wedges over the menu were.)
+	 */
+	glMatrixMode(GL_PROJECTION);
+	glLoadMatrixf(saved_projection);
+	glMatrixMode(GL_MODELVIEW);
+	glLoadMatrixf(saved_modelview);
+	glViewport(saved_viewport[0], saved_viewport[1],
+	           saved_viewport[2], saved_viewport[3]);
+	glDisable(GL_DEPTH_TEST);
 }
 
 void PR_SetMenuPreviewLegacyColors(int top, int bottom)
