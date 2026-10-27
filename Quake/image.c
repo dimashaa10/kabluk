@@ -36,6 +36,17 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 static char loadfilename[MAX_OSPATH]; //file scope so that error messages can use it
 
+#if defined(PLATFORM_PSP) || defined(__psp__)
+/* Names the candidate file just before it is opened.  Image loading is the one
+ * place where a bad file can take the console down without a message, and the
+ * difference between "cherry.png" and "cherry.pcx" is the difference between
+ * two completely different decoders. */
+extern void psp_mark (const char *what);
+#define IMG_MARK(x)	psp_mark(x)
+#else
+#define IMG_MARK(x)	do { } while (0)
+#endif
+
 extern cvar_t gl_load24bit_skins; // woods #loadskins
 
 typedef struct stdio_buffer_s {
@@ -692,36 +703,43 @@ byte *Image_LoadImage (const char *name, int *width, int *height, enum srcformat
 			break;
 
 		q_snprintf (loadfilename, sizeof(loadfilename), "%s%s.dds", prefixes[i], name);
+		IMG_MARK(loadfilename);
 		COM_FOpenFile (loadfilename, &f, NULL);
 		if (f)
 			return Image_LoadDDS (f, width, height, fmt);
 
 		q_snprintf (loadfilename, sizeof(loadfilename), "%s%s.tga", prefixes[i], name);
+		IMG_MARK(loadfilename);
 		COM_FOpenFile (loadfilename, &f, NULL);
 		if (f)
 			return Image_LoadTGA (f, width, height);
 
 		q_snprintf (loadfilename, sizeof(loadfilename), "%s%s.png", prefixes[i], name);
+		IMG_MARK(loadfilename);
 		COM_FOpenFile (loadfilename, &f, NULL);
 		if (f)
 			return Image_LoadPNG (f, width, height, malloced);
 
 		q_snprintf (loadfilename, sizeof(loadfilename), "%s%s.bmp", prefixes[i], name);
+		IMG_MARK(loadfilename);
 		COM_FOpenFile (loadfilename, &f, NULL);
 		if (f)
 			return Image_LoadBMP (f, width, height, malloced, !strncmp(origname, "gfx/", 4));
 
 		q_snprintf (loadfilename, sizeof(loadfilename), "%s%s.jpeg", prefixes[i], name);
+		IMG_MARK(loadfilename);
 		COM_FOpenFile (loadfilename, &f, NULL);
 		if (f)
 			return Image_LoadSTBI (f, width, height);
 
 		q_snprintf (loadfilename, sizeof(loadfilename), "%s%s.jpg", prefixes[i], name);
+		IMG_MARK(loadfilename);
 		COM_FOpenFile (loadfilename, &f, NULL);
 		if (f)
 			return Image_LoadSTBI (f, width, height);
 
 		q_snprintf (loadfilename, sizeof(loadfilename), "%s%s.pcx", prefixes[i], name);
+		IMG_MARK(loadfilename);
 		COM_FOpenFile (loadfilename, &f, NULL);
 		if (f)
 			return Image_LoadPCX (f, width, height);
@@ -1110,6 +1128,9 @@ byte *Image_LoadPCX (FILE *f, int *width, int *height)
 	w = pcx.xmax - pcx.xmin + 1;
 	h = pcx.ymax - pcx.ymin + 1;
 
+	if (w <= 0 || h <= 0 || w > 8192 || h > 8192)
+		Sys_Error ("'%s' has bad dimensions %ix%i", loadfilename, w, h);
+
 	data = (byte *) Hunk_Alloc((w*h+1)*4); //+1 to allow reading padding byte on last line
 
 	//load palette
@@ -1138,13 +1159,27 @@ byte *Image_LoadPCX (FILE *f, int *width, int *height)
 			else
 				runlength = 1;
 
-			while(runlength--)
+			/* Buf_GetC() returns EOF (-1) on a truncated or corrupt file.  The
+			 * palette lookup below would then read three bytes *before* the
+			 * array, and on a BE/alignment-strict CPU that is the kind of
+			 * crash that leaves no message. */
+			if (readbyte < 0)
+				readbyte = 0;
+
+			while(runlength-- > 0 && x < pcx.bytes_per_line)
 			{
-				p[0] = palette[readbyte*3];
-				p[1] = palette[readbyte*3+1];
-				p[2] = palette[readbyte*3+2];
-				p[3] = 255;
-				p += 4;
+				/* bytes_per_line is padded up for the row, and can be larger
+				 * than the real width.  The padding pixels are not part of the
+				 * image: writing them ran past the end of a buffer that was
+				 * sized for w*h pixels. */
+				if (x < w)
+				{
+					p[0] = palette[readbyte*3];
+					p[1] = palette[readbyte*3+1];
+					p[2] = palette[readbyte*3+2];
+					p[3] = 255;
+					p += 4;
+				}
 				x++;
 			}
 		}

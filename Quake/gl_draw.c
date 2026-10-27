@@ -458,6 +458,17 @@ qpic_t	*Draw_TryCachePic (const char *path, unsigned int texflags)
 			gl.gltexture = TexMgr_LoadImage(NULL, npath, 0, 0, SRC_EXTERNAL, NULL, npath, 0, texflags);
 		}
 
+		/* TexMgr_LoadImage() only returns NULL for a missing file when the
+		 * caller asked for TEXPREF_ALLOWMISSING; the desktop build has never
+		 * seen this fire.  On the PSP a NULL here was a hard crash with no
+		 * message, so it is worth a check even if it "cannot happen". */
+		if (!gl.gltexture)
+		{
+			Con_SafePrintf("Draw_TryCachePic: no texture for \"%s\"\n", path);
+			menu_numcachepics--;
+			return NULL;
+		}
+
 		pic->pic.width = gl.gltexture->width;
 		pic->pic.height = gl.gltexture->height;
 
