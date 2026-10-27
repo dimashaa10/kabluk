@@ -854,6 +854,21 @@ port/
            освободил: `pic: evict(N) released nothing: K live of M entries
            (E already evicted, X asked under 8 times), Y drawn in the last N
            frames, Z without a texture` — не чаще раза в 600 кадров;
+        3f. **почему ни одна из этих строк ни разу не появилась в логе.** Они
+           были написаны и не собирались. Макросы `DRAW_MARK`, `PSP_NOTE` и
+           `PSP_CACHEPIC_DIAG` объявлялись в середине `gl_draw.c`, перед
+           `Draw_PicFromWad2()`, а `Draw_EvictCachePics()` стоит на 300 строк
+           **выше** — и `#ifdef PSP_CACHEPIC_DIAG` там всегда был ложным, а
+           `PSP_NOTE(...)` просто не существовал. Компилятор об этом молчит:
+           весь блок вырезан препроцессором, ошибки нет. В объектном файле не
+           было ни одной строки `pic:` — то есть все «диагностики» выгрузки
+           картинок за последние раунды никогда не попадали в сборку, и
+           вопросы «почему строки нет» упирались в это, а не в код.
+           Теперь макросы объявлены в самом начале файла, а `Draw_Init()`
+           печатает `pic: cache diagnostics on, N pictures, eviction window 2
+           frames` — если этой строки в логе нет, значит диагностика снова не
+           собралась. Плюс `tests/run_gameplay_tests.sh` проверяет порядок
+           объявления, чтобы это не повторилось;
         4. в лог добавлены честные строки: `tex: no room for a WxH picture
            (… box = N KB); X KB of Y KB arena in use (N chunks), largest free
            Z KB in R runs, cap reached/not reached` (раньше там стояло

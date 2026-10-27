@@ -25,6 +25,35 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "quakedef.h"
 
+/* ---- what this file is allowed to say in the log ---------------------
+ *
+ * These live at the top of the file and not next to their first user, and
+ * that is the whole point.  They used to be defined in the middle, in front of
+ * Draw_PicFromWad2(), while Draw_EvictCachePics() -- three hundred lines
+ * earlier -- already had #ifdef PSP_CACHEPIC_DIAG around its counters and
+ * PSP_NOTE() calls.  A macro defined further down the file does not exist yet
+ * further up: the #ifdef was false, every counter and every line in the
+ * picture-cache diagnostics was compiled out, and the object file did not
+ * contain a single "pic:" string.  Which is why, run after run, the log
+ * answered "0 idle pictures unloaded" and nothing else: the code that was
+ * supposed to explain it had never been built.
+ *
+ * A note (psp_mark) records the picture being loaded, so a hang inside the
+ * texture path is named by the watchdog instead of leaving "stuck in
+ * Sbar_Init" as the only clue. */
+#if defined(PLATFORM_PSP) || defined(__psp__)
+extern void psp_mark (const char *what);
+extern void psp_tracef (const char *fmt, ...);
+#define DRAW_MARK(x)	psp_mark(x)
+#define PSP_NOTE(...)	psp_tracef(__VA_ARGS__)
+/* compile-time proof, checked by the build: this string must be in the object
+ * file of a PSP build (tests/check_psp_strings.sh looks for it) */
+#define PSP_CACHEPIC_DIAG	1
+#else
+#define DRAW_MARK(x)	do { } while (0)
+#define PSP_NOTE(...)	do { } while (0)
+#endif
+
 //extern unsigned char d_15to8table[65536]; //johnfitz -- never used
 
 qboolean	draw_load24bit;
@@ -520,19 +549,6 @@ void Scrap_Upload (void)
 Draw_PicFromWad
 ================
 */
-#if defined(PLATFORM_PSP) || defined(__psp__)
-/* Records the picture being loaded, so a hang inside the texture path is named
- * by the watchdog instead of leaving "stuck in Sbar_Init" as the only clue. */
-extern void psp_mark (const char *what);
-extern void psp_tracef (const char *fmt, ...);
-#define DRAW_MARK(x)	psp_mark(x)
-#define PSP_NOTE(...)	psp_tracef(__VA_ARGS__)
-#define PSP_CACHEPIC_DIAG	1
-#else
-#define DRAW_MARK(x)	do { } while (0)
-#define PSP_NOTE(...)	do { } while (0)
-#endif
-
 qpic_t *Draw_PicFromWad2 (const char *name, unsigned int texflags)
 {
 	DRAW_MARK(name);
@@ -1107,6 +1123,15 @@ void Draw_Init (void)
 	// load game pics
 	Draw_LoadPics ();
 	draw_initialized = true;
+
+#ifdef PSP_CACHEPIC_DIAG
+	/* One line at boot that says the picture-cache diagnostics are really in
+	 * this build.  They were compiled out for several rounds (see the note at
+	 * the top of the file), and a log that never mentions them is how that
+	 * went unnoticed: now their absence is itself a finding. */
+	PSP_NOTE("pic: cache diagnostics on, %d pictures, eviction window %d frames",
+	         (int)menu_numcachepics, 2);
+#endif
 }
 
 //==============================================================================

@@ -71,3 +71,21 @@ compile -c "$repo/Quake/wad.c" -o "$work/wad.o"
 compile "$repo/tests/test_wad3.c" "$work/wad.o" \
     ${LDFLAGS:-} -Wl,--gc-sections -o "$work/wad3"
 "$work/wad3"
+# A macro defined below the code that uses it silently deletes that code, with
+# no warning and no error: the picture-cache diagnostics in gl_draw.c were
+# compiled out for several rounds that way, and every hardware log then showed
+# "0 idle pictures unloaded" with nothing explaining it.  This check keeps the
+# two in the right order.
+awk '
+  /^#[[:space:]]*define[[:space:]]+(PSP_NOTE|DRAW_MARK|PSP_CACHEPIC_DIAG)/ {
+      name = $2; sub(/\(.*/, "", name); seen[name] = 1
+  }
+  /^[[:space:]]*PSP_NOTE[[:space:]]*\(/ {
+      if (!("PSP_NOTE" in seen)) { printf "FAIL: PSP_NOTE used at line %d of gl_draw.c before it is defined\n", NR; bad = 1 }
+  }
+  /^#[[:space:]]*ifdef[[:space:]]+PSP_CACHEPIC_DIAG/ {
+      if (!("PSP_CACHEPIC_DIAG" in seen)) { printf "FAIL: PSP_CACHEPIC_DIAG tested at line %d of gl_draw.c before it is defined\n", NR; bad = 1 }
+  }
+  END { exit (bad ? 1 : 0) }
+' "$repo/Quake/gl_draw.c"
+echo "PASS: the picture-cache diagnostics are defined above the code that uses them."
