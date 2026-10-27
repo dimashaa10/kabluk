@@ -47,6 +47,26 @@ static int   con_len;
 /* Watchdog state: bumped by every finished line, read by the watchdog thread. */
 static volatile unsigned con_progress;
 static char  con_last_step[64] = "(startup)";
+/* 1 when con_last_step came from psp_mark() (a breadcrumb worth naming again
+ * from the watchdog), 0 when it came from a line that is already in the log. */
+static volatile int con_last_step_is_mark;
+
+/* Which part of the frame the engine was in when it stopped.  The breadcrumbs
+ * answer "which picture", this answers "before or after the GPU": a hang while
+ * waiting for the GE (sceGuSync) and a hang while loading a picture look
+ * exactly the same from the log otherwise, and they have nothing in common. */
+static char  con_phase[48] = "(none)";
+
+/* The last few breadcrumbs, oldest first.  A single "last step" says where the
+ * engine stopped; it does not say how it got there, and a fault that happens
+ * sometimes and in different places is exactly the case where the previous
+ * dozen steps are the only thing that turns a coincidence into a pattern. */
+#define CON_STEPS 16
+#define CON_STEP_LEN 48
+
+static char  con_steps[CON_STEPS][CON_STEP_LEN];
+static volatile int con_steps_next;	/* next slot to write */
+static volatile int con_steps_full;
 
 static void con_ensure (void)
 {
@@ -629,6 +649,10 @@ void psp_trace (const char *step)
 
 	strncpy(con_last_step, step ? step : "?", sizeof(con_last_step) - 1);
 	con_last_step[sizeof(con_last_step) - 1] = '\0';
+	/* This line is on the card by now, so the watchdog must not echo it back
+	 * as a "mark:" entry (that is where the hundreds of
+	 * "mark: over: f 50 quads tex 69 ..." lines came from). */
+	con_last_step_is_mark = 0;
 
 	con_write(buf);
 	con_putc('\n');		/* flushes into the log buffer */
@@ -720,6 +744,7 @@ void psp_mark (const char *what)
 {
 	char line[96];
 	static char written[64];
+	int slot;
 
 	const char *step = what ? what : "?";
 
@@ -731,6 +756,21 @@ void psp_mark (const char *what)
 
 	strncpy(con_last_step, step, sizeof(con_last_step) - 1);
 	con_last_step[sizeof(con_last_step) - 1] = '\0';
+	con_last_step_is_mark = 1;
+
+	/* Remember it: the watchdog prints the whole tail of this ring when the
+	 * engine stops, which is the difference between "died in a picture" and
+	 * "died in this picture, after those twelve". */
+	slot = con_steps_next;
+	strncpy(con_steps[slot], step, CON_STEP_LEN - 1);
+	con_steps[slot][CON_STEP_LEN - 1] = '\0';
+	slot++;
+	if (slot >= CON_STEPS)
+	{
+		slot = 0;
+		con_steps_full = 1;
+	}
+	con_steps_next = slot;
 
 	/* Counts as progress: loading sixty pictures in a row is slow, not stuck,
 	 * and the watchdog must not shout at it. */
@@ -750,6 +790,12 @@ void psp_mark (const char *what)
 		con_log_line(line);
 		con_log_sync();	/* a boot mark is the trail a crash needs */
 	}
+}
+
+void psp_phase (const char *what)
+{
+	strncpy(con_phase, what ? what : "(none)", sizeof(con_phase) - 1);
+	con_phase[sizeof(con_phase) - 1] = '\0';
 }
 
 void psp_con_logsync (void)
@@ -772,10 +818,73 @@ void psp_con_logsync (void)
  * that.  The last breadcrumb is printed with it, so the answer is on the screen
  * even though nothing crashed.
  */
+/* A line from the watchdog that does not go through the log buffer.
+ *
+ * The engine writes that buffer under a lock.  If it died while holding it --
+ * which is exactly what a hang in the card driver or a fault inside
+ * con_log_sync() looks like -- then a watchdog that queues behind the lock says
+ * nothing at all, and the log ends in the middle of the engine's last line with
+ * no explanation.  Two independent writes with no lock between them are what
+ * makes the watchdog's report survive that case.
+ */
+static void con_log_direct (const char *text)
+{
+	char buf[CON_LINE_MAX + 2];
+
+	if (!text)
+		return;
+
+	snprintf(buf, sizeof(buf), "%s\n", text);
+
+	if (!con_log_path && con_log_tries < CON_LOG_OPEN_TRIES)
+	{
+		con_log_tries++;
+		con_log_try_open();
+	}
+
+	if (con_log_path)
+		con_log_try(buf);
+}
+
+/* The tail of the breadcrumb ring: the last dozen steps, oldest first.  Printed
+ * once per stall, because the point of a stall report is to say where the
+ * engine was and what it had just been doing. */
+static void con_watchdog_history (void)
+{
+	char line[CON_LINE_MAX + 2];
+	int i, count, start, len;
+
+	count = con_steps_full ? CON_STEPS : con_steps_next;
+	if (count <= 0)
+		return;
+
+	start = con_steps_next - count;
+	if (start < 0)
+		start += CON_STEPS;
+
+	line[0] = '\0';
+	len = 0;
+	for (i = 0; i < count; i++)
+	{
+		const char *step = con_steps[(start + i) % CON_STEPS];
+		int n = snprintf(line + len, sizeof(line) - (size_t)len,
+		                 "%s%s", i ? " <- " : "hist: ", step);
+
+		if (n <= 0 || (size_t)(len + n) >= sizeof(line) - 1)
+			break;
+
+		len += n;
+	}
+
+	if (len)
+		con_log_direct(line);
+}
+
 static int con_watchdog_thread (SceSize args, void *argp)
 {
 	unsigned seen;
 	int stalled = 0;
+	int reported = 0;
 	char logged[64];
 
 	(void) args;
@@ -786,25 +895,23 @@ static int con_watchdog_thread (SceSize args, void *argp)
 
 	for (;;)
 	{
-		char msg[160];
+		char msg[192];
+		char line[CON_LINE_MAX + 2];
 
 		sceKernelDelayThread(1000 * 1000);
 
-		/* A crash takes the screen with it, so the last thing the engine was
-		 * doing has to reach the card *while it is still alive*.  One line per
-		 * change of step, once a second, is cheap and turns the log into a
-		 * timeline: its last entry is where the engine died. */
-		if (strcmp(logged, con_last_step) != 0)
+		/* A crash takes the screen with it, so the last breadcrumb has to
+		 * reach the card *while the engine is still alive*.  Only real
+		 * breadcrumbs are echoed here: a traced line ("> img: ...") is
+		 * already in the log, and echoing it used to double the size of the
+		 * file for nothing. */
+		if (con_last_step_is_mark && strcmp(logged, con_last_step) != 0)
 		{
 			strncpy(logged, con_last_step, sizeof(logged) - 1);
 			logged[sizeof(logged) - 1] = '\0';
 
-			{
-				char line[96];
-
-				snprintf(line, sizeof(line), "mark: %s", logged);
-				con_log_line(line);
-			}
+			snprintf(line, sizeof(line), "mark: %s", logged);
+			con_log_direct(line);
 		}
 
 		/* Once a second, whatever the engine traced goes to the card.  The
@@ -816,27 +923,40 @@ static int con_watchdog_thread (SceSize args, void *argp)
 		{
 			seen = con_progress;
 			stalled = 0;
+			reported = 0;
 			continue;
 		}
 
 		stalled++;
 
-		if (stalled != 8 && (stalled % 10) != 8)
+		/* Five seconds is long enough that a long picture load is not
+		 * mistaken for a hang, and short enough that the answer is already
+		 * in the log when the console is switched off by hand -- which is
+		 * what actually happens: a frozen PSP has to be powered off, and
+		 * nothing written after that moment exists. */
+		if (stalled < 5)
 			continue;
 
-		snprintf(msg, sizeof(msg), "watchdog: %d s without progress, last: %s",
-		         stalled, con_last_step);
+		if (reported && (stalled % 10) != 0)
+			continue;
+
+		snprintf(msg, sizeof(msg),
+		         "watchdog: %d s without progress, last step: %s, phase: %s",
+		         stalled, con_last_step, con_phase);
 
 		pspDebugScreenSetXY(0, CON_ROWS - 1);
 		pspDebugScreenPrintf("%-67.67s", msg);
 		pspDebugScreenSetXY(0, con_row < CON_ROWS ? con_row : 0);
 
-		{
-			char line[192];
+		snprintf(line, sizeof(line), "*** %s", msg);
+		con_log_direct(line);
 
-			snprintf(line, sizeof(line), "*** %s", msg);
-			con_log_line(line);
-		}
+		/* The history is the part that turns "it froze somewhere in a
+		 * picture" into a file name. */
+		if (!reported)
+			con_watchdog_history();
+
+		reported = 1;
 	}
 
 	return 0;

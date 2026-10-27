@@ -680,6 +680,37 @@ void psp_gl_shim_texture_report (void)
 	           tex_arena_free_runs(&shim_arena), shim_arena_fallback);
 }
 
+/* Walk the arena's block list and report the first thing that does not add
+ * up.  This is a corruption detector, not a diagnostic: the block headers live
+ * inside the picture memory the GE samples, so a picture saved with a box
+ * bigger than the room it was given writes straight over them -- and the
+ * symptom of that is a freeze somewhere else entirely, minutes later, in code
+ * that has nothing to do with pictures.  Called once a second from the frame
+ * loop; one failed check is printed once and not repeated.
+ *
+ * Returns 1 while the arena is intact. */
+int psp_gl_shim_texture_sane (void)
+{
+	static int complained;
+	const char *why = NULL;
+
+	if (!shim_arena_ready)
+		return 1;
+
+	if (tex_arena_check(&shim_arena, &why))
+		return 1;
+
+	if (!complained)
+	{
+		complained = 1;
+		psp_tracef("tex: ARENA BROKEN: %s -- picture memory has been written "
+		           "past its block, expect a crash anywhere from here on",
+		           why ? why : "?");
+	}
+
+	return 0;
+}
+
 /* Give back every chunk that holds nothing.  Called after a picture is
  * released: on a console with no VRAM, memory that is not holding a picture
  * should be back in the heap where the map and the decoder can use it. */
@@ -2492,10 +2523,13 @@ void psp_gl_shim_end_frame (void)
 	shim_batch_flush();
 	shim_frames++;
 
-	/* Once a minute, what the picture pool actually looks like: the KB in
-	 * the line below is the engine's own sum, the arena line is what the
-	 * allocator really holds and what is left for the next picture. */
-	if ((shim_frames % 3600) == 0)
+	/* What the picture pool actually looks like: the KB in the frame line
+	 * below is the engine's own sum, the arena line is what the allocator
+	 * really holds and what is left for the next picture.  Ten seconds
+	 * apart, because a session that ends in a freeze lasts a few seconds,
+	 * not the minute this used to wait for -- which is why not one of these
+	 * lines was in the last log. */
+	if (shim_frames == 60 || (shim_frames % 600) == 0)
 		psp_gl_shim_texture_report();
 
 	if (shim_frames <= 3 || (shim_frames % 120) == 0)

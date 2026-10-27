@@ -49,8 +49,15 @@ void psp_mark (const char *what);
 
 /* Called once the frame loop starts: stops writing marks to the card.  The
  * boot trail is what matters, and the drawing code emits a mark per picture.
- * The watchdog still reports the last mark on screen. */
+ * The watchdog still reports the last mark, and the last dozen of them, when
+ * the engine stops making progress. */
 void psp_con_boot_done (void);
+
+/* Which part of the frame the engine is in ("gu: waiting for the GE", "host
+ * frame", ...).  The breadcrumbs name a picture; this says whether the game
+ * was drawing it or waiting for the GPU to finish, which are two very
+ * different bugs.  Cheap: one string copy. */
+void psp_phase (const char *what);
 
 /* Hand the screen to the game.  pspDebugScreen* draws with the same GPU the
  * game uses, so from here on console text goes to kabluk.log only, and a

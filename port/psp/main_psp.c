@@ -228,6 +228,11 @@ int main (int argc, char *argv[])
 			newtime = Sys_DoubleTime();
 			time = newtime - oldtime;
 
+			/* Named for the watchdog: "host frame" plus the breadcrumbs
+			 * say whether a freeze is in the engine's own code or in the
+			 * GPU half of it. */
+			psp_phase("host frame: input/commands/client/screen");
+
 			Host_Frame(time);
 
 			oldtime = newtime;

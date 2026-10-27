@@ -212,6 +212,7 @@ void psp_gu_frame_begin (void)
 	if (!gu_up || gu_in_frame)
 		return;
 
+	psp_phase("gu: opening the frame's draw list");
 	sceGuStart(GU_DIRECT, gu_list);
 	gu_in_frame = 1;
 
@@ -259,6 +260,11 @@ void psp_gu_frame_end (void)
 	psp_gl_shim_test_card();
 
 	psp_gl_shim_set_frame_active(0);
+
+	/* The two places a frame can stop for a long time, named.  If the console
+	 * freezes here, the watchdog says "waiting for the GE" -- and that is a
+	 * completely different investigation from a freeze inside a picture. */
+	psp_phase("gu: waiting for the GE to finish the list");
 	gu_list_words = sceGuFinish();          /* words, see the note above */
 	sceGuSync(0, 0);
 	gu_in_frame = 0;
@@ -279,7 +285,9 @@ void psp_gu_frame_end (void)
 
 	/* Wait for the panel before flipping, not after: this is what keeps the
 	 * frame rate at 60 and stops a half-drawn buffer from being shown. */
+	psp_phase("gu: waiting for the next vblank");
 	sceDisplayWaitVblankStart();
+	psp_phase("gu: swapping buffers");
 	gu_disp_buffer = gu_draw_buffer;		/* what we just drew becomes visible */
 	gu_draw_buffer = (unsigned int)(uintptr_t)sceGuSwapBuffers();
 	gu_frames++;
@@ -309,6 +317,12 @@ void psp_gu_frame_end (void)
 		if (released > 0)
 			psp_tracef("tex: %d idle pictures unloaded, %d KB of pictures left",
 			           released, (int)(psp_gl_shim_texture_bytes() / 1024));
+
+		/* And check that nothing has written over a picture's block
+		 * headers: that kind of corruption shows up as a freeze in code
+		 * that has nothing to do with pictures, so it is worth looking for
+		 * by name instead of by symptom. */
+		psp_gl_shim_texture_sane();
 	}
 
 	if (gu_frames == 60)
@@ -318,4 +332,6 @@ void psp_gu_frame_end (void)
 		           gu_list_words, GU_LIST_SIZE, gu_list_peak);
 
 	psp_gl_shim_end_frame();
+
+	psp_phase("host frame (between frames)");
 }

@@ -54,4 +54,9 @@ void psp_gl_shim_set_evict_hook (void (*fn)(void));
 /* One line stating what the picture pool actually holds, for the frame card. */
 void psp_gl_shim_texture_report (void);
 
+/* 1 while the picture arena's block list is intact.  Checks for a picture that
+ * was written past the block it was given -- the corruption that turns into a
+ * freeze somewhere unrelated.  Cheap enough for once a second. */
+int psp_gl_shim_texture_sane (void);
+
 #endif /* GL_SHIM_H */
