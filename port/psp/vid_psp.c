@@ -27,7 +27,37 @@ qboolean	gl_glsl_water_able = false;
 qboolean	gl_mtexable = false;
 qboolean	gl_texture_env_add = false;
 qboolean	gl_texture_env_combine = false;
-qboolean	gl_texture_NPOT = false;
+/* Non-power-of-two pictures: YES, and the answer has to be yes.
+ *
+ * This flag does not mean "the hardware can sample any size".  The GE cannot:
+ * sceGuTexImage() stores the LOGARITHM of the width and height, so the
+ * hardware only knows power-of-two boxes.  What the flag tells the ENGINE is
+ * whether the BACKEND can take a picture at its own size:
+ *
+ *   false -> gl_texmgr.c stretches every non-power-of-two picture up to the
+ *            next power of two (TexMgr_LoadImage32 -> TexMgr_ResampleTexture)
+ *            and gl_draw.c compensates by sampling only
+ *            source_width/TexMgr_Pad(source_width) of the result.  Two
+ *            compensations for one problem: the picture is resampled to fill
+ *            the box and then a fraction of that stretched copy is shown, so
+ *            the right and bottom edge of the artwork is cropped and the rest
+ *            of it is squeezed.  A 240x112 menu picture is drawn from 240 of
+ *            256 texels and 112 of 128 rows of a stretched copy -- 6% x 12%
+ *            of the picture lost and the rest distorted.  It also costs a
+ *            full extra 32-bit copy of the picture in the hunk, and a couple
+ *            of hundred thousand bilinear samples while the menu loads.
+ *
+ *   true  -> the picture arrives at its own size, and the shim (gl_shim.c)
+ *            copies it into the next power-of-two box itself, keeps the row
+ *            stride right, clears the margin, and scales every u/v from 0..1
+ *            to 0..width/0..height TEXELS (shim_uv_scale_update).  The GE then
+ *            samples exactly the picture and nothing else, pixel for pixel,
+ *            with no resample anywhere.
+ *
+ * So the backend does handle non-power-of-two *pictures*: it pads them in
+ * video memory where padding belongs.  Saying false here made the engine pad
+ * them in software first, and then we padded the padded copy again. */
+qboolean	gl_texture_NPOT = true;
 qboolean	gl_texture_s3tc = false;
 qboolean	gl_texture_rgtc = false;
 qboolean	gl_texture_bptc = false;

@@ -552,6 +552,59 @@ static void shim_put_pixels (shim_texture_t *t, int x, int y, int w, int h,
 	}
 }
 
+/* Repeat the picture's right and bottom edge into the margin of its
+ * power-of-two box.
+ *
+ * The engine hands us pictures at their own size (gl_texture_NPOT is true in
+ * vid_psp.c), so a 196x24 picture lives in the top-left corner of a 256x32
+ * box whose margin shim_texture_alloc() cleared to zero.  u/v never point
+ * into that margin -- they stop at 196 and 24 -- but a GU_LINEAR filter reads
+ * the texels AROUND a sample point, so the last column and the last row are
+ * blended with the cleared margin: a one-pixel dark (or, with alpha, a
+ * see-through) seam down the right and bottom edge of every such picture,
+ * which is what the engine's own TexMgr_PadEdgeFixW/H exists to prevent on a
+ * desktop.
+ *
+ * Copying the edge outwards is exactly that fix, and it only has to happen
+ * once per upload: shim_put_pixels() writes the picture itself, this writes
+ * the border around it, and nothing samples the border after that. */
+static void shim_edge_extend (shim_texture_t *t)
+{
+	int row, col;
+	unsigned short *base, *lastrow;
+	unsigned short edge;
+
+	if (!t || !t->pixels || t->width <= 0 || t->height <= 0)
+		return;
+
+	if (t->potw <= t->width && t->poth <= t->height)
+		return;	/* the box is the picture: nothing to extend into */
+
+	base = (unsigned short *)t->pixels;
+
+	/* right edge: every row of the picture, from its last texel outwards */
+	if (t->potw > t->width)
+	{
+		for (row = 0; row < t->height; row++)
+		{
+			unsigned short *p = base + (size_t)row * (size_t)t->tbw;
+			edge = p[t->width - 1];
+			for (col = t->width; col < t->potw; col++)
+				p[col] = edge;
+		}
+	}
+
+	/* bottom edge: the last row -- already extended to full width above --
+	 * repeated down to the bottom of the box */
+	if (t->poth > t->height)
+	{
+		lastrow = base + (size_t)(t->height - 1) * (size_t)t->tbw;
+		for (row = t->height; row < t->poth; row++)
+			memcpy(base + (size_t)row * (size_t)t->tbw, lastrow,
+			       (size_t)t->potw * sizeof(unsigned short));
+	}
+}
+
 /* Make sure the texture has storage for width x height at the wanted depth,
  * and keep the memory if it already fits.
  *
@@ -1755,6 +1808,7 @@ void glTexImage2D (GLenum target, GLint level, GLint internalFormat,
 
 	shim_put_pixels(t, 0, 0, width, height, (const unsigned char *)pixels,
 	                row_bytes, format);
+	shim_edge_extend(t);
 	shim_uv_scale_update();
 }
 
