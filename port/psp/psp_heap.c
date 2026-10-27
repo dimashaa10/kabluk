@@ -38,6 +38,7 @@
 
 #include <malloc.h>
 #include <sys/reent.h>	/* struct _reent and _REENT, for _mallinfo_r() */
+#include <unistd.h>	/* sbrk(), the floor under the accounting */
 #include <pspkernel.h>
 
 #include "psp_console.h"
@@ -75,6 +76,57 @@ static unsigned int heap_read (int field)
 	}
 }
 
+/* ---- the floor under mallinfo ------------------------------------------
+ *
+ * pspdev's newlib carries no mallinfo, and without it every number above is a
+ * zero -- which is what the first hardware run printed for its whole length
+ * ("malloc 0 KB in use + 0 KB free in 0 chunks"), leaving a hard stop in the
+ * middle of the menu with nothing to blame.  The allocator still asks the
+ * system for memory through sbrk(), and that answer is always there:
+ *
+ *      sbrk(0)   -> the current top of the heap, a plain address
+ *
+ * The distance from the top recorded the first time it is read is how much the
+ * heap has taken from the console since then.  newlib never gives memory back,
+ * so this is a high-water mark and not a live figure -- and that is the point:
+ * a number that keeps climbing frame after frame is either a leak or a heap
+ * shredded into pieces too small to satisfy the next big request, and both of
+ * those are invisible in every other number the console can print. */
+#pragma weak sbrk
+
+static char        *heap_base;
+static unsigned int heap_sbrk_peak;
+
+unsigned int psp_heap_sbrk (void)
+{
+	void *brk;
+	unsigned int grown;
+
+	if (!sbrk)
+		return 0;
+
+	brk = sbrk(0);
+
+	if (!heap_base)
+	{
+		heap_base = (char *)brk;
+		return 0;
+	}
+
+	grown = (unsigned int)((char *)brk - heap_base);
+
+	if (grown > heap_sbrk_peak)
+		heap_sbrk_peak = grown;
+
+	return grown;
+}
+
+unsigned int psp_heap_sbrk_peak_bytes (void)
+{
+	psp_heap_sbrk();
+	return heap_sbrk_peak;
+}
+
 unsigned int psp_heap_in_use (void)  { return heap_read(0); }
 unsigned int psp_heap_free (void)    { return heap_read(1); }
 unsigned int psp_heap_arena (void)   { return heap_read(2); }
@@ -88,9 +140,13 @@ void psp_heap_report (const char *where)
 	if (!mallinfo && !_mallinfo_r)
 	{
 		/* Neither name exists: say so instead of printing four zeros that
-		 * look like an empty heap. */
-		psp_tracef("heap: %s: no mallinfo in this libc, cannot account [system free %d KB]",
-		           where ? where : "?", sceKernelTotalFreeMemSize() / 1024);
+		 * look like an empty heap, and give the one number that is always
+		 * available -- how far the heap has grown since the first read. */
+		psp_tracef("heap: %s: no mallinfo in this libc, heap grown %d KB "
+		           "since start [system free %d KB]",
+		           where ? where : "?",
+		           (int)(psp_heap_sbrk_peak_bytes() / 1024),
+		           sceKernelTotalFreeMemSize() / 1024);
 		return;
 	}
 

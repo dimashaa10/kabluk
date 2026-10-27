@@ -447,6 +447,12 @@ static int shim_texture_alloc (shim_texture_t *t, int width, int height, int opa
 	           t->potw != potw || t->poth != poth ||
 	           (t->psm == GU_PSM_5650) != (opaque != 0));
 
+	/* Only a block that is too small is replaced.  The picture changing its
+	 * FORMAT does not count: GU_PSM_4444 and GU_PSM_5650 are both two bytes
+	 * per pixel, so the block that is already there fits exactly.  It used
+	 * to be freed in that case, and the replacement malloc was the same
+	 * size -- the classic way to shred a pool into pieces that are all too
+	 * small for the next big request while the total held never grows. */
 	if (t->pixels && t->bytes < need)
 	{
 		free(t->pixels);

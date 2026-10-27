@@ -513,7 +513,12 @@ void psp_trace (const char *step)
 
 void psp_tracef (const char *fmt, ...)
 {
-	char buf[160];
+	/* Long enough for the frame diagnostics, which carry a dozen numbers
+	 * (draw list words, heap, ring, viewport, scissor).  vsnprintf() below
+	 * truncates rather than overruns, so the size is only about not losing
+	 * the end of a line -- and the end of these lines is the part that
+	 * changes. */
+	char buf[320];
 	va_list args;
 
 	va_start(args, fmt);

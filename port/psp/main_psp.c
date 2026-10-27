@@ -19,6 +19,8 @@
 
 /* port/psp/psp_heap.c -- newlib's own malloc accounting (weak mallinfo()). */
 extern unsigned int psp_heap_in_use (void);
+extern unsigned int psp_heap_sbrk (void);
+extern unsigned int psp_heap_sbrk_peak_bytes (void);
 extern unsigned int psp_heap_free (void);
 extern unsigned int psp_heap_chunks (void);
 extern void         psp_heap_report (const char *where);
@@ -242,9 +244,12 @@ int main (int argc, char *argv[])
 				 * count they show whether the pool grows per
 				 * frame (a leak) or was simply never big enough
 				 * for one large request. */
-				psp_tracef("run: frame %d, state %d, malloc %d KB in use "
-				           "+ %d KB free in %d chunks, %d KB of textures",
+				psp_tracef("run: f %d state %d, heap %d KB grown "
+				           "(peak %d KB), malloc %d/%d KB in %d chunks, "
+				           "tex %d KB",
 				           frame, (int)cls.state,
+				           (int)(psp_heap_sbrk() / 1024),
+				           (int)(psp_heap_sbrk_peak_bytes() / 1024),
 				           (int)(psp_heap_in_use() / 1024),
 				           (int)(psp_heap_free() / 1024),
 				           (int)psp_heap_chunks(),
