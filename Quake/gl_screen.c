@@ -26,6 +26,21 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "time.h"
 #include "quakedef.h"
 
+/* PSP breadcrumbs for the screen update -- first 3 calls only.
+ *
+ * These run once per frame, so an unconditional write to the memory stick
+ * would be the slowest thing in the engine; the first few frames are the ones
+ * that matter, and after that the counter turns the mark into a comparison.
+ * Defined up here on purpose: a macro that is used before its #define becomes
+ * an implicit function call and only shows up with -Werror. */
+#if defined(PLATFORM_PSP) || defined(__psp__)
+extern void psp_trace (const char *step);
+static int psp_scr_frames;
+#define SCR_MARK(x)	do { if (psp_scr_frames < 3) psp_trace(x); } while (0)
+#else
+#define SCR_MARK(x)	do { } while (0)
+#endif
+
 /*
 
 background clear
@@ -5297,6 +5312,8 @@ void SCR_UpdateScreen (void)
 	if (!scr_initialized || !con_initialized)
 		return;				// not initialized yet
 
+	SCR_MARK("scr: begin");
+
 
 	GL_BeginRendering (&glx, &gly, &glwidth, &glheight);
 
@@ -5364,23 +5381,30 @@ void SCR_UpdateScreen (void)
 		if (vid_fxaa.value > 0) // woods #fxaa begin FXAA frame for 3D rendering
 			FXAA_BeginFrame();
 
+		SCR_MARK("scr: V_RenderView");
 		V_RenderView ();
+		SCR_MARK("scr: V_RenderView done");
 
 		if (vid_fxaa.value > 0) // woods #fxaa end FXAA frame for 3D rendering
 			FXAA_EndFrame();
 
 		GL_Set2D ();
+		SCR_MARK("scr: set2d");
 
 		//FIXME: only call this when needed
 		SCR_TileClear ();
+		SCR_MARK("scr: tileclear done");
 
 		if (!cl.intermission)
 		{
 			Sbar_Draw ();
+			SCR_MARK("scr: sbar done");
 			if (!scr_drawloading && !con_forcedup)
 				SCR_DrawCrosshair (); //johnfitz
 		}
 	}
+
+	SCR_MARK("scr: overlays");
 
 	if (scr_drawdialog) //new game confirm
 	{
@@ -5435,11 +5459,19 @@ void SCR_UpdateScreen (void)
 		M_Draw ();
 	}
 
+	SCR_MARK("scr: gamma");
+
 	V_UpdateBlend (); //johnfitz -- V_UpdatePalette cleaned up and renamed
 
 	GLSLGamma_GammaCorrect ();
 
+	SCR_MARK("scr: end");
 	GL_EndRendering ();
+
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	if (psp_scr_frames < 100)
+		psp_scr_frames++;
+#endif
 }
 
 //============================================================================
