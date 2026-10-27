@@ -15,6 +15,7 @@
 
 #include "quakedef.h"
 #include "glquake.h"
+#include "gu_psp.h"
 
 /* ---- the ones the renderer asks about before using an extension ---- */
 qboolean	gl_vbo_able = false;
@@ -82,12 +83,21 @@ void VID_Init (void)
 	Cvar_RegisterVariable(&vid_fsaa);
 	Cvar_RegisterVariable(&vid_fxaa);
 
-	Con_Printf("Video: %dx%d, sceGu renderer not wired up yet (stage M4)\n",
-	           vid.width, vid.height);
+	/* Stage M4, step 1: the GU comes up and starts presenting frames.  What
+	 * is drawn inside those frames is still nothing but a test pattern -- the
+	 * GL shim that turns the engine's drawing calls into GU commands is the
+	 * next step. */
+	if (psp_gu_init())
+		Con_Printf("Video: %dx%d, sceGu context ready (stage M4 step 1)\n",
+		           vid.width, vid.height);
+	else
+		Con_Printf("Video: %dx%d, sceGu NOT available -- no frames will be shown\n",
+		           vid.width, vid.height);
 }
 
 void VID_Shutdown (void)
 {
+	psp_gu_shutdown();
 }
 
 void VID_Update (vrect_t *rects)
@@ -162,8 +172,16 @@ void GL_BeginRendering (int *x, int *y, int *width, int *height)
 	if (y) *y = 0;
 	if (width) *width = vid.width;
 	if (height) *height = vid.height;
+
+	/* Opens the GU draw list and clears it.  Every drawing call the engine
+	 * makes between here and GL_EndRendering() is meant to land in this
+	 * list; for now the shim does not exist, so the list holds only the
+	 * placeholder pattern from gu_psp.c. */
+	psp_gu_frame_begin();
 }
 
 void GL_EndRendering (void)
 {
+	/* Closes the list, waits for the GPU and presents with vsync. */
+	psp_gu_frame_end();
 }
