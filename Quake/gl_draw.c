@@ -275,6 +275,8 @@ qpic_t *Draw_PicFromWad2 (const char *name, unsigned int texflags)
 	pixel_count = (size_t)p->width * p->height;
 	if (pixel_count > info->size - sizeof(int)*2)
 	{ Con_SafePrintf ("Draw_PicFromWad: pic \"%s\" truncated (%u*%u requires %u at least bytes)\n", name, p->width,p->height, (unsigned)(sizeof(int)*2+pixel_count)); return pic_nul; }
+	DRAW_MARK(va("lump %s", name));
+
 	if (wad_version == WAD_VERSION_3)
 		has_wad_palette = WAD_ParsePalette((const byte *)p, info->size, sizeof(int)*2+pixel_count, &wad_palette, &wad_palette_colors);
 	if (info->size > sizeof(int)*2+pixel_count && !has_wad_palette)
@@ -295,6 +297,8 @@ qpic_t *Draw_PicFromWad2 (const char *name, unsigned int texflags)
 		int		i, j, k;
 		int		texnum;
 
+		DRAW_MARK(va("scrap %s", name));
+
 		texnum = Scrap_AllocBlock (p->width + SCRAP_PADDING, p->height + SCRAP_PADDING, &x, &y); // woods iw
 		scrap_dirty = true;
 		k = 0;
@@ -314,6 +318,8 @@ qpic_t *Draw_PicFromWad2 (const char *name, unsigned int texflags)
 	{
 		char texturename[64]; //johnfitz
 		q_snprintf (texturename, sizeof(texturename), "%s:%s", WADFILENAME, name); //johnfitz
+
+		DRAW_MARK(texturename);
 
 		if (has_wad_palette)
 		{

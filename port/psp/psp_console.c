@@ -73,6 +73,38 @@ static int con_log_try_open (void);
 static void con_write (const char *s);
 static void con_putc (int c);
 
+/* One line, one write, one close.
+ *
+ * con_logfmt() is fine for stitching a line together from pieces, but two
+ * threads stitching at once produced log entries like
+ *
+ *	mark: COM_InitFilesystemPlaying registered version.
+ *
+ * A single write is atomic enough for the card and keeps every entry readable. */
+static void con_log_line (const char *text)
+{
+	SceUID fd;
+	char buf[192];
+
+	if (!con_log_path || !text)
+		return;
+
+	snprintf(buf, sizeof(buf), "%s\n", text);
+
+	fd = sceIoOpen(con_log_path,
+	               PSP_O_WRONLY | PSP_O_CREAT | PSP_O_APPEND, 0777);
+	if (fd < 0)
+	{
+		con_log_err = (int)fd;
+		return;
+	}
+
+	if (sceIoWrite(fd, buf, (unsigned int)strlen(buf)) < 0)
+		con_log_err = -1;
+
+	sceIoClose(fd);
+}
+
 static void con_logfmt (const char *s)
 {
 	SceUID fd;
@@ -472,12 +504,34 @@ void psp_tracef (const char *fmt, ...)
  */
 void psp_mark (const char *what)
 {
-	strncpy(con_last_step, what ? what : "?", sizeof(con_last_step) - 1);
+	char line[96];
+	static char written[64];
+
+	const char *step = what ? what : "?";
+
+	if (!strcmp(step, written))
+		return;		/* same as last time: nothing to record */
+
+	strncpy(written, step, sizeof(written) - 1);
+	written[sizeof(written) - 1] = '\0';
+
+	strncpy(con_last_step, step, sizeof(con_last_step) - 1);
 	con_last_step[sizeof(con_last_step) - 1] = '\0';
 
 	/* Counts as progress: loading sixty pictures in a row is slow, not stuck,
 	 * and the watchdog must not shout at it. */
 	con_progress++;
+
+	/* And it goes straight to the card.
+	 *
+	 * This is the difference between "the console went off and the last log
+	 * line is '> Sbar_Init'" and knowing which picture did it: a crash takes
+	 * the screen instantly and the watchdog only speaks once a second, so a
+	 * fast death leaves nothing behind.  One small write per changed step
+	 * costs a few milliseconds per picture and turns the log into an exact
+	 * trail. */
+	snprintf(line, sizeof(line), "mark: %s", step);
+	con_log_line(line);
 }
 
 void psp_con_logsync (void)
@@ -527,9 +581,12 @@ static int con_watchdog_thread (SceSize args, void *argp)
 			strncpy(logged, con_last_step, sizeof(logged) - 1);
 			logged[sizeof(logged) - 1] = '\0';
 
-			con_logfmt("mark: ");
-			con_logfmt(logged);
-			con_logfmt("\n");
+			{
+				char line[96];
+
+				snprintf(line, sizeof(line), "mark: %s", logged);
+				con_log_line(line);
+			}
 		}
 
 		if (con_progress != seen)
@@ -551,9 +608,12 @@ static int con_watchdog_thread (SceSize args, void *argp)
 		pspDebugScreenPrintf("%-67.67s", msg);
 		pspDebugScreenSetXY(0, con_row < CON_ROWS ? con_row : 0);
 
-		con_logfmt("*** ");
-		con_logfmt(msg);
-		con_logfmt("\n");
+		{
+			char line[192];
+
+			snprintf(line, sizeof(line), "*** %s", msg);
+			con_log_line(line);
+		}
 	}
 
 	return 0;
