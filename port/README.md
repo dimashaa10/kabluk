@@ -826,6 +826,17 @@ port/
            делом зовёт `Draw_ForgetTextures()`: кэш картинок забывает
            указатели на текстуры (имена остаются, картинка грузится заново в
            тот же `qpic_t`), и второй раз освобождать уже нечего;
+        3d. и ещё одна строка того же расследования. На консоли арена снова
+           сказала `0 idle pictures unloaded` при полном пуле, а строка
+           `pic: pool full, nothing to unload: …` из пункта 3b **не
+           появилась** — значит проход по кэшу не увидел ни одной картинки.
+           Теперь эта строка печатается всегда, когда ничего не освободилось,
+           и сама содержит счётчики:
+           `pic: nothing to unload: N cached names (M already evicted),
+           K live (X asked fewer than 8 times, Y drawn in the last 2 frames,
+           Z without a texture), draw_initialized 0/1`. Этого хватает, чтобы
+           отличить «кэш пуст» от «кэш полон, но всё занято», без следующих
+           догадок;
         4. в лог добавлены честные строки: `tex: no room for a WxH picture
            (… box = N KB); X KB of Y KB arena in use (N chunks), largest free
            Z KB in R runs, cap reached/not reached` (раньше там стояло
