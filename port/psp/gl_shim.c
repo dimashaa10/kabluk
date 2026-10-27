@@ -29,6 +29,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <malloc.h>	/* memalign() */
 #include <math.h>
 
 #include "quakedef.h"
@@ -86,7 +87,8 @@ typedef struct
 	int          used;
 	unsigned int psm;             /* GU_PSM_4444 or GU_PSM_5650          */
 	int          width, height;   /* what the engine asked for          */
-	int          tbw;             /* row stride in pixels (multiple of 4) */
+	int          potw, poth;      /* what the GE is told (power of two) */
+	int          tbw;             /* row stride in pixels (power of two) */
 	void        *pixels;          /* main-memory copy the GU samples     */
 	size_t       bytes;           /* 2 bytes per pixel: tbw * height * 2 */
 	int          filter;          /* GU_NEAREST or GU_LINEAR             */
@@ -122,6 +124,11 @@ static unsigned int   shim_ge_used;            /* vertices handed to the GE */
 static unsigned int   shim_ge_peak;            /* ... and the frame's high mark */
 static unsigned int   shim_ge_overflows;
 static float          shim_current_u, shim_current_v;
+/* How much of the power-of-two box the picture actually fills: a 240x112
+ * picture lives in a 256x128 texture, so the vertex's u is multiplied by
+ * 240/256 and its v by 112/128 on the way out.  Kept up to date by
+ * shim_uv_scale_update() whenever the bound texture (or its size) changes. */
+static float          shim_u_scale = 1.0f, shim_v_scale = 1.0f;
 static unsigned int   shim_current_color = 0xFFFFFFFFu;
 
 /* pipeline switches */
@@ -288,6 +295,25 @@ static shim_texture_t *shim_texture_for (unsigned int id, int create)
 	return shim_textures[id].used ? &shim_textures[id] : NULL;
 }
 
+/* Recomputed whenever a texture is bound or (re)sized: the vertex path needs
+ * the current picture-to-box ratio, and it runs thousands of times a frame, so
+ * it reads two floats instead of walking the texture table. */
+static void shim_uv_scale_update (void)
+{
+	shim_texture_t *t = shim_texture_for(shim_texture_bound, 0);
+
+	if (t && t->width > 0 && t->height > 0 && t->potw > 0 && t->poth > 0)
+	{
+		shim_u_scale = (float)t->width / (float)t->potw;
+		shim_v_scale = (float)t->height / (float)t->poth;
+	}
+	else
+	{
+		shim_u_scale = 1.0f;
+		shim_v_scale = 1.0f;
+	}
+}
+
 /* ---- 16-bit storage ----
  *
  * EDRAM belongs to the two frame buffers and the depth buffer, so the GE
@@ -367,15 +393,44 @@ static void shim_put_pixels (shim_texture_t *t, int x, int y, int w, int h,
  * between GL_RGB and GL_RGBA uploads then walks the heap down until malloc
  * cannot find a block at all, while the amount actually held never grows.
  * Reusing the block removes the churn entirely. */
+/* Round a picture size up to what the GE can sample.
+ *
+ * sceGuTexImage() does not store width and height, it stores their LOGARITHMS
+ * (pspsdk src/gu/sceGuTexImage.c: getExp(height) << 8 | getExp(width)), and its
+ * own assert says "Texture width must be power of 2".  A 240x112 menu picture
+ * announced as 128x64 is sampled from the wrong place in memory, with the wrong
+ * row stride: on the panel that is a stretched, striped mess, and it is exactly
+ * what the non-power-of-two menu art looked like, while the power-of-two art
+ * (charset 128x128, logos 256x64, plaque 32x256, conback2 512x512) was fine.
+ *
+ * So the picture is copied into the next power-of-two box and every texture
+ * coordinate is scaled by width/potw at vertex time (shim_uv_scale below).
+ * 8 is the floor: it keeps the row 16 bytes wide, which is what an unswizzled
+ * 16-bit texture wants. */
+static int shim_pot (int n)
+{
+	int p = 8;
+
+	while (p < n && p < 1024)
+		p <<= 1;
+
+	return p;
+}
+
 static int shim_texture_alloc (shim_texture_t *t, int width, int height, int opaque)
 {
 	size_t need;
 	int changed;
+	int potw = shim_pot(width), poth = shim_pot(height);
 
-	t->tbw = (width + 3) & ~3;		/* row stride the GU can live with */
-	need = (size_t)t->tbw * (size_t)height * 2;
+	t->tbw = potw;
+	need = (size_t)potw * (size_t)poth * 2;
+
+	if (potw < width || poth < height)
+		return 0;	/* beyond what the GE can address; the caller logs it */
 
 	changed = (t->width != width || t->height != height ||
+	           t->potw != potw || t->poth != poth ||
 	           (t->psm == GU_PSM_5650) != (opaque != 0));
 
 	if (t->pixels && t->bytes < need)
@@ -389,11 +444,17 @@ static int shim_texture_alloc (shim_texture_t *t, int width, int height, int opa
 
 	t->width = width;
 	t->height = height;
+	t->potw = potw;
+	t->poth = poth;
 	t->psm = opaque ? GU_PSM_5650 : GU_PSM_4444;
 
 	if (!t->pixels)
 	{
-		t->pixels = malloc(need);
+		/* 16-byte alignment is not optional: sceGuTexImage() asserts
+		 * "Texture buffer pointer must be 16-byte aligned", and a
+		 * plain malloc() on this libc hands back 8.  A misaligned
+		 * texture moves every row by four texels. */
+		t->pixels = memalign(16, need);
 		if (!t->pixels)
 			return 0;
 
@@ -406,8 +467,10 @@ static int shim_texture_alloc (shim_texture_t *t, int width, int height, int opa
 	{
 		/* A linear filter reads one texel past the end of the picture at
 		 * the right and bottom edge, and a reused block still holds the
-		 * previous picture there. */
-		memset(t->pixels, 0, (size_t)t->tbw * (size_t)height * 2);
+		 * previous picture there.  The whole power-of-two box is cleared
+		 * for the same reason: the space between the picture and the
+		 * edge of the box is sampled by that filter. */
+		memset(t->pixels, 0, need);
 	}
 
 	t->dirty = 1;
@@ -445,7 +508,7 @@ static void shim_upload_bound_texture (void)
 	/* Unswizzled: the engine's pictures are not power-of-two, and only
 	 * swizzled textures have to be. */
 	shim_guTexMode(t->psm, 0, 0, 0);
-	shim_guTexImage(0, t->width, t->height, t->tbw, t->pixels);
+	shim_guTexImage(0, t->potw, t->poth, t->tbw, t->pixels);
 	shim_guTexFilter(t->filter, t->filter);
 	shim_guTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
 	shim_guTexFlush();
@@ -489,8 +552,8 @@ static void shim_emit_vertex (float x, float y, float z)
 	sy = (float)PSP_SCREEN_HEIGHT -
 	     ((float)shim_vp_y + (cy * 0.5f + 0.5f) * (float)shim_vp_h);
 
-	shim_vertices[shim_vertex_count].u = shim_current_u;
-	shim_vertices[shim_vertex_count].v = shim_current_v;
+	shim_vertices[shim_vertex_count].u = shim_current_u * shim_u_scale;
+	shim_vertices[shim_vertex_count].v = shim_current_v * shim_v_scale;
 	shim_vertices[shim_vertex_count].color = shim_current_color;
 	shim_vertices[shim_vertex_count].x = sx;
 	shim_vertices[shim_vertex_count].y = sy;
@@ -1100,6 +1163,7 @@ void glBindTexture (GLenum target, GLuint texture)
 {
 	(void)target;
 	shim_texture_bound = texture;
+	shim_uv_scale_update();
 }
 
 void glTexImage2D (GLenum target, GLint level, GLint internalFormat,
@@ -1143,6 +1207,7 @@ void glTexImage2D (GLenum target, GLint level, GLint internalFormat,
 
 	shim_put_pixels(t, 0, 0, width, height, (const unsigned char *)pixels,
 	                row_bytes, format);
+	shim_uv_scale_update();
 }
 
 void glTexSubImage2D (GLenum target, GLint level, GLint xoffset, GLint yoffset,
@@ -1173,6 +1238,7 @@ void glTexSubImage2D (GLenum target, GLint level, GLint xoffset, GLint yoffset,
 	shim_put_pixels(t, xoffset, yoffset, width, height,
 	                (const unsigned char *)pixels, row_bytes, format);
 	t->dirty = 1;
+	shim_uv_scale_update();
 }
 
 void glTexParameterf (GLenum target, GLenum pname, GLfloat param)
@@ -1389,5 +1455,6 @@ void psp_gl_shim_begin_frame (void)
 	/* Whatever texture was current at the end of the last frame has to be
 	 * re-announced to the GE: the engine binds gl-world textures by the
 	 * dozen inside a frame, but the one left bound must still be valid. */
+	shim_uv_scale_update();
 	shim_upload_bound_texture();
 }
