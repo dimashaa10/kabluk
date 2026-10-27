@@ -74,6 +74,14 @@ void VID_Init (void)
 	vid.recalc_refdef = 1;
 	vid.fullbright = 0;
 
+	/* Register the video cvars even though nothing renders yet: default.cfg
+	 * sets 'gamma' and 'vid_fsaa', and an unregistered cvar turns every line
+	 * of the player's config into 'Unknown command'. */
+	Cvar_RegisterVariable(&vid_contrast);
+	Cvar_RegisterVariable(&vid_gamma);
+	Cvar_RegisterVariable(&vid_fsaa);
+	Cvar_RegisterVariable(&vid_fxaa);
+
 	Con_Printf("Video: %dx%d, sceGu renderer not wired up yet (stage M4)\n",
 	           vid.width, vid.height);
 }
