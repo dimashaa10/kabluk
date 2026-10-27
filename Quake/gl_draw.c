@@ -185,8 +185,79 @@ static void Draw_CachePicTouched (cachepic_t *pic)
 	pic->evicted = false;
 }
 
-/* Release the texture of every cached picture that has not been asked for in
- * the last min_idle_frames frames, and that is safe to release.
+/* The cachepic_t a picture belongs to, or NULL when it is not one of ours.
+ *
+ * Every picture the cache hands out lives inside its own entry, at
+ * &menu_cachepics[i].pic, so the entry can be found again from the pointer the
+ * draw calls are given -- by arithmetic only, no table, no search.  That is
+ * what lets the draw path notice "this entry was released" and load it again;
+ * without it a released picture could only ever be replaced by its next
+ * Draw_CachePic() by name, and anything holding the pointer drew nothing. */
+static cachepic_t *Draw_CacheEntryFor (const qpic_t *p)
+{
+	size_t off;
+
+	if (!p || menu_numcachepics <= 0)
+		return NULL;
+
+	/* measure from the first entry's own pic, so the offset of the member
+	 * inside the struct does not have to be known here */
+	if ((uintptr_t)p < (uintptr_t)&menu_cachepics[0].pic)
+		return NULL;
+
+	off = (size_t)((uintptr_t)p - (uintptr_t)&menu_cachepics[0].pic);
+
+	if (off % sizeof(cachepic_t))
+		return NULL;
+
+	if (off / sizeof(cachepic_t) >= (size_t)menu_numcachepics)
+		return NULL;
+
+	return (cachepic_t *)(void *)((char *)p - offsetof(cachepic_t, pic));
+}
+
+/* A draw call is about to use this picture: remember that, and load it again if
+ * it was released since the last time.
+ *
+ * Two things make releasing a cached picture safe, and this is the second one.
+ * Draw_EvictCachePics() zeroes the glpic_t and the size, so a released picture
+ * draws nothing at all -- no stray texels, but also no picture, for ever, for
+ * whoever kept the pointer.  The menu code asks again by name every frame, so
+ * it never noticed; the QC menu and the status bar hold qpic_t pointers in
+ * their own tables and never ask again, which is exactly how a run ends up
+ * holding 4 MB of pictures that nothing can release.
+ *
+ * The reload goes through Draw_CachePic(), i.e. back into the same entry and
+ * therefore the same qpic_t address, so the caller's pointer stays valid. */
+static qboolean draw_reviving_pic;
+
+static qpic_t *Draw_RevivePic (qpic_t *pic)
+{
+	cachepic_t *entry;
+
+	if (!pic)
+		return pic;
+
+	entry = Draw_CacheEntryFor(pic);
+	if (!entry)
+		return pic;
+
+	/* Drawn now, so "idle for N frames" means what it says even for a
+	 * picture nobody asks for by name any more. */
+	entry->lastframe = r_framecount;
+
+	if (!entry->evicted || !entry->name[0] || draw_reviving_pic)
+		return pic;
+
+	draw_reviving_pic = true;
+	Draw_CachePic(entry->name);
+	draw_reviving_pic = false;
+
+	return &entry->pic;
+}
+
+/* Release the texture of every cached picture that has not been drawn in the
+ * last min_idle_frames frames.
  *
  * Returns the number of pictures released.  The pictures themselves stay in
  * the cache: the next Draw_CachePic()/Draw_PicFromWad() with the same name
@@ -231,15 +302,22 @@ int Draw_EvictCachePics (int min_idle_frames)
 		live++;
 #endif
 
-		/* asked a handful of times at load and then remembered by the
-		 * caller: not ours to free */
-		if (pic->requests < CACHEPIC_REQUESTS_TO_EVICT)
-		{
+		/* Idleness alone, now.  This used to refuse to release anything that
+		 * had been asked for fewer than eight times, because a picture asked
+		 * once and kept in somebody's static pointer would have dangled.
+		 *
+		 * That rule is what made the pool grow until it was full and then
+		 * refuse to give anything back: the log had 124 live pictures and
+		 * "0 idle pictures unloaded" on every emergency pass, because the
+		 * QC menu and the status bar ask for a picture once and then keep
+		 * the pointer.  Draw_RevivePic() in the draw path is what replaced
+		 * the rule -- a released picture is loaded again by whoever draws
+		 * it, into the same qpic_t, so nothing dangles and nothing is
+		 * permanently lost. */
 #ifdef PSP_CACHEPIC_DIAG
+		if (pic->requests < CACHEPIC_REQUESTS_TO_EVICT)
 			lowreq++;
 #endif
-			continue;
-		}
 
 		if ((int)r_framecount - pic->lastframe < min_idle_frames)
 		{
@@ -286,25 +364,34 @@ int Draw_EvictCachePics (int min_idle_frames)
 	 * menu really does use all of them in the last two frames, or because
 	 * the cache is not counting asks at all. */
 #ifdef PSP_CACHEPIC_DIAG
-	/* Printed even when the pass found no picture at all: the hardware log
-	 * had the shim saying "0 idle pictures unloaded" with the pool full, and
-	 * this line did not appear, which can only mean the pass walked over
-	 * nothing.  So the count itself is the finding, and it is in the line. */
-	if (released == 0)
+	/* A pass that released nothing while the pool is full is the state the
+	 * hardware log kept showing, and it is worth exactly one line: which rule
+	 * stopped every picture.  Once per ten seconds at most, so a full pool
+	 * cannot flood the log. */
+	if (released == 0 && live > 0)
 	{
-		static int reports;
+		static int last_report;
 
-		if (reports < 20)
+		if ((int)r_framecount - last_report >= 600 || last_report == 0)
 		{
-			reports++;
-			PSP_NOTE("pic: nothing to unload: %d cached names (%d of them "
-			         "already evicted), %d live (%d asked fewer than %d times, "
-			         "%d drawn in the last %d frames, %d without a texture), "
-			         "draw_initialized %d",
-			         (int)menu_numcachepics, gone, live, lowreq,
-			         CACHEPIC_REQUESTS_TO_EVICT, fresh, min_idle_frames, notex,
-			         (int)draw_initialized);
+			last_report = (int)r_framecount ? (int)r_framecount : 1;
+			PSP_NOTE("pic: evict(%d) released nothing: %d live of %d entries "
+			         "(%d already evicted, %d asked under %d times), %d drawn "
+			         "in the last %d frames, %d without a texture",
+			         min_idle_frames, live, (int)menu_numcachepics, gone,
+			         lowreq, CACHEPIC_REQUESTS_TO_EVICT, fresh,
+			         min_idle_frames, notex);
 		}
+	}
+	else if (released > 0)
+	{
+		static int released_total;
+
+		released_total += released;
+
+		if (released_total == released)
+			PSP_NOTE("pic: picture cache can release memory now: %d pictures "
+			         "released in the first pass", released);
 	}
 #endif
 
@@ -2087,6 +2174,8 @@ void Draw_ScaledPicAlpha (int x, int y, qpic_t* pic, float scale, float alpha)
 
 	glpic_t* gl;
 
+	pic = Draw_RevivePic(pic);
+
 	if (scrap_dirty)
 		Scrap_Upload();
 	gl = (glpic_t*)pic->data;
@@ -2129,7 +2218,11 @@ Draw_Pic -- johnfitz -- modified
 void Draw_Pic (int x, int y, qpic_t *pic)
 {
 	if (!pic) return; // woods (iw) #democontrols
-	
+
+	/* drawn now: mark it, and load it again if the cache had to release
+	 * it while nobody was looking (gl_draw.c, Draw_RevivePic) */
+	pic = Draw_RevivePic(pic);
+
 	glpic_t			*gl;
 
 	if (scrap_dirty)
@@ -2221,6 +2314,8 @@ void Draw_SubPic_QW (int x, int y, qpic_t *pic, int ofsx, int ofsy, int w, int h
 	float nsl, ntl, nsh, nth;
 	float oldw, oldh;
 
+	pic = Draw_RevivePic(pic);
+
 	if (scrap_dirty)
 		Scrap_Upload ();
 	gl = (glpic_t *)pic->data;
@@ -2253,6 +2348,8 @@ void Draw_SubPic (float x, float y, float w, float h, qpic_t *pic, float s1, flo
 {
 	glpic_t			*gl;
 
+	pic = Draw_RevivePic(pic);
+
 	s2 += s1;
 	t2 += t1;
 
@@ -2276,6 +2373,8 @@ void Draw_SubPic (float x, float y, float w, float h, qpic_t *pic, float s1, flo
 void Draw_PicPolygon(qpic_t *pic, unsigned int numverts, polygonvert_t *verts)
 {
 	glpic_t			*gl;
+
+	pic = Draw_RevivePic(pic);
 
 	if (scrap_dirty)
 		Scrap_Upload ();
@@ -2303,6 +2402,8 @@ void Draw_TransPicTranslate (int x, int y, qpic_t *pic, plcolour_t top, plcolour
 {
 	static plcolour_t oldtop = {{-2}};
 	static plcolour_t oldbottom = {{-2}};
+
+	pic = Draw_RevivePic(pic);
 
 	if (!CL_PLColours_Equals(top, oldtop) || !CL_PLColours_Equals(bottom, oldbottom))
 	{
@@ -2550,6 +2651,7 @@ void Draw_TileClear (int x, int y, int w, int h)
 {
 	glpic_t	*gl;
 
+	draw_backtile = Draw_RevivePic(draw_backtile);
 	gl = (glpic_t *)draw_backtile->data;
 
 	glColor3f (1,1,1);
