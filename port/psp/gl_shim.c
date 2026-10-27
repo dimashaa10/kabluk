@@ -223,6 +223,7 @@ static unsigned int shim_3d_warned_frame = ~0u;
 static shim_vertex_t *shim_batch_v;
 static int            shim_batch_n;
 static int            shim_batch_prim;
+static unsigned int   shim_batch_tex;
 
 static void shim_batch_flush (void);
 
@@ -253,32 +254,53 @@ static void shim_guShadeModel (int m)             { shim_batch_flush(); if (shim
 static void shim_guTexFilter (int min, int mag)   { shim_batch_flush(); if (shim_frame_active) sceGuTexFilter(min, mag); }
 static void shim_guTexFlush (void)                { shim_batch_flush(); if (shim_frame_active) sceGuTexFlush(); }
 static void shim_guTexFunc (int tfx, int tcc)     { shim_batch_flush(); if (shim_frame_active) sceGuTexFunc(tfx, tcc); }
+static void shim_guTexSync (void)              { shim_batch_flush(); if (shim_frame_active) sceGuTexSync(); }
 static void shim_guTexImage (int mip, int w, int h, int tbw, const void *p)
                                                   { shim_batch_flush(); if (shim_frame_active) sceGuTexImage(mip, w, h, tbw, p); }
 /* NOT "mips": psp-gcc predefines the macro `mips` (the target CPU family is
  * baked into the compiler), so a parameter of that name is replaced by a
  * number before it is even parsed.  The desktop syntax check cannot see it. */
-static void shim_guTexMode (int psm, int levels, int a2, int swz)
-                                                  { shim_batch_flush(); if (shim_frame_active) sceGuTexMode(psm, levels, a2, swz); }
-static void shim_guDrawArray (int prim, unsigned int fmt, int count, const void *idx, const void *verts)
+/* Texturing on/off, sent only when it changes.
+ *
+ * glEnd() used to send GU_TEXTURE_2D unconditionally for every draw.  Each of
+ * those is a GE command, and every GE command flushes the pending batch, so
+ * the batching written to merge the console's 382 one-character draws never
+ * merged a single pair: the log showed 391 batches for 392 draws.  The state
+ * is what the GE remembers, so saying it twice is pure cost. */
+static int shim_ge_tex2d = -1;
+
+static void shim_guTexEnable (int on)
 {
-	shim_batch_flush();
-	shim_frame_verts += (unsigned int)count;
-	if (shim_frame_active)
-		sceGuDrawArray(prim, fmt, count, idx, verts);
+	if (shim_ge_tex2d == on)
+		return;
+
+	shim_ge_tex2d = on;
+
+	if (on)
+		shim_guEnable(GU_TEXTURE_2D);
+	else
+		shim_guDisable(GU_TEXTURE_2D);
 }
 
+static void shim_guTexMode (int psm, int levels, int a2, int swz)
+                                                  { shim_batch_flush(); if (shim_frame_active) sceGuTexMode(psm, levels, a2, swz); }
 /* Queue one draw.  Merged into the pending batch when the primitive matches
  * and the vertices are exactly where the pending batch ends, i.e. when the two
  * draws are already one contiguous run in the ring. */
-static void shim_batch_add (int prim, shim_vertex_t *v, int count)
+static void shim_batch_add (int prim, unsigned int texture, shim_vertex_t *v, int count)
 {
 	if (!v || count <= 0)
 		return;
 
 	shim_frame_verts += (unsigned int)count;
 
+	/* The merge key is primitive + texture + contiguity.  Contiguity alone
+	 * would in practice be enough, because a texture change sends GE
+	 * commands and those flush the batch -- but "in practice" is exactly
+	 * what a batching bug looks like from the outside, so the texture is
+	 * part of the condition rather than a side effect of another module. */
 	if (shim_batch_n > 0 && shim_batch_prim == prim &&
+	    shim_batch_tex == texture &&
 	    shim_batch_v + shim_batch_n == v)
 	{
 		shim_batch_n += count;
@@ -290,15 +312,44 @@ static void shim_batch_add (int prim, shim_vertex_t *v, int count)
 	shim_batch_v = v;
 	shim_batch_n = count;
 	shim_batch_prim = prim;
+	shim_batch_tex = texture;
 }
 
 static void shim_batch_flush (void)
 {
-	if (shim_batch_n > 0 && shim_batch_v && shim_frame_active)
+	if (shim_batch_n > 0 && shim_batch_v)
 	{
-		sceGuDrawArray(shim_batch_prim, SHIM_VERTEX_FORMAT, shim_batch_n,
-		               NULL, shim_batch_v);
-		shim_frame_batches++;
+		/* THE LINE THAT WAS MISSING.
+		 *
+		 * sceGuDrawArray() hands the GE a bare ADDRESS (pspsdk
+		 * src/gu/sceGuDrawArray.c: VADDR and PRIM, nothing else) and the GE
+		 * then fetches those vertices over the bus, *bypassing the CPU's
+		 * write-back data cache*.  A vertex the CPU has just written is
+		 * therefore still in the cache and not yet in memory, so the GE reads
+		 * whatever those cache lines last pushed there -- an older frame's
+		 * vertices, or unrelated data that happens to live at that address.
+		 *
+		 * On the panel that is a picture whose one corner is dragged to a
+		 * random place, and a picture that shows another picture's texels,
+		 * because u and v travel in the same vertex.  It changes from frame to
+		 * frame and from draw to draw because it depends on which cache lines
+		 * the CPU happened to evict; it is not fixed by any amount of matrix
+		 * or texture arithmetic, and it is invisible on an emulator that does
+		 * not model the cache.
+		 *
+		 * pspsdk's own samples do exactly this before handing vertices to the
+		 * GE (src/samples/gu/blend/blend.c: sceKernelDcacheWritebackAll()
+		 * right after filling the vertex and texture arrays).  A range is
+		 * better than "all": only this draw's slice has to reach memory. */
+		sceKernelDcacheWritebackRange(shim_batch_v,
+		                              (unsigned int)(shim_batch_n * (int)sizeof(shim_vertex_t)));
+
+		if (shim_frame_active)
+		{
+			sceGuDrawArray(shim_batch_prim, SHIM_VERTEX_FORMAT, shim_batch_n,
+			               NULL, shim_batch_v);
+			shim_frame_batches++;
+		}
 	}
 
 	shim_batch_n = 0;
@@ -660,6 +711,7 @@ static void shim_upload_bound_texture (void)
 	 * at least a frame of the previous picture and at worst the zeroes the
 	 * block was allocated with. */
 	shim_guTexFlush();
+	shim_guTexSync();
 
 	shim_tex_announced_id = shim_texture_bound;
 	shim_tex_announced_pixels = t->pixels;
@@ -1144,7 +1196,7 @@ static void shim_flush_quads (void)
 			v[k * 6 + 5] = shim_vertices[o + 3];
 		}
 
-		shim_batch_add(GU_TRIANGLES, v, batch * 6);
+		shim_batch_add(GU_TRIANGLES, shim_texture_bound, v, batch * 6);
 
 		done += batch;
 	}
@@ -1174,12 +1226,12 @@ void glEnd (void)
 	 * the GE happened to have selected before. */
 	if (shim_texture_2d && t && t->pixels)
 	{
-		shim_guEnable(GU_TEXTURE_2D);
+		shim_guTexEnable(1);
 		shim_upload_bound_texture();
 	}
 	else
 	{
-		shim_guDisable(GU_TEXTURE_2D);
+		shim_guTexEnable(0);
 	}
 
 	if (shim_primitive == GL_QUADS)
@@ -1209,7 +1261,8 @@ void glEnd (void)
 		if (v)
 		{
 			memcpy(v, shim_vertices, sizeof(shim_vertex_t) * (size_t)shim_vertex_count);
-			shim_batch_add(shim_gu_primitive(shim_primitive), v, shim_vertex_count);
+			shim_batch_add(shim_gu_primitive(shim_primitive), shim_texture_bound, v,
+			               shim_vertex_count);
 		}
 
 		shim_vertex_count = 0;
@@ -2013,6 +2066,13 @@ static void shim_card_row (int row, float y)
 	shim_card_quad(q[1], (float)SHIM_CARD_SIZE, y, SHIM_CARD_SIZE, SHIM_CARD_SIZE, 0xFFFFFFFFu);
 	sceGuDrawArray(GU_TRIANGLES, SHIM_VERTEX_FORMAT, 6, NULL, q[1]);
 
+	/* The card hands the GE raw address + count in five separate draws, so
+	 * every one of them needs the same cache writeback the rest of the shim
+	 * does now: the vertex arrays are written by the CPU a moment earlier
+	 * and the GE reads memory, not the cache. */
+	sceKernelDcacheWritebackRange(q[0], sizeof(q[0]));
+	sceKernelDcacheWritebackRange(q[1], sizeof(q[1]));
+
 	/* (2) the same picture as a 32-bit texture: if this one draws and the
 	 * two above do not, the 4-bit nibble packing is what is wrong. */
 	sceGuTexMode(GU_PSM_8888, 0, 0, 0);
@@ -2023,14 +2083,24 @@ static void shim_card_row (int row, float y)
 
 	/* (3) and (4) no texture at all: these test the geometry and the vertex
 	 * colour path on their own. */
+	sceKernelDcacheWritebackRange(q[2], sizeof(q[2]));
+
 	sceGuDisable(GU_TEXTURE_2D);
 	shim_card_quad(q[3], 3.0f * SHIM_CARD_SIZE, y, SHIM_CARD_SIZE, SHIM_CARD_SIZE,
 	               0xFFFF00FFu);		/* 0xAABBGGRR: magenta */
 	sceGuDrawArray(GU_TRIANGLES, SHIM_VERTEX_FORMAT, 6, NULL, q[3]);
 
+	sceKernelDcacheWritebackRange(q[3], sizeof(q[3]));
+
 	shim_card_quad(q[4], 4.0f * SHIM_CARD_SIZE, y, SHIM_CARD_SIZE, SHIM_CARD_SIZE,
 	               0xFFFFFFFFu);		/* white */
+	sceKernelDcacheWritebackRange(q[4], sizeof(q[4]));
 	sceGuDrawArray(GU_TRIANGLES, SHIM_VERTEX_FORMAT, 6, NULL, q[4]);
+
+	/* The card sends GE commands of its own and ends with texturing off;
+	 * whatever the shim had cached about that is now wrong. */
+	shim_ge_tex2d = -1;
+	shim_tex_state_valid = 0;
 }
 
 void psp_gl_shim_test_card (void)
@@ -2051,7 +2121,9 @@ void psp_gl_shim_test_card (void)
 		shim_card_build();
 
 	/* Nothing may hide the card, and it must not be culled, faded or
-	 * tested -- that is the whole point of a reference picture. */
+	 * tested -- that is the whole point of a reference picture.  The card
+	 * also sends GE commands directly, so the shim's record of what the GE
+	 * has been told is invalidated at the end of it (see shim_card_row). */
 	sceGuDisable(GU_SCISSOR_TEST);
 	sceGuDisable(GU_DEPTH_TEST);
 	sceGuDisable(GU_BLEND);
@@ -2066,6 +2138,8 @@ void psp_gl_shim_test_card (void)
 	shim_card_quad(shim_card_backdrop, 0.0f, 0.0f,
 	               (float)(SHIM_CARD_SQUARES * SHIM_CARD_SIZE),
 	               (float)(SHIM_CARD_SIZE + 8 + SHIM_CARD_SIZE), 0xFF000000u);
+	/* Same rule as every other draw: the GE reads memory, not the cache. */
+	sceKernelDcacheWritebackRange(shim_card_backdrop, sizeof(shim_card_backdrop));
 	sceGuDrawArray(GU_TRIANGLES, SHIM_VERTEX_FORMAT, 6, NULL, shim_card_backdrop);
 
 	/* Row 1 keeps whatever alpha test the engine left in force, row 2 drops
@@ -2120,6 +2194,7 @@ void psp_gl_shim_end_frame (void)
 	 * stay named, so the log keeps one line per offending picture. */
 	shim_frame_draws = 0;
 	shim_frame_verts = 0;
+	shim_frame_batches = 0;
 	shim_big_draws = 0;
 }
 
@@ -2132,6 +2207,7 @@ void psp_gl_shim_begin_frame (void)
 {
 	shim_frame_draws = 0;
 	shim_frame_verts = 0;
+	shim_frame_batches = 0;
 
 	/* gu_psp.c synced the previous frame before it swapped, so the GE is
 	 * finished with every slice it was given last time. */
@@ -2140,10 +2216,10 @@ void psp_gl_shim_begin_frame (void)
 	shim_ge_used = 0;
 	shim_ge_peak = 0;
 
-	if (shim_texture_2d)
-		shim_guEnable(GU_TEXTURE_2D);
-	else
-		shim_guDisable(GU_TEXTURE_2D);
+	/* A new draw list remembers nothing: whatever this process cached about
+	 * what the GE had been told is void, so the state is sent again. */
+	shim_ge_tex2d = -1;
+	shim_guTexEnable(shim_texture_2d ? 1 : 0);
 
 	if (shim_blend)
 	{
