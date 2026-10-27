@@ -36,6 +36,7 @@
 #include "gl_shim.h"
 #include "gu_psp.h"
 #include "psp_console.h"
+#include "tex_arena.h"
 
 /* ------------------------------------------------------------------ */
 /* state                                                              */
@@ -93,6 +94,7 @@ typedef struct
 	size_t       bytes;           /* 2 bytes per pixel: tbw * height * 2 */
 	int          filter;          /* GU_NEAREST or GU_LINEAR             */
 	int          dirty;           /* needs a re-upload before drawing    */
+	int          in_arena;        /* the block came from the texture arena */
 } shim_texture_t;
 
 #define SHIM_MAX_TEXTURES 1024
@@ -605,6 +607,106 @@ static void shim_edge_extend (shim_texture_t *t)
 	}
 }
 
+/* ---- the picture arena ----
+ *
+ * Every picture the engine draws costs twice its power-of-two box in main
+ * memory (16 bits per pixel) and there is no VRAM to put them in: the GE
+ * samples them straight out of the heap.  Each one used to be its own
+ * memalign() block out of the general purpose pool the engine also decodes
+ * pictures, demos and maps into.  That is how a pool with plenty of bytes
+ * free in total ends up with no single block big enough -- the help screen
+ * said so itself:
+ *
+ *     tex: no memory for a 512x256 picture (752 KB free, 4198 KB of textures)
+ *
+ * for a box of 256 KB.  The pictures now have an address space of their own:
+ *
+ *   * one reservation, taken once on the first picture (4 MB, then 2 MB, then
+ *     1 MB if the console will not give that much; if even that fails we fall
+ *     back to one memalign per picture, which is the old behaviour);
+ *   * inside it, tex_arena.c: a first-fit allocator that coalesces, so the
+ *     pool cannot be shredded into pieces that are all a little too small;
+ *   * honest reporting: what is handed out, the largest run still free, how
+ *     many runs that is.  The old message quoted
+ *     sceKernelTotalFreeMemSize(), which is the SYSTEM partition and reads
+ *     752 KB whether we hold 1 MB of pictures or 6 -- it explained nothing.
+ *
+ * 16 bits per pixel is what the GE samples and there is no second copy
+ * anywhere, so "used" is the true cost of the pictures on screen. */
+
+#define SHIM_ARENA_MAX_BYTES   (4u * 1024u * 1024u)
+#define SHIM_ARENA_MIN_BYTES   (1u * 1024u * 1024u)
+
+static tex_arena_t  shim_arena;
+static int          shim_arena_tried;    /* reservation attempted once at most */
+static size_t       shim_arena_fallback; /* pictures that had to use memalign  */
+
+/* Take the reservation.  Returns 1 when there is an arena to allocate from. */
+static int shim_arena_init (void)
+{
+	static const size_t want[] = { SHIM_ARENA_MAX_BYTES,
+	                               2u * 1024u * 1024u,
+	                               SHIM_ARENA_MIN_BYTES };
+	unsigned int i;
+
+	if (shim_arena.first)
+		return 1;
+
+	if (shim_arena_tried)
+		return 0;
+
+	shim_arena_tried = 1;
+
+	for (i = 0; i < sizeof(want) / sizeof(want[0]); i++)
+	{
+		void *base = memalign(16, want[i]);
+
+		if (!base)
+			continue;
+
+		if (!tex_arena_init(&shim_arena, base, want[i]))
+		{
+			free(base);
+			continue;
+		}
+
+		psp_tracef("tex: arena %d KB reserved for pictures", (int)(want[i] / 1024));
+		return 1;
+	}
+
+	psp_tracef("tex: no room for a picture arena -- falling back to one "
+	           "malloc per picture, which is what runs out first");
+	return 0;
+}
+
+/* Called when the arena cannot satisfy a request.  The pictures the engine is
+ * no longer asking for are the ones worth their memory; the port plugs its
+ * cache purge in here (gu_psp.c -> Draw_EvictCachePics()) and we try again. */
+static void (*shim_evict_hook)(void);
+
+void psp_gl_shim_set_evict_hook (void (*fn)(void))
+{
+	shim_evict_hook = fn;
+}
+
+/* One line that says the truth about the picture pool, for the frame card. */
+void psp_gl_shim_texture_report (void)
+{
+	if (!shim_arena.first)
+	{
+		psp_tracef("tex: %d pictures, %d KB, no arena (one malloc each)",
+		           (int)shim_texture_count, (int)(shim_texture_bytes / 1024));
+		return;
+	}
+
+	psp_tracef("tex: %d pictures, %d KB in use of %d KB arena, largest free "
+	           "%d KB in %d runs, %d outside the arena",
+	           (int)shim_texture_count, (int)(tex_arena_used(&shim_arena) / 1024),
+	           (int)(tex_arena_size(&shim_arena) / 1024),
+	           (int)(tex_arena_largest_free(&shim_arena) / 1024),
+	           tex_arena_free_runs(&shim_arena), (int)shim_arena_fallback);
+}
+
 /* Make sure the texture has storage for width x height at the wanted depth,
  * and keep the memory if it already fits.
  *
@@ -656,18 +758,22 @@ static int shim_texture_alloc (shim_texture_t *t, int width, int height, int opa
 	           t->potw != potw || t->poth != poth ||
 	           (t->psm == GU_PSM_5650) != (opaque != 0));
 
-	/* Only a block that is too small is replaced.  The picture changing its
-	 * FORMAT does not count: GU_PSM_4444 and GU_PSM_5650 are both two bytes
-	 * per pixel, so the block that is already there fits exactly.  It used
-	 * to be freed in that case, and the replacement malloc was the same
-	 * size -- the classic way to shred a pool into pieces that are all too
-	 * small for the next big request while the total held never grows. */
-	if (t->pixels && t->bytes < need)
+	/* The block is exactly the picture's box now, and the arena coalesces,
+	 * so a block of the wrong size is always returned and taken again --
+	 * that is what gives the memory of a picture that shrank back to the
+	 * pool.  (Before the arena this had to be "keep it if it is big
+	 * enough", because free + malloc of the same size shredded the pool.) */
+	if (t->pixels && t->bytes != need)
 	{
-		free(t->pixels);
+		if (t->in_arena)
+			tex_arena_free(&shim_arena, t->pixels);
+		else
+			free(t->pixels);
+
 		shim_texture_bytes -= t->bytes;
 		t->pixels = NULL;
 		t->bytes = 0;
+		t->in_arena = 0;
 		changed = 1;
 	}
 
@@ -677,13 +783,34 @@ static int shim_texture_alloc (shim_texture_t *t, int width, int height, int opa
 	t->poth = poth;
 	t->psm = opaque ? GU_PSM_5650 : GU_PSM_4444;
 
-	if (!t->pixels)
+	if (!t->pixels && need)
 	{
+		int attempt;
+
 		/* 16-byte alignment is not optional: sceGuTexImage() asserts
-		 * "Texture buffer pointer must be 16-byte aligned", and a
-		 * plain malloc() on this libc hands back 8.  A misaligned
-		 * texture moves every row by four texels. */
-		t->pixels = memalign(16, need);
+		 * "Texture buffer pointer must be 16-byte aligned".  The arena
+		 * guarantees it (SHIM_ARENA_HDR is a multiple of 16); the
+		 * memalign() fallback asks for it. */
+		for (attempt = 0; attempt < 2 && !t->pixels; attempt++)
+		{
+			if (attempt == 1 && shim_evict_hook)
+				shim_evict_hook();	/* drop pictures nobody asks for */
+
+			if (shim_arena_init())
+			{
+				t->pixels = tex_arena_alloc(&shim_arena, need);
+				t->in_arena = (t->pixels != NULL);
+			}
+
+			if (!t->pixels)
+			{
+				t->pixels = memalign(16, need);
+				t->in_arena = 0;
+				if (t->pixels)
+					shim_arena_fallback++;
+			}
+		}
+
 		if (!t->pixels)
 			return 0;
 
@@ -692,14 +819,14 @@ static int shim_texture_alloc (shim_texture_t *t, int width, int height, int opa
 		changed = 1;
 	}
 
-	if (changed)
+	if (changed && t->pixels)
 	{
 		/* A linear filter reads one texel past the end of the picture at
 		 * the right and bottom edge, and a reused block still holds the
 		 * previous picture there.  The whole power-of-two box is cleared
 		 * for the same reason: the space between the picture and the
 		 * edge of the box is sampled by that filter. */
-		memset(t->pixels, 0, need);
+		memset(t->pixels, 0, t->bytes);
 	}
 
 	t->dirty = 1;
@@ -709,14 +836,34 @@ static int shim_texture_alloc (shim_texture_t *t, int width, int height, int opa
 static void shim_texture_memory_short (int width, int height)
 {
 	static int warned;
+	int potw = shim_pot(width), poth = shim_pot(height);
+
+	/* sceKernelTotalFreeMemSize() is the SYSTEM partition, not our heap: it
+	 * says 752 KB whether we hold 1 MB of pictures or 6, so it explained
+	 * nothing.  What a picture that does not fit needs to know is how big
+	 * the box it wanted was and what the picture arena looks like now. */
+	if (shim_arena.first)
+		psp_tracef("tex: no room for a %dx%d picture (%dx%d box = %d KB); "
+		           "%d KB of %d KB arena in use, largest free %d KB in %d runs, "
+		           "%d pictures",
+		           width, height, potw, poth, (int)((potw * poth * 2) / 1024),
+		           (int)(tex_arena_used(&shim_arena) / 1024),
+		           (int)(tex_arena_size(&shim_arena) / 1024),
+		           (int)(tex_arena_largest_free(&shim_arena) / 1024),
+		           tex_arena_free_runs(&shim_arena), (int)shim_texture_count);
+	else
+		psp_tracef("tex: no room for a %dx%d picture and no arena (%d KB of "
+		           "pictures, %d KB free in the system partition)",
+		           width, height, (int)(shim_texture_bytes / 1024),
+		           sceKernelTotalFreeMemSize() / 1024);
 
 	if (warned)
 		return;
 
 	warned = 1;
-	psp_tracef("tex: no memory for a %dx%d picture (%d KB free, %d KB of textures)",
-	           width, height, sceKernelTotalFreeMemSize() / 1024,
-	           (int)(shim_texture_bytes / 1024));
+	psp_tracef("tex: pictures that could not be uploaded are drawn as the "
+	           "engine's null texture; the arena grows in memory, not on the "
+	           "card, so the fix is to unload pictures the interface has left");
 }
 
 static void shim_upload_bound_texture (void)
@@ -1730,13 +1877,41 @@ void glClear (GLbitfield mask)
 
 /* ---- textures ---- */
 
+/* Texture names, with recycling.
+ *
+ * The table below is fixed size, so the names have to come back when a
+ * texture dies.  They never did: the counter only ever went up, and once the
+ * engine had created a thousand textures -- a few hundred menu visits now
+ * that pictures are unloaded when nobody asks for them -- every new name
+ * would have been past the end of the table and every new picture silently
+ * dropped.  A freed name is pushed on a stack and handed out again first. */
+static unsigned int shim_tex_id_next = 1;
+static unsigned int shim_tex_id_free[SHIM_MAX_TEXTURES];
+static unsigned int shim_tex_id_free_count;
+
+static unsigned int shim_tex_id_take (void)
+{
+	if (shim_tex_id_free_count)
+		return shim_tex_id_free[--shim_tex_id_free_count];
+
+	return shim_tex_id_next++;
+}
+
+static void shim_tex_id_give (unsigned int id)
+{
+	if (id == 0 || id >= SHIM_MAX_TEXTURES)
+		return;
+
+	if (shim_tex_id_free_count < SHIM_MAX_TEXTURES)
+		shim_tex_id_free[shim_tex_id_free_count++] = id;
+}
+
 void glGenTextures (GLsizei n, GLuint *textures)
 {
-	static unsigned int next = 1;
 	int i;
 
 	for (i = 0; i < n; i++)
-		textures[i] = next++;
+		textures[i] = shim_tex_id_take();
 }
 
 void glDeleteTextures (GLsizei n, const GLuint *textures)
@@ -1752,11 +1927,25 @@ void glDeleteTextures (GLsizei n, const GLuint *textures)
 
 		if (t->pixels)
 		{
-			free(t->pixels);
+			if (t->in_arena)
+				tex_arena_free(&shim_arena, t->pixels);
+			else
+				free(t->pixels);
+
 			shim_texture_bytes -= t->bytes;
 		}
+
+		/* Whatever the GE was told about this texture is about bytes
+		 * that are now free for the next picture; the next bind has to
+		 * announce everything from scratch. */
+		shim_tex_state_valid = 0;
+
+		if (shim_texture_bound == textures[i])
+			shim_texture_bound = 0;
+
 		memset(t, 0, sizeof(*t));
 		shim_texture_count--;
+		shim_tex_id_give(textures[i]);
 	}
 }
 
@@ -2231,6 +2420,12 @@ void psp_gl_shim_end_frame (void)
 {
 	shim_batch_flush();
 	shim_frames++;
+
+	/* Once a minute, what the picture pool actually looks like: the KB in
+	 * the line below is the engine's own sum, the arena line is what the
+	 * allocator really holds and what is left for the next picture. */
+	if ((shim_frames % 3600) == 0)
+		psp_gl_shim_texture_report();
 
 	if (shim_frames <= 3 || (shim_frames % 120) == 0)
 		psp_tracef("gl: frame %u, %u draws in %u batches, %u vertices, %u screen-size draws, "

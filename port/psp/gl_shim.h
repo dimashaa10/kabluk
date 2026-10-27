@@ -40,4 +40,18 @@ void psp_gl_shim_test_card (void);
  * total and the engine's zone takes 33 of them, so this is worth logging. */
 size_t psp_gl_shim_texture_bytes (void);
 
+/* Tell the shim who to ask when the picture arena cannot satisfy a request.
+ *
+ * The shim owns the memory the GE samples; the engine owns the pictures (it
+ * knows which ones are still wanted and how to load them again).  Neither can
+ * free anything useful alone: a 512x256 help page does not fit next to a
+ * menu's worth of background art, and the only memory worth having at that
+ * moment is the memory of pictures nobody asked for in the last few seconds.
+ * The port therefore plugs its own purge in here (gu_psp.c), the shim calls
+ * it once and retries the allocation. */
+void psp_gl_shim_set_evict_hook (void (*fn)(void));
+
+/* One line stating what the picture pool actually holds, for the frame card. */
+void psp_gl_shim_texture_report (void);
+
 #endif /* GL_SHIM_H */

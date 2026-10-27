@@ -63,6 +63,10 @@ compile "$repo/tests/test_use_button.c" "$work/sv_user.o" "$work/mathlib.o" \
 compile -DREPO_DIR=\"$repo\" "$repo/tests/test_bind_defaults.c" \
     ${LDFLAGS:-} -Wl,--gc-sections -lm -o "$work/bind_defaults"
 "$work/bind_defaults"
+# The picture allocator (port/psp/tex_arena.c): no engine code, no assets.
+compile -I"$repo/port/psp" "$repo/tests/test_tex_arena.c" "$repo/port/psp/tex_arena.c" \
+    ${LDFLAGS:-} -Wl,--gc-sections -o "$work/tex_arena"
+"$work/tex_arena"
 compile -c "$repo/Quake/wad.c" -o "$work/wad.o"
 compile "$repo/tests/test_wad3.c" "$work/wad.o" \
     ${LDFLAGS:-} -Wl,--gc-sections -o "$work/wad3"

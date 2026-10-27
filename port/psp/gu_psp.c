@@ -41,6 +41,12 @@
 #include "gu_psp.h"
 #include "psp_console.h"
 
+/* The engine's picture cache is Draw_EvictCachePics() in Quake/gl_draw.c.
+ * Its header comes with quakedef.h, which this file deliberately does not
+ * include -- that pulls in SDL and the whole engine into a file whose job is
+ * the GPU.  One prototype is cheaper. */
+int Draw_EvictCachePics (int min_idle_frames);
+
 /* One draw list for the whole frame.  A step-1 test pattern needs a handful of
  * vertices; the GL shim will want a good deal more, so the size is a named
  * constant that is easy to raise (and, later, to allocate from the heap). */
@@ -91,6 +97,39 @@ unsigned int psp_gu_frame_count (void)
 	return gu_frames;
 }
 
+/* ---- picture memory ------------------------------------------------
+ *
+ * The GE samples pictures out of main memory, so every picture the interface
+ * has ever asked for used to stay there for the whole run: a PSP-E1008 has
+ * 64 MB and no VRAM to hide it in.  Two things keep it bounded now:
+ *
+ *   - the shim keeps them in an arena it owns (gl_shim.c), which coalesces
+ *     and reports what it holds, instead of a malloc per picture;
+ *   - the engine's picture cache can give a texture back and load it again
+ *     on the next request (Draw_EvictCachePics, gl_draw.c).  Nothing else
+ *     knows which pictures are still wanted, so the port asks it to drop the
+ *     ones that have been idle for a while, and asks again immediately when
+ *     the arena cannot satisfy a new picture.
+ *
+ * Ten seconds of idleness is long enough that flipping between two menu
+ * pages does not reload anything, and short enough that walking through a
+ * menu tree reclaims the pages already left behind. */
+#define GU_TEX_IDLE_FRAMES 600
+
+/* The shim calls this from inside glTexImage2D(), i.e. WITH a draw list open,
+ * when a picture does not fit.  Only pictures that were not part of this
+ * frame -- nor of the one before -- may go: sceGuDrawArray() hands the GE the
+ * address of the vertices and the texture, and it reads them while the CPU
+ * has moved on, so freeing memory that a command already submitted points at
+ * would put a different picture under the GE's feet.  Anything idle for two
+ * frames is out of every submitted batch (a frame is finished and synced in
+ * psp_gu_frame_end before the next one starts), so two frames is the safe
+ * threshold, and the timer below is free to be much lazier. */
+static void gu_pictures_wanted (void)
+{
+	Draw_EvictCachePics(2);
+}
+
 int psp_gu_init (void)
 {
 	if (gu_up)
@@ -139,6 +178,11 @@ int psp_gu_init (void)
 	gu_frames = 0;
 	gu_in_frame = 0;
 	gu_up = 1;
+
+	/* When the picture arena is full, the shim asks this: the engine is the
+	 * only side that knows which pictures the interface still wants. */
+	psp_gl_shim_set_evict_hook(gu_pictures_wanted);
+
 	return 1;
 }
 
@@ -253,7 +297,21 @@ void psp_gu_frame_end (void)
 		psp_tracef("gu: first frame presented, disp %06X draw %06X",
 		           gu_disp_buffer, gu_draw_buffer);
 	}
-	else if (gu_frames == 60)
+	/* Once a second, hand the pictures nobody has asked for back to the
+	 * arena.  This runs between frames, with no draw list open, which is
+	 * the only safe moment: a picture that is released may be the one the
+	 * GE was last told to sample, and its memory is about to be somebody
+	 * else's. */
+	if (gu_frames > 0 && (gu_frames % 60) == 0)
+	{
+		int released = Draw_EvictCachePics(GU_TEX_IDLE_FRAMES);
+
+		if (released > 0)
+			psp_tracef("tex: %d idle pictures unloaded, %d KB of pictures left",
+			           released, (int)(psp_gl_shim_texture_bytes() / 1024));
+	}
+
+	if (gu_frames == 60)
 		psp_tracef("gu: 60 frames presented [%d KB of textures], "
 		           "draw list %d of %d words, peak %d",
 		           (int)(psp_gl_shim_texture_bytes() / 1024),

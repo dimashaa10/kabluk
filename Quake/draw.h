@@ -74,6 +74,12 @@ qpic_t *Draw_PicFromWad (const char *name);
 qpic_t *Draw_CachePic (const char *path);
 qpic_t *Draw_TryCachePic (const char *path, unsigned int texflags);
 void Draw_NewGame (void);
+/* Release the textures of cached pictures that nothing has asked for in the
+ * last min_idle_frames frames (see the note on cachepic_t in gl_draw.c).
+ * The pictures stay cached: the next request reloads them.  Returns how many
+ * were released.  Called by the PSP port when the picture arena is short on
+ * room and once in a while on a timer; a no-op before Draw_Init(). */
+int Draw_EvictCachePics (int min_idle_frames);
 void Draw_ReloadLocalizedPics (void);
 void Draw_GetMenuTransform(vrect_t* bounds, vrect_t* viewport); // woods #mousemenu (iw)
 qboolean Draw_ReloadTextures(qboolean force);
