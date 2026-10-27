@@ -117,7 +117,23 @@ static inline int Buf_GetC(stdio_buffer_t *buf)
 	#define STBI_ONLY_JPEG
 #endif
 #endif
+/* Third-party headers get the warnings they were written for, not ours.
+ *
+ * With the JPEG decoder switched off (above) stb_image still compiles one
+ * helper nothing calls any more -- stbi__at_eof() is used by the JPEG, PIC,
+ * PNM and GIF readers only -- so -Wall reports "defined but not used" for a
+ * line of a 7000-line header we do not maintain.  Silencing that one
+ * diagnostic around the include is the right level: patching the header means
+ * redoing the patch at every stb_image update, and the warning itself is
+ * evidence that the PNG-first configuration is the one being compiled. */
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-function"
+#endif
 #include "stb_image.h"
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
 static byte *Image_LoadSTBI(FILE *f, int *width, int *height)
 {
 	int bytesPerPixel;
