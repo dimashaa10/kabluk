@@ -80,6 +80,13 @@ void Draw_NewGame (void);
  * were released.  Called by the PSP port when the picture arena is short on
  * room and once in a while on a timer; a no-op before Draw_Init(). */
 int Draw_EvictCachePics (int min_idle_frames);
+/* A draw call is about to use this picture: remember that it was on screen and
+ * load it again if the cache had to release it (a released picture is zeroed,
+ * so without this it would draw nothing for ever).  Returns the qpic_t to draw,
+ * which for a cached picture is always the same address.  Cheap: arithmetic on
+ * the pointer, no search.  Called from the draw functions themselves and from
+ * the QuakeC picture cache, which hands out pointers it keeps. */
+qpic_t *Draw_RevivePic (qpic_t *pic);
 /* The texture manager has just released every texture there is (TexMgr_NewGame
  * does exactly that).  The cached pictures still hold pointers into that
  * texture list, so they are told to forget them: without this the next

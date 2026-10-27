@@ -157,7 +157,7 @@ typedef struct cachepic_s
 	char		name[MAX_QPATH];
 	qpic_t		pic;
 	byte		padding[32];	// for appended glpic
-	int			lastframe;	// r_framecount of the last time it was asked for
+	int			lastframe;	// host_framecount when it was last asked for or drawn
 	int			requests;	// how often it has been asked for (capped at 8)
 	qboolean	evicted;	// texture released, reload on the next request
 } cachepic_t;
@@ -203,12 +203,28 @@ int			menu_numcachepics;
 static qboolean draw_initialized;
 static qboolean draw_reloading_localized_pics;
 
-/* Note that somebody asked for this picture: the timestamp is what the
- * purge measures idleness with, the counter says whether releasing it is safe
- * (see the long note above the struct). */
+/* Which frame counter measures idleness -- and it has to be host_framecount,
+ * not r_framecount.
+ *
+ * r_framecount (gl_rmain.c) is bumped by R_RenderView, i.e. only when a 3D
+ * scene is drawn.  A menu never draws one, so while the interface is on screen
+ * that counter stands still -- and every picture then looks "drawn in the last
+ * zero frames".  The hardware log said exactly that, once the diagnostics were
+ * finally compiled in:
+ *
+ *     pic: evict(2) released nothing: 155 live of 155 entries
+ *          (0 already evicted, 134 asked under 8 times),
+ *          155 drawn in the last 2 frames, 0 without a texture
+ *
+ * -- all 155 "just drawn", in a menu that shows ten pictures at a time.  So
+ * nothing was ever idle, nothing was ever released, and the pool grew to its
+ * cap and stayed there for the rest of the session.
+ *
+ * host_framecount (host.c) is bumped once per host frame whatever is being
+ * drawn, which is what "has not been on screen for N frames" actually means. */
 static void Draw_CachePicTouched (cachepic_t *pic)
 {
-	pic->lastframe = r_framecount;
+	pic->lastframe = host_framecount;
 	if (pic->requests < CACHEPIC_REQUESTS_TO_EVICT)
 		pic->requests++;
 	pic->evicted = false;
@@ -260,7 +276,7 @@ static cachepic_t *Draw_CacheEntryFor (const qpic_t *p)
  * therefore the same qpic_t address, so the caller's pointer stays valid. */
 static qboolean draw_reviving_pic;
 
-static qpic_t *Draw_RevivePic (qpic_t *pic)
+qpic_t *Draw_RevivePic (qpic_t *pic)
 {
 	cachepic_t *entry;
 
@@ -273,7 +289,7 @@ static qpic_t *Draw_RevivePic (qpic_t *pic)
 
 	/* Drawn now, so "idle for N frames" means what it says even for a
 	 * picture nobody asks for by name any more. */
-	entry->lastframe = r_framecount;
+	entry->lastframe = host_framecount;
 
 	if (!entry->evicted || !entry->name[0] || draw_reviving_pic)
 		return pic;
@@ -348,7 +364,7 @@ int Draw_EvictCachePics (int min_idle_frames)
 			lowreq++;
 #endif
 
-		if ((int)r_framecount - pic->lastframe < min_idle_frames)
+		if ((int)host_framecount - pic->lastframe < min_idle_frames)
 		{
 #ifdef PSP_CACHEPIC_DIAG
 			fresh++;
@@ -401,9 +417,9 @@ int Draw_EvictCachePics (int min_idle_frames)
 	{
 		static int last_report;
 
-		if ((int)r_framecount - last_report >= 600 || last_report == 0)
+		if ((int)host_framecount - last_report >= 600 || last_report == 0)
 		{
-			last_report = (int)r_framecount ? (int)r_framecount : 1;
+			last_report = (int)host_framecount ? (int)host_framecount : 1;
 			PSP_NOTE("pic: evict(%d) released nothing: %d live of %d entries "
 			         "(%d already evicted, %d asked under %d times), %d drawn "
 			         "in the last %d frames, %d without a texture",
@@ -680,7 +696,7 @@ qpic_t *Draw_PicFromWad2 (const char *name, unsigned int texflags)
 	pic->pic = *p;
 	memcpy (pic->pic.data, &gl, sizeof(glpic_t));
 	pic->evicted = false;
-	pic->lastframe = r_framecount;
+	pic->lastframe = host_framecount;
 	pic->requests = 0;
 
 	return &pic->pic;
@@ -838,7 +854,7 @@ qpic_t	*Draw_TryCachePic (const char *path, unsigned int texflags)
 		DRAW_MARK("pic: copy");
 		memcpy (pic->pic.data, &gl, sizeof(glpic_t));
 		pic->evicted = false;
-		pic->lastframe = r_framecount;
+		pic->lastframe = host_framecount;
 		pic->requests = 0;
 		DRAW_MARK("pic: cached");
 
@@ -902,7 +918,7 @@ qpic_t	*Draw_TryCachePic (const char *path, unsigned int texflags)
 	}
 	memcpy (pic->pic.data, &gl, sizeof(glpic_t));
 	pic->evicted = false;
-	pic->lastframe = r_framecount;
+	pic->lastframe = host_framecount;
 	pic->requests = 0;
 
 	return &pic->pic;
@@ -1055,7 +1071,7 @@ void Draw_NewGame (void)
 		pic->pic.width = pic->pic.height = 0;
 		pic->evicted = true;
 		pic->requests = 0;
-		pic->lastframe = r_framecount;
+		pic->lastframe = host_framecount;
 		pic->name[0] = 0;
 	}
 	menu_numcachepics = 0;

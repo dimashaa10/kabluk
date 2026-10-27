@@ -5473,7 +5473,12 @@ static qpic_t *DrawQC_CachePic(const char *picname, unsigned int flags)
 		if (!strcmp(picname, qcpics[i].name))
 		{
 			if (qcpics[i].pic)
-				return qcpics[i].pic;
+				/* This table keeps the same qpic_t for the whole session,
+				 * so it is the one place that has to ask whether the picture
+				 * is still loaded: the engine's cache may have released its
+				 * texture while the interface was somewhere else.
+				 * Draw_RevivePic() loads it again into the same address. */
+				return Draw_RevivePic(qcpics[i].pic);
 			break;
 		}
 	}
