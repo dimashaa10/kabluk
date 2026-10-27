@@ -8169,6 +8169,20 @@ void DrawSpinningModelToMenuPixels(const char* modelname,
 	float firstframe, float framecount,
 	float shootframe, float shootframes)
 {
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	/* The PSP port's stage M4 step 2 is the 2D interface only: there is
+	 * no 3D pipeline in front of the GE yet, so everything this renders
+	 * -- the model, its skins and the frustum it sets up -- arrives
+	 * through the 2D vertex path.  On the panel that is a tiled grid of
+	 * the model's polygons over the menu, which is not a picture of
+	 * anything.  Nothing is lost by skipping it: the preview comes back
+	 * with step 3, when glVertex3f has a real pipeline behind it. */
+	(void)modelname; (void)pixel_x; (void)pixel_y;
+	(void)pixel_w; (void)pixel_h; (void)afov; (void)zbias;
+	(void)firstframe; (void)framecount;
+	(void)shootframe; (void)shootframes;
+	return;
+#endif
 	/* Whatever 2D state the caller was drawing with, restored on the way
 	 * out: this function renders a 3D scene in between. */
 	GLfloat saved_projection[16], saved_modelview[16];

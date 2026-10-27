@@ -190,12 +190,12 @@ static unsigned int   shim_frame_verts;
  * wide for a menu bar; anything that covers the screen that was not asked to
  * is exactly what we are looking for. */
 static unsigned int   shim_big_draws;          /* whole frame, reset each frame */
-static unsigned int   shim_big_logged;         /* total lines printed */
-static unsigned short shim_big_tex[12];        /* textures already named */
-static int            shim_big_tex_n;
 static unsigned int   shim_trace_frames = 4;   /* dump every draw this early on */
 static unsigned int   shim_trace_early;
 static int shim_trace_menu;    /* ... and the same for the settled menu */
+static int shim_trace_text;    /* glyph-band lines for the current frame */
+static unsigned int shim_3d_warned_frames;
+static unsigned int shim_3d_warned_frame = ~0u;
 
 /* ------------------------------------------------------------------ */
 /* the gate                                                           */
@@ -620,6 +620,26 @@ static void shim_emit_vertex (float x, float y, float z)
 	if (shim_vertex_count >= SHIM_MAX_VERTICES)
 		return;
 
+	/* The 3D pipeline is stage 3 and does not exist yet.  A perspective
+	 * projection therefore reaches this vertex stage with no clipping at
+	 * all: a vertex behind the camera comes out mirrored and enormously
+	 * far away, and the GE fills the panel with triangles nobody asked
+	 * for -- which is exactly the shape of the dark wedges that were
+	 * crossing the menu.  So the case is named once per frame instead of
+	 * being painted over: the next caller that draws in 3D shows up in the
+	 * log by name instead of as a symptom. */
+	if ((shim_projection.m[15] != 1.0f || shim_projection.m[3] != 0.0f) &&
+	    shim_3d_warned_frames < 8 &&
+	    shim_3d_warned_frame != shim_frames)
+	{
+		shim_3d_warned_frame = shim_frames;
+		shim_3d_warned_frames++;
+		psp_tracef("3d: f %d a vertex was drawn under a perspective projection "
+		           "(m15 %.3f m3 %.3f); there is no 3D clipper yet",
+		           (int)shim_frames, (double)shim_projection.m[15],
+		           (double)shim_projection.m[3]);
+	}
+
 	mvp = shim_modelview;
 	shim_multiply(&mvp, &shim_projection, &shim_modelview);
 
@@ -677,13 +697,84 @@ static int shim_gu_primitive (int gl_mode)
 	}
 }
 
-/* Report a draw that covers far more of the panel than a picture of its kind
- * should.  Bounds are in screen pixels, y downwards, as emitted. */
+/* Name a GL primitive for the log.  "array" told nobody anything: a wedge of
+ * the wrong shape comes from a specific primitive, and which one it is was
+ * never in the log. */
+static const char *shim_prim_name (int mode)
+{
+	switch (mode)
+	{
+	case GL_POINTS:         return "points";
+	case GL_LINES:          return "lines";
+	case GL_LINE_STRIP:     return "linestrip";
+	case GL_LINE_LOOP:      return "lineloop";
+	case GL_TRIANGLES:      return "tris";
+	case GL_TRIANGLE_STRIP: return "tristrip";
+	case GL_TRIANGLE_FAN:   return "trifan";
+	case GL_QUADS:          return "quads";
+	case GL_QUAD_STRIP:     return "quadstrip";
+	case GL_POLYGON:        return "polygon";
+	default:                return "?";
+	}
+}
+
+/* Do the vertices form axis-aligned rectangles, four at a time?
+ *
+ * Every 2D picture in the engine is an axis-aligned quad.  So a run of quads
+ * that is NOT axis-aligned cannot be a picture: it is either a primitive we
+ * are mis-mapping (a strip or a polygon arriving through the quad path) or a
+ * quad whose corners were mixed up.  That is the shape of the large wedges on
+ * the panel, so it is worth an unconditional log line rather than a guess. */
+static int shim_quads_axis_aligned (int count)
+{
+	int i;
+
+	if (count < 4 || (count % 4) != 0)
+		return 0;
+
+	for (i = 0; i + 3 < count; i += 4)
+	{
+		const shim_vertex_t *a = &shim_vertices[i];
+
+		if (fabsf(a[0].y - a[1].y) > 0.75f) return 0;
+		if (fabsf(a[2].y - a[3].y) > 0.75f) return 0;
+		if (fabsf(a[0].x - a[3].x) > 0.75f) return 0;
+		if (fabsf(a[1].x - a[2].x) > 0.75f) return 0;
+	}
+
+	return 1;
+}
+
+/* Report what the 2D path drew.
+ *
+ * Two jobs, deliberately separate:
+ *
+ *   1. A windowed dump of whole draws, for reading the frame in order.  The
+ *      window skips short draws, because console text is hundreds of 8x8
+ *      glyph draws and used to consume the entire line budget before the
+ *      menu pictures were reached.
+ *   2. An unconditional anomaly report, capped, for the two shapes that are
+ *      certainly bugs wherever they appear: a non-axis-aligned run of quads
+ *      and a draw several times the size of the panel.  Both carry the
+ *      vertices, because "box 0,0 480,272" says nothing about which corner
+ *      went where. */
+static void shim_trace_vertices (int count, int maxv)
+{
+	int i, n = count < maxv ? count : maxv;
+
+	for (i = 0; i < n; i++)
+		psp_tracef("vert %d: %d,%d uv %d,%d", i,
+		           (int)shim_vertices[i].x, (int)shim_vertices[i].y,
+		           (int)shim_vertices[i].u, (int)shim_vertices[i].v);
+}
+
 static void shim_trace_draw (int count, const char *what)
 {
 	float minx, maxx, miny, maxy, area;
 	float minu, maxu, minv, maxv;
-	int i, logging;
+	int i, logging, skewed;
+	static unsigned int anomaly_lines;
+	static unsigned int window_frame = ~0u;
 
 	if (count <= 0)
 		return;
@@ -708,66 +799,139 @@ static void shim_trace_draw (int count, const char *what)
 		if (v > maxv) maxv = v;
 	}
 
-	/* Two windows.  The first frames describe the boot screen; the second
-	 * one describes the menu once it has settled, where the wide wedges and
-	 * the overlapping text actually appear.  Without the second window the
-	 * log only ever talks about the boot screen, which is why those went
-	 * unexplained for so long. */
-	logging = (shim_frames < shim_trace_frames && shim_trace_early < 60) ||
-	          (shim_frames >= 118 && shim_frames < 122 && shim_trace_menu < 70);
+	area = (maxx - minx) * (maxy - miny);
+	skewed = (count % 4 == 0) && !shim_quads_axis_aligned(count);
 
-	if (logging)
+	/* ---- 2. anomalies, whenever they happen ---- */
+	if (shim_frames >= 60 && anomaly_lines < 60)
 	{
-		if (shim_frames >= 118)
-			shim_trace_menu++;
-		else
-			shim_trace_early++;
-		/* m15 and m3 come from the projection matrix and are the cheapest
-		 * way to tell a 2D canvas from a 3D one: an orthogonal projection
-		 * has m15 = 1 and m3 = 0, a perspective frustum has m15 = 0 and
-		 * a non-zero m3.  A picture with an 8x8 box under an ortho matrix
-		 * and the same picture spread over the panel under a frustum are
-		 * completely different bugs. */
-		/* uv is in TEXELS of the announced texture (see
-		 * shim_uv_scale_update()), so "uv 0,0 240,112" for a 256x128
-		 * texture means the whole picture; a box that is too large with
-		 * correct uv is geometry, and wrong uv with a correct box is the
-		 * texture mapping. */
-		psp_tracef("draw: f %d #%d %s tex %d tsz %dx%d verts %d "
-		           "box %d,%d %d,%d uv %d,%d %d,%d proj m15 %.3f m3 %.3f",
-		           (int)shim_frames, (int)shim_frame_draws, what,
-		           (int)shim_texture_bound,
-		           (int)shim_tex_announced_potw, (int)shim_tex_announced_poth,
-		           count,
-		           (int)minx, (int)miny, (int)maxx, (int)maxy,
-		           (int)minu, (int)minv, (int)maxu, (int)maxv,
-		           (double)shim_projection.m[15], (double)shim_projection.m[3]);
-		return;
+		if (skewed || area > 3.0f * (float)(PSP_SCREEN_WIDTH * PSP_SCREEN_HEIGHT))
+		{
+			anomaly_lines++;
+			psp_tracef("%s: f %d #%d %s tex %d verts %d box %d,%d %d,%d uv %d,%d %d,%d",
+			           skewed ? "skew" : "huge",
+			           (int)shim_frames, (int)shim_frame_draws, what,
+			           (int)shim_texture_bound, count,
+			           (int)minx, (int)miny, (int)maxx, (int)maxy,
+			           (int)minu, (int)minv, (int)maxu, (int)maxv);
+			shim_trace_vertices(count, skewed ? 8 : 4);
+		}
 	}
 
-	area = (maxx - minx) * (maxy - miny);
+	/* ---- 1. windowed dump ---- */
+	if (window_frame != shim_frames)
+	{
+		window_frame = shim_frames;
+		shim_trace_menu = 0;
+		shim_trace_text = 0;
+	}
 
-	if (area < (float)(PSP_SCREEN_WIDTH * PSP_SCREEN_HEIGHT) / 4.0f)
+	if (shim_frames < shim_trace_frames)
+	{
+		logging = shim_trace_early++ < 60;
+		if (logging)
+			shim_trace_menu = 0;   /* early window has its own counter */
+	}
+	else
+	{
+		/* The settled menu, plus one snapshot every two seconds: the boot
+		 * screen, the menu and the in-game HUD are three different frames
+		 * and the log has to be able to show more than the first of them. */
+		logging = ((shim_frames >= 118 && shim_frames < 122) ||
+		           (shim_frames % 60) == 0) && shim_trace_menu < 30;
+	}
+
+	/* Pictures get the window's lines; a strip of glyphs does not, because
+	 * console text is hundreds of 8 px draws and used to eat the whole
+	 * budget before the menu was reached.  The text still gets two lines of
+	 * its own kind, though: menu labels are reported as a band, and a band
+	 * that lands on top of the previous one is marked, which is the only way
+	 * the log can show "these two menu items are drawn over each other". */
+	if (logging)
+	{
+		if ((maxy - miny) > 16.0f)
+		{
+			shim_trace_menu++;
+			psp_tracef("draw: f %d #%d %s tex %d tsz %dx%d verts %d "
+			           "box %d,%d %d,%d uv %d,%d %d,%d proj m15 %.3f m3 %.3f",
+			           (int)shim_frames, (int)shim_frame_draws, what,
+			           (int)shim_texture_bound,
+			           (int)shim_tex_announced_potw, (int)shim_tex_announced_poth,
+			           count,
+			           (int)minx, (int)miny, (int)maxx, (int)maxy,
+			           (int)minu, (int)minv, (int)maxu, (int)maxv,
+			           (double)shim_projection.m[15], (double)shim_projection.m[3]);
+		}
+		else if (shim_trace_text < 12)
+		{
+			static float last_y0 = -1000.0f, last_y1 = -1000.0f;
+			float overlap = 0.0f;
+
+			shim_trace_text++;
+
+			if (miny < last_y1 && maxy > last_y0)
+				overlap = (maxy < last_y1 ? maxy : last_y1) -
+				          (miny > last_y0 ? miny : last_y0);
+
+			psp_tracef("text: f %d #%d box %d,%d %d,%d %s",
+			           (int)shim_frames, (int)shim_frame_draws,
+			           (int)minx, (int)miny, (int)maxx, (int)maxy,
+			           (overlap > (maxy - miny) * 0.5f) ? "OVERLAPS PREVIOUS" : "");
+
+			last_y0 = miny;
+			last_y1 = maxy;
+		}
+	}
+
+	/* ---- the old quarterly-panel count, kept as a frame statistic ---- */
+	if (area >= (float)(PSP_SCREEN_WIDTH * PSP_SCREEN_HEIGHT) / 4.0f)
+		shim_big_draws++;
+}
+
+/* Report one texture that is drawn over a quarter of the panel, once per
+ * texture.  Called from glEnd() so it covers every primitive, not just quads. */
+static void shim_trace_big_once (int count, const char *what)
+{
+	static unsigned short named[16];
+	static int named_n;
+	float w = 0.0f, h = 0.0f;
+	int i;
+
+	if (count <= 0 || named_n >= (int)(sizeof(named) / sizeof(named[0])))
 		return;
 
-	shim_big_draws++;
+	{
+		float minx, maxx, miny, maxy;
 
-	/* Name each offending texture once: a picture drawn full-screen every
-	 * frame would otherwise bury the log in identical lines. */
-	for (i = 0; i < shim_big_tex_n; i++)
-		if (shim_big_tex[i] == (unsigned short)shim_texture_bound)
+		minx = maxx = shim_vertices[0].x;
+		miny = maxy = shim_vertices[0].y;
+
+		for (i = 1; i < count; i++)
+		{
+			float x = shim_vertices[i].x, y = shim_vertices[i].y;
+
+			if (x < minx) minx = x;
+			if (x > maxx) maxx = x;
+			if (y < miny) miny = y;
+			if (y > maxy) maxy = y;
+		}
+
+		w = maxx - minx;
+		h = maxy - miny;
+	}
+
+	if (w * h < (float)(PSP_SCREEN_WIDTH * PSP_SCREEN_HEIGHT) / 4.0f)
+		return;
+
+	for (i = 0; i < named_n; i++)
+		if (named[i] == (unsigned short)shim_texture_bound)
 			return;
 
-	if (shim_big_tex_n >= (int)(sizeof(shim_big_tex) / sizeof(shim_big_tex[0])))
-		return;
+	named[named_n++] = (unsigned short)shim_texture_bound;
 
-	shim_big_tex[shim_big_tex_n++] = (unsigned short)shim_texture_bound;
-	shim_big_logged++;
-
-	psp_tracef("big: f %d %s tex %d verts %d box %d,%d %d,%d (%d of %d)",
+	psp_tracef("big: f %d %s tex %d verts %d %.0fx%.0f (%d of 16)",
 	           (int)shim_frames, what, (int)shim_texture_bound, count,
-	           (int)minx, (int)miny, (int)maxx, (int)maxy,
-	           (int)shim_big_logged, (int)shim_big_tex_n);
+	           (double)w, (double)h, named_n);
 }
 
 /* Turn the GL_QUADS accumulated since glBegin() into one triangle list.
@@ -795,7 +959,8 @@ static void shim_flush_quads (void)
 	int done = 0;
 
 	shim_frame_draws++;
-	shim_trace_draw(shim_vertex_count, "quads");
+	shim_trace_draw(shim_vertex_count, shim_prim_name(GL_QUADS));
+	shim_trace_big_once(shim_vertex_count, shim_prim_name(GL_QUADS));
 
 	/* As many quads as the ring still has room for, in one command, then the
 	 * next slice: a line of text usually fits in a single draw. */
@@ -876,11 +1041,22 @@ void glEnd (void)
 		return;
 	}
 
+	/* GL_LINE_LOOP draws the closing segment, GU_LINE_STRIP does not: the
+	 * loop is turned into a strip by repeating the first vertex, which is
+	 * what GL's own definition of the loop says. */
+	if (shim_primitive == GL_LINE_LOOP && shim_vertex_count >= 2 &&
+	    shim_vertex_count < SHIM_MAX_VERTICES)
+	{
+		shim_vertices[shim_vertex_count] = shim_vertices[0];
+		shim_vertex_count++;
+	}
+
 	{
 		shim_vertex_t *v = shim_ge_alloc((unsigned int)shim_vertex_count);
 
 		shim_frame_draws++;
-		shim_trace_draw(shim_vertex_count, "array");
+		shim_trace_draw(shim_vertex_count, shim_prim_name(shim_primitive));
+		shim_trace_big_once(shim_vertex_count, shim_prim_name(shim_primitive));
 
 		if (v)
 		{
