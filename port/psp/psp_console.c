@@ -22,6 +22,15 @@
 
 #define CON_COLS 68   /* characters per line on the 480x272 debug font */
 #define CON_ROWS 33   /* visible text rows */
+/* Longest line the log will hold.  This used to be CON_COLS, i.e. 68, and the
+ * debug screen's 68 characters per row are a property of the *screen*, not of
+ * the file.  Keeping one buffer for both meant every diagnostic line longer
+ * than 68 characters was cut in half and logged as two lines with the second
+ * half starting with the wrap -- which is why "gl: frame 1, ... ring 750 of"
+ * and "draw: ... proj m15 1.00" arrive in kabluk.log without their tails.
+ * The two outputs now have their own widths: the log gets the whole line, the
+ * screen wraps it into as many 68-character rows as it needs. */
+#define CON_LINE_MAX 320
 
 static int   con_ready;
 static int   con_row;
@@ -32,7 +41,7 @@ static int   con_log_err_said;	/* the error has been put on the screen once */
  * GPU the game is using, so printing there would inject the console's own
  * primitives into the game's frame.  Text keeps going to kabluk.log. */
 static int   con_screen_on = 1;
-static char  con_line[CON_COLS + 1];
+static char  con_line[CON_LINE_MAX + 1];
 static int   con_len;
 
 /* Watchdog state: bumped by every finished line, read by the watchdog thread. */
@@ -178,14 +187,22 @@ static void con_flush (void)
 
 	if (con_screen_on)
 	{
-		if (con_row >= CON_ROWS) {
-			pspDebugScreenClear();
-			con_row = 0;
-		}
+		int off;
 
-		pspDebugScreenSetXY(0, con_row);
-		pspDebugScreenPrintf("%s\n", con_line);
-		con_row++;
+		/* Wrap the one long line onto the screen's 68-character rows. */
+		for (off = 0; off < con_len; off += CON_COLS)
+		{
+			if (con_row >= CON_ROWS) {
+				pspDebugScreenClear();
+				con_row = 0;
+			}
+
+			pspDebugScreenSetXY(0, con_row);
+			pspDebugScreenPrintf("%-*.*s\n", CON_COLS,
+			                     con_len - off < CON_COLS ? con_len - off : CON_COLS,
+			                     con_line + off);
+			con_row++;
+		}
 	}
 
 	con_len = 0;
@@ -227,7 +244,9 @@ static void con_putc (int c)
 
 	con_line[con_len++] = (char)c;
 
-	if (con_len >= CON_COLS)
+	/* Only a full buffer ends a line now; the screen's row width is applied
+	 * when the line is printed, not while it is being collected. */
+	if (con_len >= CON_LINE_MAX)
 		con_flush();
 }
 
@@ -484,7 +503,7 @@ void __assert_func (const char *file, int line, const char *func,
  */
 void psp_trace (const char *step)
 {
-	char buf[96];
+	char buf[384];
 
 	con_ensure();
 	con_flush();		/* finish a half line so the step stands on its own */

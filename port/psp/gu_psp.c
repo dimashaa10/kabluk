@@ -180,6 +180,21 @@ void psp_gu_frame_begin (void)
 	 * the new draw buffer has to be announced in every frame's list. */
 	sceGuDrawBuffer(GU_PSM_8888, GU_OFFSET(gu_draw_buffer), PSP_GU_STRIDE);
 
+	/* The clear has to cover the WHOLE buffer, so it cannot be left to
+	 * whatever scissor the previous frame happened to end with.
+	 *
+	 * This was a real bug: sceGuClear() is a GE command and obeys the
+	 * scissor like every other command, and the scissor in force at this
+	 * point is the one the last frame's last glScissor() left behind -- the
+	 * engine restores it around the logo and sets it again for the status
+	 * bar's running line.  Any pixel outside that rectangle was therefore
+	 * never cleared: whatever had been drawn there once stayed on the panel
+	 * for the rest of the run, which is exactly why the dark wedges and the
+	 * stray diagonal lines did not correspond to any draw in the tracer and
+	 * did not move.  The scissor is now the full panel for the clear and the
+	 * shim re-applies the engine's own rectangle immediately afterwards. */
+	sceGuEnable(GU_SCISSOR_TEST);
+	sceGuScissor(0, 0, PSP_SCREEN_WIDTH, PSP_SCREEN_HEIGHT);
 	sceGuClearColor(gu_clear_color);
 	sceGuClear(GU_COLOR_BUFFER_BIT | GU_DEPTH_BUFFER_BIT);
 

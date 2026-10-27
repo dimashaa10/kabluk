@@ -194,6 +194,7 @@ static unsigned int   shim_trace_frames = 4;   /* dump every draw this early on 
 static unsigned int   shim_trace_early;
 static int shim_trace_menu;    /* ... and the same for the settled menu */
 static int shim_trace_text;    /* glyph-band lines for the current frame */
+static unsigned int shim_trace_dump;   /* lines of the one full frame dump */
 static unsigned int shim_3d_warned_frames;
 static unsigned int shim_3d_warned_frame = ~0u;
 
@@ -718,6 +719,25 @@ static const char *shim_prim_name (int mode)
 	}
 }
 
+/* One letter per primitive, for the compact frame dump. */
+static char shim_prim_letter (int mode)
+{
+	switch (mode)
+	{
+	case GL_POINTS:         return 'O';
+	case GL_LINES:          return 'L';
+	case GL_LINE_STRIP:     return 'l';
+	case GL_LINE_LOOP:      return 'o';
+	case GL_TRIANGLES:      return 'T';
+	case GL_TRIANGLE_STRIP: return 'S';
+	case GL_TRIANGLE_FAN:   return 'F';
+	case GL_QUADS:          return 'Q';
+	case GL_QUAD_STRIP:     return 's';
+	case GL_POLYGON:        return 'P';
+	default:                return '?';
+	}
+}
+
 /* Do the vertices form axis-aligned rectangles, four at a time?
  *
  * Every 2D picture in the engine is an axis-aligned quad.  So a run of quads
@@ -832,6 +852,29 @@ static void shim_trace_draw (int count, const char *what, int quad_mode)
 		shim_trace_text = 0;
 	}
 
+	/* One frame in full, once: every draw in the order the engine made
+	 * them, one short line each, nothing filtered.  Two frames of a menu that
+	 * settles are about 400 lines apiece, which is a log one can read -- and
+	 * it is the only way to answer "where did this wedge come from" without
+	 * guessing, because a filtered window always leaves something out. */
+	if (shim_frames == 120 || shim_frames == 121)
+	{
+		if (shim_trace_dump < 1200)
+		{
+			shim_trace_dump++;
+			psp_tracef("d %d %d %c t%d %dx%d %d,%d-%d,%d u%d,%d-%d,%d%s",
+			           (int)shim_frames, (int)shim_frame_draws,
+			           quad_mode ? 'Q' : shim_prim_letter(shim_primitive),
+			           (int)shim_texture_bound,
+			           (int)shim_tex_announced_potw, (int)shim_tex_announced_poth,
+			           (int)minx, (int)miny, (int)maxx, (int)maxy,
+			           (int)minu, (int)minv, (int)maxu, (int)maxv,
+			           ((maxy > (float)PSP_SCREEN_HEIGHT + 1.0f ||
+			             miny < -1.0f) ? " OFF" : ""));
+		}
+		return;
+	}
+
 	if (shim_frames < shim_trace_frames)
 	{
 		logging = shim_trace_early++ < 60;
@@ -843,8 +886,8 @@ static void shim_trace_draw (int count, const char *what, int quad_mode)
 		/* The settled menu, plus one snapshot every two seconds: the boot
 		 * screen, the menu and the in-game HUD are three different frames
 		 * and the log has to be able to show more than the first of them. */
-		logging = ((shim_frames >= 118 && shim_frames < 122) ||
-		           (shim_frames % 60) == 0) && shim_trace_menu < 30;
+		logging = ((shim_frames == 118 || shim_frames == 119) ||
+	           (shim_frames % 60) == 0) && shim_trace_menu < 30;
 	}
 
 	/* Pictures get the window's lines; a strip of glyphs does not, because
@@ -868,24 +911,31 @@ static void shim_trace_draw (int count, const char *what, int quad_mode)
 			           (int)minu, (int)minv, (int)maxu, (int)maxv,
 			           (double)shim_projection.m[15], (double)shim_projection.m[3]);
 		}
-		else if (shim_trace_text < 12)
+		else if (shim_trace_text < 12 && count >= 8)
 		{
-			static float last_y0 = -1000.0f, last_y1 = -1000.0f;
-			float overlap = 0.0f;
+			/* One character is its own glBegin()/glEnd() pair, so the
+			 * console's output is a stream of four-vertex draws and the
+			 * menu's labels are not: a string is one draw of many quads.
+			 * Requiring two glyphs keeps the console out of this list --
+			 * which is what the whole window is for.  A band "overlaps the
+			 * previous one" only if it does so in BOTH directions; the
+			 * first version compared the y range alone, so every pair of
+			 * consecutive characters on one line was reported as an
+			 * overlap and the log said nothing useful at all. */
+			static float last[4] = { -1000.0f, -1000.0f, -1000.0f, -1000.0f };
+			int overlaps;
 
 			shim_trace_text++;
 
-			if (miny < last_y1 && maxy > last_y0)
-				overlap = (maxy < last_y1 ? maxy : last_y1) -
-				          (miny > last_y0 ? miny : last_y0);
+			overlaps = (miny < last[3] && maxy > last[1] &&
+			            minx < last[2] && maxx > last[0]);
 
 			psp_tracef("text: f %d #%d box %d,%d %d,%d %s",
 			           (int)shim_frames, (int)shim_frame_draws,
 			           (int)minx, (int)miny, (int)maxx, (int)maxy,
-			           (overlap > (maxy - miny) * 0.5f) ? "OVERLAPS PREVIOUS" : "");
+			           overlaps ? "OVERLAPS PREVIOUS" : "");
 
-			last_y0 = miny;
-			last_y1 = maxy;
+			last[0] = minx; last[1] = miny; last[2] = maxx; last[3] = maxy;
 		}
 	}
 
@@ -899,11 +949,13 @@ static void shim_trace_draw (int count, const char *what, int quad_mode)
 static void shim_trace_big_once (int count, const char *what)
 {
 	static unsigned short named[16];
-	static int named_n;
+	static unsigned short over[16];
+	static int named_n, over_n;
 	float w = 0.0f, h = 0.0f;
+	float x0 = 0.0f, y0 = 0.0f, x1 = 0.0f, y1 = 0.0f;
 	int i;
 
-	if (count <= 0 || named_n >= (int)(sizeof(named) / sizeof(named[0])))
+	if (count <= 0)
 		return;
 
 	{
@@ -922,11 +974,35 @@ static void shim_trace_big_once (int count, const char *what)
 			if (y > maxy) maxy = y;
 		}
 
+		x0 = minx; y0 = miny; x1 = maxx; y1 = maxy;
 		w = maxx - minx;
 		h = maxy - miny;
 	}
 
+	/* A draw that leaves the panel is a bug in the caller's layout, and it
+	 * used to be invisible: the panel only shows the part that fits, so the
+	 * rest of the picture simply was not there and looked like a missing
+	 * picture rather than a misplaced one.  The menu plaque (a 32x256
+	 * picture asked to be 348 pixels tall on a 272 pixel panel) is the case
+	 * that made this worth printing. */
+	if ((y0 < -1.0f || x0 < -1.0f || y1 > (float)PSP_SCREEN_HEIGHT + 1.0f ||
+	     x1 > (float)PSP_SCREEN_WIDTH + 1.0f) &&
+	    over_n < (int)(sizeof(over) / sizeof(over[0])))
+	{
+		for (i = 0; i < over_n; i++)
+			if (over[i] == (unsigned short)shim_texture_bound)
+				return;
+		over[over_n++] = (unsigned short)shim_texture_bound;
+		psp_tracef("over: f %d %s tex %d verts %d box %d,%d %d,%d (%d)",
+		           (int)shim_frames, what, (int)shim_texture_bound, count,
+		           (int)x0, (int)y0, (int)x1, (int)y1, over_n);
+		return;
+	}
+
 	if (w * h < (float)(PSP_SCREEN_WIDTH * PSP_SCREEN_HEIGHT) / 4.0f)
+		return;
+
+	if (named_n >= (int)(sizeof(named) / sizeof(named[0])))
 		return;
 
 	for (i = 0; i < named_n; i++)
@@ -1264,6 +1340,41 @@ void glViewport (GLint x, GLint y, GLsizei width, GLsizei height)
 	shim_vp_h = height > 0 ? height : 1;
 }
 
+/* Send the current rectangle to the GE, clamped to the panel.
+ *
+ * The scissor is not a nicety on this hardware: in through mode
+ * (GU_TRANSFORM_2D) the GE does no transform or clipping at all -- the
+ * scissor is the only render bound (ppsspp's GE overview says as much:
+ * "through mode bypasses transform/clipping, positions are integer screen
+ * pixels").  Our drawing buffer is 480x272 of a 512-pixel stride at EDRAM
+ * 0x088000 and the buffer that is on screen starts exactly 0x88000 bytes
+ * later, so a pixel outside the panel is not dropped: it is written into the
+ * *displayed* buffer, or past both of them into the depth buffer.  That is
+ * the one mechanism that can put a shape on the panel that no draw in the
+ * tracer claims, and it stays there because it is in the buffer the GE is
+ * showing while the next frame is drawn into the other one.
+ *
+ * So the GE scissor is always enabled and always inside the panel.  GL's
+ * glDisable(GL_SCISSOR_TEST) means "no extra clipping" here, not "no
+ * clipping": it becomes the full panel rectangle. */
+static void shim_scissor_flush (void)
+{
+	int x = shim_scr_x, y = shim_scr_y;
+	int w = shim_scr_w, h = shim_scr_h;
+
+	if (w > PSP_SCREEN_WIDTH)  w = PSP_SCREEN_WIDTH;
+	if (h > PSP_SCREEN_HEIGHT) h = PSP_SCREEN_HEIGHT;
+	if (x < 0) { w += x; x = 0; }
+	if (y < 0) { h += y; y = 0; }
+	if (x + w > PSP_SCREEN_WIDTH)  w = PSP_SCREEN_WIDTH - x;
+	if (y + h > PSP_SCREEN_HEIGHT) h = PSP_SCREEN_HEIGHT - y;
+	if (w < 0) w = 0;
+	if (h < 0) h = 0;
+
+	shim_guEnable(GU_SCISSOR_TEST);
+	shim_guScissor(x, y, w, h);
+}
+
 void glScissor (GLint x, GLint y, GLsizei width, GLsizei height)
 {
 	/* GL: origin bottom-left.  GU: origin top-left. */
@@ -1272,8 +1383,7 @@ void glScissor (GLint x, GLint y, GLsizei width, GLsizei height)
 	shim_scr_w = width > 0 ? width : 0;
 	shim_scr_h = height > 0 ? height : 0;
 
-	if (shim_scissor_on)
-		shim_guScissor(shim_scr_x, shim_scr_y, shim_scr_w, shim_scr_h);
+	shim_scissor_flush();
 }
 
 /* ---- pipeline switches ---- */
@@ -1297,8 +1407,7 @@ void glEnable (GLenum cap)
 		break;
 	case GL_SCISSOR_TEST:
 		shim_scissor_on = 1;
-		shim_guEnable(GU_SCISSOR_TEST);
-		shim_guScissor(shim_scr_x, shim_scr_y, shim_scr_w, shim_scr_h);
+		shim_scissor_flush();
 		break;
 	case GL_CULL_FACE:
 		shim_guEnable(GU_CULL_FACE);
@@ -1326,8 +1435,14 @@ void glDisable (GLenum cap)
 		shim_guDisable(GU_DEPTH_TEST);
 		break;
 	case GL_SCISSOR_TEST:
+		/* Not "no clipping": the GE's only bound is the scissor, so
+		 * switching GL's scissor off restores the whole panel. */
 		shim_scissor_on = 0;
-		shim_guDisable(GU_SCISSOR_TEST);
+		shim_scr_x = 0;
+		shim_scr_y = 0;
+		shim_scr_w = PSP_SCREEN_WIDTH;
+		shim_scr_h = PSP_SCREEN_HEIGHT;
+		shim_scissor_flush();
 		break;
 	case GL_CULL_FACE:
 		shim_guDisable(GU_CULL_FACE);
@@ -1985,13 +2100,7 @@ void psp_gl_shim_begin_frame (void)
 	else
 		shim_guDisable(GU_DEPTH_TEST);
 
-	if (shim_scissor_on)
-	{
-		shim_guEnable(GU_SCISSOR_TEST);
-		shim_guScissor(shim_scr_x, shim_scr_y, shim_scr_w, shim_scr_h);
-	}
-	else
-		shim_guDisable(GU_SCISSOR_TEST);
+	shim_scissor_flush();
 
 	/* Whatever texture was current at the end of the last frame has to be
 	 * re-announced to the GE: the engine binds gl-world textures by the
