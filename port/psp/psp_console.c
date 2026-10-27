@@ -152,28 +152,41 @@ static int con_log_try (const char *buf)
 
 static char        con_logbuf[CON_LOGBUF_SIZE];
 static size_t      con_logbuf_len;
-static SceUID      con_log_mutex = -1;
-static int         con_log_mutex_tried;
+
+/* A lightweight mutex (the LwMutex kind), not a full one.
+ *
+ * This is the API pspsdk puts in pspthreadman.h for user code -- the names
+ * "sceKernelCreateMutex"/"LockMutex" belong to the kernel side and are not
+ * declared there, so using them is an implicit declaration and a link error.
+ * A lightweight mutex keeps its whole state in the workarea below (no kernel
+ * object to create, leak or fail), which is also why it is the cheaper of the
+ * two on a 333 MHz CPU. */
+static SceLwMutexWorkarea con_log_mutex __attribute__((aligned(16)));
+static int         con_log_mutex_state;	/* 0 = not made yet, 1 = usable, -1 = no */
 
 static void con_log_lock (void)
 {
 	/* Created on the first line, which is always printed by the engine thread
-	 * long before the watchdog starts.  The flag means a second thread can at
-	 * worst skip the lock once, rather than create a second mutex. */
-	if (con_log_mutex < 0 && !con_log_mutex_tried)
+	 * long before the watchdog starts.  If it cannot be made, the log keeps
+	 * working unlocked: a torn line is better than no log at all -- and the
+	 * state stops it from being retried on every line. */
+	if (!con_log_mutex_state)
 	{
-		con_log_mutex_tried = 1;
-		con_log_mutex = sceKernelCreateMutex("kabluk_log", 0, 0, NULL);
+		memset(&con_log_mutex, 0, sizeof(con_log_mutex));
+
+		con_log_mutex_state =
+			sceKernelCreateLwMutex(&con_log_mutex, "kabluk_log", 0, 0, NULL) < 0
+				? -1 : 1;
 	}
 
-	if (con_log_mutex >= 0)
-		sceKernelLockMutex(con_log_mutex, 1, NULL);
+	if (con_log_mutex_state > 0)
+		sceKernelLockLwMutex(&con_log_mutex, 1, NULL);
 }
 
 static void con_log_unlock (void)
 {
-	if (con_log_mutex >= 0)
-		sceKernelUnlockMutex(con_log_mutex, 1);
+	if (con_log_mutex_state > 0)
+		sceKernelUnlockLwMutex(&con_log_mutex, 1);
 }
 
 /* Hand everything that has been collected to the card.  Called with the log
