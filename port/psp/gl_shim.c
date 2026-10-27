@@ -649,15 +649,29 @@ static tex_arena_t  shim_arena;
 static int          shim_arena_ready;
 static int          shim_arena_refused;	/* the cap, for the log           */
 static int          shim_arena_fallback;	/* pictures that had to use memalign */
+static int          shim_arena_short_logs;	/* "arena short" lines written  */
 
 /* Called when the arena cannot satisfy a request.  The pictures the engine is
  * no longer asking for are the ones worth their memory; the port plugs its
- * cache purge in here (gu_psp.c -> Draw_EvictCachePics()) and we try again. */
-static void (*shim_evict_hook)(void);
+ * cache purge in here (gu_psp.c -> Draw_EvictCachePics()) and we try again.
+ * Returns how many pictures it released, so the log can say what happened. */
+static int (*shim_evict_hook)(void);
 
-void psp_gl_shim_set_evict_hook (void (*fn)(void))
+void psp_gl_shim_set_evict_hook (int (*fn)(void))
 {
 	shim_evict_hook = fn;
+}
+
+/* What a new picture could actually get right now: the biggest free run in the
+ * arena, payload only.  The port reads it between frames to decide whether to
+ * unload idle pictures while nothing is being drawn -- see the note in
+ * gu_psp.c, which is where this number matters. */
+size_t psp_gl_shim_texture_room (void)
+{
+	if (!shim_arena_ready)
+		return 0;
+
+	return tex_arena_largest_free(&shim_arena);
 }
 
 /* One line that says the truth about the picture pool, for the frame card. */
@@ -791,16 +805,46 @@ static void *shim_picture_alloc (size_t need)
 	}
 
 	/* Out of room: unload the pictures nobody is drawing any more and try
-	 * once more.  The chunks stay (they hold the pictures that survived). */
+	 * once more.  The chunks stay (they hold the pictures that survived).
+	 *
+	 * This is the emergency path, and it is expensive: releasing a picture
+	 * means the next frame that wants it tears it down and decodes the file
+	 * again from the memory stick.  That is why the port also checks the
+	 * arena's free room between frames (gu_psp.c) and unloads there, with the
+	 * GPU idle -- doing this here, in the middle of building a frame, is how a
+	 * menu that is merely full of pictures turns into a second-long stall. */
 	if (shim_evict_hook)
 	{
-		shim_evict_hook();
+		int released = shim_evict_hook();
 
 		shim_arena_trim();
 
 		p = tex_arena_alloc(&shim_arena, need);
 		if (p)
+		{
+			/* Worth a line in the log: it says the pool was full, what
+			 * it gave up to make room, and that the picture did load. */
+			if (shim_arena_short_logs < 20)
+			{
+				shim_arena_short_logs++;
+				psp_tracef("tex: arena short for %d KB: %d idle pictures "
+				           "unloaded, retry ok (%d KB free now in one piece)",
+				           (int)(need / 1024), released,
+				           (int)(tex_arena_largest_free(&shim_arena) / 1024));
+			}
+
 			return p;
+		}
+
+		if (shim_arena_short_logs < 20)
+		{
+			shim_arena_short_logs++;
+			psp_tracef("tex: arena short for %d KB: %d idle pictures unloaded, "
+			           "retry STILL FAILED (%d chunks, %d KB used of %d KB)",
+			           (int)(need / 1024), released, shim_arena.chunks,
+			           (int)(tex_arena_used(&shim_arena) / 1024),
+			           (int)(tex_arena_size(&shim_arena) / 1024));
+		}
 	}
 
 	if (tex_arena_size(&shim_arena) + need >= SHIM_ARENA_LIMIT)

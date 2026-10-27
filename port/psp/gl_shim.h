@@ -49,7 +49,13 @@ size_t psp_gl_shim_texture_bytes (void);
  * moment is the memory of pictures nobody asked for in the last few seconds.
  * The port therefore plugs its own purge in here (gu_psp.c), the shim calls
  * it once and retries the allocation. */
-void psp_gl_shim_set_evict_hook (void (*fn)(void));
+/* The port's cache purge, called when a picture does not fit.  Returns the
+ * number of pictures it released (0 if it could not free anything). */
+void psp_gl_shim_set_evict_hook (int (*fn)(void));
+
+/* The biggest free run in the picture arena, payload only: what a new picture
+ * could get right now.  Read between frames by the port. */
+size_t psp_gl_shim_texture_room (void);
 
 /* One line stating what the picture pool actually holds, for the frame card. */
 void psp_gl_shim_texture_report (void);

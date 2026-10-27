@@ -81,6 +81,7 @@ static int          gu_in_frame;
 static int          gu_list_words;
 static int          gu_list_peak;
 static int          gu_list_warned;
+static int          gu_room_logs;
 static int          gu_display_on;
 static unsigned int gu_frames;
 static unsigned int gu_draw_buffer;	/* EDRAM offset of the buffer to draw into */
@@ -125,9 +126,48 @@ unsigned int psp_gu_frame_count (void)
  * frames is out of every submitted batch (a frame is finished and synced in
  * psp_gu_frame_end before the next one starts), so two frames is the safe
  * threshold, and the timer below is free to be much lazier. */
-static void gu_pictures_wanted (void)
+static int gu_pictures_wanted (void)
 {
-	Draw_EvictCachePics(2);
+	return Draw_EvictCachePics(2);
+}
+
+/* Room a new picture needs before it is worth doing nothing about: below this
+ * the pool cannot take even a modest 128x192 picture, so the next menu screen
+ * full of them would go through the emergency path in gl_shim.c -- in the
+ * middle of a frame, with a draw list open.
+ *
+ * The last hardware log ended at exactly that state:
+ *
+ *     tex: 107 pictures, 4528 KB in use of 4664 KB arena (16 chunks ...),
+ *          largest free 23 KB in 16 runs
+ *
+ * i.e. full.  Every picture after that point had to force an eviction to fit,
+ * and every evicted picture is decoded from the memory stick again the next
+ * time it is drawn: on the GPU side that is a stall of a good fraction of a
+ * second per picture, and on the panel it looks like the game froze for a
+ * moment.  Doing the same unload here -- between frames, with the GE finished
+ * and synced -- costs nothing on screen and keeps the emergency path for
+ * actual emergencies. */
+#define GU_TEX_ROOM_MIN (48u * 1024u)
+
+static void gu_pictures_breathe (void)
+{
+	size_t before = psp_gl_shim_texture_room();
+	int released;
+
+	if (before >= GU_TEX_ROOM_MIN)
+		return;
+
+	released = Draw_EvictCachePics(2);
+
+	if (released > 0 && gu_room_logs < 20)
+	{
+		gu_room_logs++;
+		psp_tracef("tex: only %d KB free in one piece: %d idle pictures "
+		           "unloaded between frames, %d KB free now",
+		           (int)(before / 1024), released,
+		           (int)(psp_gl_shim_texture_room() / 1024));
+	}
 }
 
 int psp_gu_init (void)
@@ -323,6 +363,14 @@ void psp_gu_frame_end (void)
 		 * that has nothing to do with pictures, so it is worth looking for
 		 * by name instead of by symptom. */
 		psp_gl_shim_texture_sane();
+	}
+
+	/* Twice a second, at a moment when the GPU is idle and nothing is being
+	 * decoded: if the pool cannot take another picture, unload the ones the
+	 * interface has moved on from *here*, not in the middle of a frame. */
+	if (gu_frames > 0 && (gu_frames % 30) == 0)
+	{
+		gu_pictures_breathe();
 	}
 
 	if (gu_frames == 60)
