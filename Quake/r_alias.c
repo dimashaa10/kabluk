@@ -1516,12 +1516,37 @@ void R_SetupAliasFrame (aliashdr_t *paliashdr, entity_t *e, lerpdata_t *lerpdata
 {
 	int frame = e->frame;
 	int				posenum, numposes;
+	float			interval;   /* never zero: it is a divisor */
+
+	ALIAS_MARK(va("pose: enter frame %d/%d nbones %d", (int)e->frame,
+	              (int)paliashdr->numframes, (int)paliashdr->numbones));
 
 	if ((frame >= paliashdr->numframes) || (frame < 0))
 	{
 		Con_DPrintf ("R_AliasSetupFrame: no such frame %d for '%s'\n", frame, e->model->name);
 		frame = 0;
 	}
+
+	if (paliashdr->numframes < 1)
+	{   /* nothing to interpolate: leave the caller with pose 0 rather than
+	     * indexing an empty frame table */
+		ALIAS_MARK("pose: no frames");
+		lerpdata->pose1 = lerpdata->pose2 = 0;
+		lerpdata->blend = 0;
+		lerpdata->bonestate = NULL;
+		return;
+	}
+
+	/* A corrupt or unusual model can carry interval 0 or a frame group with
+	 * no poses.  Dividing by either is a trap on the PSP (an integer modulo by
+	 * zero is an exception, not an infinity), so both are made safe here and
+	 * the values are reported. */
+	interval = paliashdr->frames[frame].interval;
+	if (!(interval > 0.0f))
+		interval = 0.1f;
+
+	ALIAS_MARK(va("pose: frame %d np %d iv %.3f", frame,
+	              (int)paliashdr->frames[frame].numposes, paliashdr->frames[frame].interval));
 
 	if (e->lerpflags & LERP_EXPLICIT)
 	{
@@ -1531,6 +1556,8 @@ void R_SetupAliasFrame (aliashdr_t *paliashdr, entity_t *e, lerpdata_t *lerpdata
 
 		if ((frame2 >= paliashdr->numframes) || (frame2 < 0))
 			frame2 = 0;
+
+		ALIAS_MARK("pose: explicit");
 
 		if (paliashdr->frames[(frac > 0.5)?frame2:frame].numposes > 1)
 		{	//our stronger sequence is a framegroup, but we can only do two-way blends.
@@ -1544,38 +1571,54 @@ void R_SetupAliasFrame (aliashdr_t *paliashdr, entity_t *e, lerpdata_t *lerpdata
 
 			if (time < 0)
 				time = 0;	//just in case...
-			frac = (time / paliashdr->frames[frame].interval);
+			frac = (time / interval);
 			posenum = (int)frac;
 			lerpdata->blend = (frac - posenum);
 
 			posenum += paliashdr->frames[frame].firstpose;
 			numposes = paliashdr->frames[frame].numposes;
+			if (numposes < 1)
+				numposes = 1;   /* % 0 would be an exception, not a crash message */
 
 			lerpdata->pose1 = (posenum)%numposes;
 			lerpdata->pose2 = (posenum+1)%numposes;
 		}
 		else
 		{
+			int np1 = paliashdr->frames[frame].numposes;
+			int np2 = paliashdr->frames[frame2].numposes;
+			float iv1 = paliashdr->frames[frame].interval;
+			float iv2 = paliashdr->frames[frame2].interval;
+
+			if (np1 < 1) np1 = 1;
+			if (np2 < 1) np2 = 1;
+			if (!(iv1 > 0.0f)) iv1 = 0.1f;
+			if (!(iv2 > 0.0f)) iv2 = 0.1f;
+
 			lerpdata->blend = frac;
 
 			lerpdata->pose1 = paliashdr->frames[frame].firstpose;
-			lerpdata->pose1 += (unsigned int)(e->lerp.snap.time[0]/paliashdr->frames[frame].interval) % paliashdr->frames[frame].numposes;
+			lerpdata->pose1 += (unsigned int)(e->lerp.snap.time[0]/iv1) % np1;
 
 			lerpdata->pose2 = paliashdr->frames[frame2].firstpose;
-			lerpdata->pose2 += (unsigned int)(e->lerp.snap.time[1]/paliashdr->frames[frame2].interval) % paliashdr->frames[frame].numposes;
+			lerpdata->pose2 += (unsigned int)(e->lerp.snap.time[1]/iv2) % np2;
 		}
 	}
 	else
 	{
+		ALIAS_MARK("pose: normal");
+
 		posenum = paliashdr->frames[frame].firstpose;
 		numposes = paliashdr->frames[frame].numposes;
+		if (numposes < 1)
+			numposes = 1;   /* a frame with no poses would divide by zero below */
 
 		if (numposes > 1)
 		{
 			float time = cl.time + e->syncbase;	//Spike: Readded syncbase
 			if (time < 0)
 				time = 0;	//just in case...
-			e->lerp.state.lerptime = paliashdr->frames[frame].interval;	//FIXME: no per-frame intervals
+			e->lerp.state.lerptime = interval;	//FIXME: no per-frame intervals
 			posenum += (int)(time / e->lerp.state.lerptime) % numposes;
 		}
 		else
@@ -1632,6 +1675,18 @@ void R_SetupAliasFrame (aliashdr_t *paliashdr, entity_t *e, lerpdata_t *lerpdata
 		}
 	}
 
+	ALIAS_MARK(va("pose: p1 %d p2 %d blend %.2f", (int)lerpdata->pose1,
+	              (int)lerpdata->pose2, (double)lerpdata->blend));
+
+	/* The two arrays below are fixed at 256 poses.  A model that claims more
+	 * would run off the stack frame and take the console with it, so the extra
+	 * bones are simply not blended. */
+	if (paliashdr->numbones > 256)
+	{
+		ALIAS_MARK(va("pose: too many bones (%d)", (int)paliashdr->numbones));
+		paliashdr->numbones = 256;
+	}
+
 	if (paliashdr->numboneposes)
 	{
 		static bonepose_t inverted[256];
@@ -1659,6 +1714,8 @@ void R_SetupAliasFrame (aliashdr_t *paliashdr, entity_t *e, lerpdata_t *lerpdata
 	}
 	else
 		lerpdata->bonestate = NULL;
+
+	ALIAS_MARK("pose: done");
 }
 
 /*
@@ -1671,6 +1728,8 @@ void R_SetupEntityTransform (entity_t *e, lerpdata_t *lerpdata)
 	float blend;
 	vec3_t d;
 	int i;
+
+	ALIAS_MARK("xform: enter");
 
 	// if LERP_RESETMOVE, kill any lerps in progress
 	if (e->lerpflags & LERP_RESETMOVE)
@@ -1723,6 +1782,8 @@ void R_SetupEntityTransform (entity_t *e, lerpdata_t *lerpdata)
 		VectorCopy (e->angles, lerpdata->angles);
 	}
 	lerpdata->origin[2] += CL_EntitySkateLift(e);
+
+	ALIAS_MARK("xform: done");
 }
 
 /*
