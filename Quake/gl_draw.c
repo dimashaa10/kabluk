@@ -477,6 +477,7 @@ qpic_t	*Draw_TryCachePic (const char *path, unsigned int texflags)
 			return NULL;
 		}
 
+		DRAW_MARK(va("pic %dx%d", gl.gltexture->width, gl.gltexture->height));
 		pic->pic.width = gl.gltexture->width;
 		pic->pic.height = gl.gltexture->height;
 
@@ -484,7 +485,9 @@ qpic_t	*Draw_TryCachePic (const char *path, unsigned int texflags)
 		gl.sh = (texflags&TEXPREF_PAD)?(float)pic->pic.width/(float)TexMgr_PadConditional(pic->pic.width):1; //johnfitz
 		gl.tl = 0;
 		gl.th = (texflags&TEXPREF_PAD)?(float)pic->pic.height/(float)TexMgr_PadConditional(pic->pic.height):1; //johnfitz
+		DRAW_MARK("pic: copy");
 		memcpy (pic->pic.data, &gl, sizeof(glpic_t));
+		DRAW_MARK("pic: cached");
 
 		return &pic->pic;
 	}

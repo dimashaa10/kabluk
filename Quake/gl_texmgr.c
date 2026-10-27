@@ -544,6 +544,11 @@ gltexture_t* TexMgr_NewTexture(void)
 	{
 		int i, newtexturecount = 64;
 		free_gltextures = (gltexture_t*)malloc(newtexturecount * sizeof(gltexture_t));
+		/* Without this check a failed malloc is a write through a NULL
+		 * pointer, which on the PSP means the console goes out silently. */
+		if (!free_gltextures)
+			Sys_Error ("TexMgr_NewTexture: out of memory for %i textures",
+			           newtexturecount);
 		for (i = 0; i < newtexturecount - 1; i++)
 			free_gltextures[i].next = &free_gltextures[i + 1];
 		free_gltextures[i].next = NULL;
@@ -992,6 +997,12 @@ static unsigned* TexMgr_ResampleTexture(unsigned* in, int inwidth, int inheight,
 	unsigned* out;
 	int i, j, outwidth, outheight;
 
+	/* A zero dimension must never reach the arithmetic below: xfrac/yfrac
+	 * divide by (outwidth - 1), and Pad(0) is 1, so the divisor would be 0 --
+	 * on the PSP that is a trap exception, not an infinity. */
+	if (inwidth < 1 || inheight < 1)
+		return in;
+
 	if (inwidth == TexMgr_Pad(inwidth) && inheight == TexMgr_Pad(inheight))
 		return in;
 
@@ -1368,14 +1379,19 @@ static void TexMgr_LoadImage32(gltexture_t* glt, unsigned* data)
 	}
 
 	// upload
-	TEX_MARK("tex32: upload");
+	/* The size goes into the mark: if a picture dies here, its dimensions are
+	 * the first thing to check (a padded 1xN or a giant one explains a lot). */
+	TEX_MARK(va("tex32: upload %dx%d", glt->width, glt->height));
+	TEX_MARK("tex32: bind");
 	GL_Bind(glt);
 	internalformat = (glt->flags & TEXPREF_ALPHA) ? gl_alpha_format : gl_solid_format;
+	TEX_MARK("tex32: image2d");
 	glTexImage2D(GL_TEXTURE_2D, 0, internalformat, glt->width, glt->height, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
 
 	// upload mipmaps
 	if (glt->flags & TEXPREF_MIPMAP && !(glt->flags & TEXPREF_WARPIMAGE)) // warp image mipmaps are generated later
 	{
+		TEX_MARK("tex32: mipchain");
 		mipwidth = glt->width;
 		mipheight = glt->height;
 
@@ -1396,7 +1412,9 @@ static void TexMgr_LoadImage32(gltexture_t* glt, unsigned* data)
 	}
 
 	// set filter modes
+	TEX_MARK("tex32: filter");
 	TexMgr_SetFilterModes(glt);
+	TEX_MARK("tex32: done");
 }
 
 void TexMgr_BlockSize(enum srcformat format, int* bytes, int* width, int* height)
@@ -1823,8 +1841,10 @@ gltexture_t* TexMgr_LoadImage(qmodel_t* owner, const char* name, int width, int 
 		break;
 	}
 
+	TEX_MARK("tex: free hunk");
 	Hunk_FreeToLowMark(mark);
 
+	TEX_MARK("tex: done");
 	return glt;
 }
 

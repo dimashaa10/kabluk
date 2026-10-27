@@ -34,11 +34,17 @@ qboolean	gl_texture_etc2 = false;
 qboolean	gl_texture_astc = false;
 qboolean	gl_texture_e5bgr9 = false;
 
-GLint		gl_hardware_maxsize = 0;
+/* The largest texture sceGu can take.  This used to be 0, which is not "no
+ * limit" but "no texture at all": TexMgr_SafeTextureSize() clamps every size
+ * down to gl_hardware_maxsize, so every picture in the game was being shrunk
+ * to 0x0 by the mip loop -- all the way to the last mip level, and a 0-wide
+ * texture later divides by zero in the GL maths.  The PSP GPU tops out at
+ * 512x512. */
+GLint		gl_hardware_maxsize = 512;
 float		gl_max_anisotropy = 0.0f;
-GLint		gl_max_texture_units = 0;
-GLint		gl_max_texture_image_units = 0;
-GLint		gl_max_combined_texture_image_units = 0;
+GLint		gl_max_texture_units = 1;
+GLint		gl_max_texture_image_units = 1;
+GLint		gl_max_combined_texture_image_units = 1;
 int		gl_stencilbits = 0;
 
 /* ---- video state owned by the backend ---- */
