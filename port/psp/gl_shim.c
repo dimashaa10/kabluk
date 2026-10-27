@@ -55,9 +55,19 @@
  * vertex, so the two arrays below cost 60 KB together). */
 #define SHIM_MAX_VERTICES     1024
 
-/* Room for the triangles a quad list expands into (each quad becomes two
- * triangles, i.e. six vertices). */
-#define SHIM_MAX_TRI_VERTICES ((SHIM_MAX_VERTICES / 4) * 6)
+/* Room for the vertices the GE reads while it draws a frame.
+ *
+ * sceGuDrawArray() does not copy anything: it sends the GE the ADDRESS of the
+ * vertex array (see pspsdk src/gu/sceGuDrawArray.c -- VADDR/PRIM and nothing
+ * else) and the GE fetches those vertices over the bus while the CPU is
+ * already building the next picture.  A single shared array is therefore
+ * rewritten under the GE's feet, and the GE draws the *next* picture's
+ * vertices, or a half-written mix of two -- which is what the full-screen
+ * wedges, the diagonal edge and the flicker between frames are.  Every draw
+ * now gets its own slice of this ring; the ring is reset at frame start, after
+ * the previous frame has been synchronised.  8192 vertices is 192 KB and holds
+ * 1365 quads, i.e. a screen and a half of 8x8 text. */
+#define SHIM_GE_VERTICES      8192
 
 typedef struct
 {
@@ -107,7 +117,10 @@ static int            shim_vp_x, shim_vp_y, shim_vp_w = PSP_SCREEN_WIDTH,
 static int            shim_primitive;
 static int            shim_vertex_count;
 static shim_vertex_t  shim_vertices[SHIM_MAX_VERTICES] __attribute__((aligned(16)));
-static shim_vertex_t  shim_triangles[SHIM_MAX_TRI_VERTICES] __attribute__((aligned(16)));
+static shim_vertex_t  shim_ge_vertices[SHIM_GE_VERTICES] __attribute__((aligned(16)));
+static unsigned int   shim_ge_used;            /* vertices handed to the GE */
+static unsigned int   shim_ge_peak;            /* ... and the frame's high mark */
+static unsigned int   shim_ge_overflows;
 static float          shim_current_u, shim_current_v;
 static unsigned int   shim_current_color = 0xFFFFFFFFu;
 
@@ -225,6 +238,34 @@ static shim_matrix_t *shim_current_matrix (void)
 	return (shim_matrix_mode == GL_PROJECTION) ? &shim_projection : &shim_modelview;
 }
 
+/* ---- the GE vertex ring ----
+ *
+ * A draw gets a private slice of shim_ge_vertices and the GE keeps reading it
+ * until it has finished that draw, so a slice must never be handed out twice
+ * inside one frame.  When the ring is full the draw is dropped, loudly: a
+ * picture that is missing is a bug report, a picture drawn from somebody
+ * else's vertices is a wild goose chase. */
+static shim_vertex_t *shim_ge_alloc (unsigned int count)
+{
+	shim_vertex_t *v;
+
+	if (count == 0 || count > SHIM_GE_VERTICES - shim_ge_used)
+	{
+		if (shim_ge_overflows++ == 0)
+			psp_tracef("ring: full at %u of %d vertices in frame %u, dropping draws",
+			           shim_ge_used, SHIM_GE_VERTICES, shim_frames);
+		return NULL;
+	}
+
+	v = &shim_ge_vertices[shim_ge_used];
+	shim_ge_used += count;
+
+	if (shim_ge_used > shim_ge_peak)
+		shim_ge_peak = shim_ge_used;
+
+	return v;
+}
+
 /* ------------------------------------------------------------------ */
 /* textures                                                           */
 /* ------------------------------------------------------------------ */
@@ -271,9 +312,14 @@ static unsigned short shim_px4444 (int r, int g, int b, int a)
 	                        ((g >> 4) << 4) | (r >> 4));
 }
 
+/* GU_PSM_5650 keeps the same channel order as the 32-bit formats, only with
+ * fewer bits: red in the low five, green in the middle six, blue in the top
+ * five (this is the "ABGR1555/5650" layout the PSP uses for its own 16-bit
+ * screen modes).  Written the other way round -- which it was -- every opaque
+ * picture came out with its red and blue channels exchanged. */
 static unsigned short shim_px5650 (int r, int g, int b)
 {
-	return (unsigned short)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+	return (unsigned short)(((b >> 3) << 11) | ((g >> 2) << 5) | (r >> 3));
 }
 
 static void shim_put_pixels (shim_texture_t *t, int x, int y, int w, int h,
@@ -543,39 +589,63 @@ static void shim_trace_draw (int count, const char *what)
  *      v3 = bottom-left v2 = bottom-right        (clockwise, y downwards)
  *
  * so the two triangles are (v0, v1, v2) and (v0, v2, v3).  Triangles map the
- * texture exactly, and -- just as important -- the whole list goes to the GE
- * in ONE sceGuDrawArray: a screen full of text is a few thousand vertices,
- * and one command per quad would fill the 64 KB draw list in a frame or two.
+ * texture exactly, which GU_SPRITES (an axis-aligned shortcut that stretches
+ * one texel pair over the whole rectangle) does not for a quad that is not
+ * square to the screen.
+ *
+ * The expanded list goes to the GE in as few command as the ring allows --
+ * a line of text is one draw, not two hundred -- because every quad on its
+ * own would fill the 32 KB draw list in a frame or two.
  *
  * (The alternative, GU_SPRITES in vertex pairs, stretches the texture across
  * the rectangle instead of interpolating it and needs two commands per quad;
  * it is only worth it for axis-aligned, unfiltered pictures.) */
 static void shim_flush_quads (void)
 {
-	int i, n = 0;
+	int quads = shim_vertex_count / 4;
+	int done = 0;
 
 	shim_frame_draws++;
 	shim_trace_draw(shim_vertex_count, "quads");
 
-	for (i = 0; i + 3 < shim_vertex_count; i += 4)
+	/* As many quads as the ring still has room for, in one command, then the
+	 * next slice: a line of text usually fits in a single draw. */
+	while (done < quads)
 	{
-		if (n + 6 > SHIM_MAX_TRI_VERTICES)
+		shim_vertex_t *v;
+		int batch = quads - done;
+		int k;
+
+		if ((unsigned int)(batch * 6) > SHIM_GE_VERTICES - shim_ge_used)
+			batch = (int)((SHIM_GE_VERTICES - shim_ge_used) / 6);
+
+		if (batch <= 0)
 		{
-			shim_guDrawArray(GU_TRIANGLES, SHIM_VERTEX_FORMAT, n, NULL, shim_triangles);
-			n = 0;
+			shim_ge_alloc(0);   /* logs the overflow once */
+			return;
 		}
 
-		shim_triangles[n++] = shim_vertices[i + 0];
-		shim_triangles[n++] = shim_vertices[i + 1];
-		shim_triangles[n++] = shim_vertices[i + 2];
+		v = shim_ge_alloc((unsigned int)(batch * 6));
+		if (!v)
+			return;
 
-		shim_triangles[n++] = shim_vertices[i + 0];
-		shim_triangles[n++] = shim_vertices[i + 2];
-		shim_triangles[n++] = shim_vertices[i + 3];
+		for (k = 0; k < batch; k++)
+		{
+			int o = (done + k) * 4;
+
+			v[k * 6 + 0] = shim_vertices[o + 0];
+			v[k * 6 + 1] = shim_vertices[o + 1];
+			v[k * 6 + 2] = shim_vertices[o + 2];
+
+			v[k * 6 + 3] = shim_vertices[o + 0];
+			v[k * 6 + 4] = shim_vertices[o + 2];
+			v[k * 6 + 5] = shim_vertices[o + 3];
+		}
+
+		shim_guDrawArray(GU_TRIANGLES, SHIM_VERTEX_FORMAT, batch * 6, NULL, v);
+
+		done += batch;
 	}
-
-	if (n)
-		shim_guDrawArray(GU_TRIANGLES, SHIM_VERTEX_FORMAT, n, NULL, shim_triangles);
 }
 
 /* ------------------------------------------------------------------ */
@@ -617,11 +687,21 @@ void glEnd (void)
 		return;
 	}
 
-	shim_frame_draws++;
-	shim_trace_draw(shim_vertex_count, "array");
-	shim_guDrawArray(shim_gu_primitive(shim_primitive), SHIM_VERTEX_FORMAT,
-	               shim_vertex_count, NULL, shim_vertices);
-	shim_vertex_count = 0;
+	{
+		shim_vertex_t *v = shim_ge_alloc((unsigned int)shim_vertex_count);
+
+		shim_frame_draws++;
+		shim_trace_draw(shim_vertex_count, "array");
+
+		if (v)
+		{
+			memcpy(v, shim_vertices, sizeof(shim_vertex_t) * (size_t)shim_vertex_count);
+			shim_guDrawArray(shim_gu_primitive(shim_primitive), SHIM_VERTEX_FORMAT,
+			                 shim_vertex_count, NULL, v);
+		}
+
+		shim_vertex_count = 0;
+	}
 }
 
 void glVertex2f (GLfloat x, GLfloat y)
@@ -645,20 +725,28 @@ void glTexCoord2f (GLfloat s, GLfloat t)
 	shim_current_v = t;
 }
 
+/* The GU stores a colour as 0xAABBGGRR -- red in the LOW byte (pspgu.h says
+ * so for the pixel mask: "the representation of the mask is in the format
+ * 0xAABBGGRR"), which is also the byte order a GL_RGBA array has on a
+ * little-endian machine.  These three used to put red in bits 16..23 and blue
+ * in bits 0..7, i.e. they swapped red and blue for every vertex of every
+ * picture: a colour right in red came out blue.  glColor4ubv below, which
+ * stores the GL bytes as they arrive, was always right -- and is the proof
+ * that the layout above is the wrong way round. */
 void glColor3f (GLfloat r, GLfloat g, GLfloat b)
 {
 	shim_current_color = 0xFF000000u |
-	                     ((unsigned int)(r * 255.0f + 0.5f) << 16) |
+	                     ((unsigned int)(b * 255.0f + 0.5f) << 16) |
 	                     ((unsigned int)(g * 255.0f + 0.5f) << 8) |
-	                     ((unsigned int)(b * 255.0f + 0.5f));
+	                     ((unsigned int)(r * 255.0f + 0.5f));
 }
 
 void glColor4f (GLfloat r, GLfloat g, GLfloat b, GLfloat a)
 {
 	shim_current_color = ((unsigned int)(a * 255.0f + 0.5f) << 24) |
-	                     ((unsigned int)(r * 255.0f + 0.5f) << 16) |
+	                     ((unsigned int)(b * 255.0f + 0.5f) << 16) |
 	                     ((unsigned int)(g * 255.0f + 0.5f) << 8) |
-	                     ((unsigned int)(b * 255.0f + 0.5f));
+	                     ((unsigned int)(r * 255.0f + 0.5f));
 }
 
 void glColor3fv (const GLfloat *v)
@@ -953,10 +1041,11 @@ void glHint (GLenum target, GLenum mode)
 
 void glClearColor (GLclampf red, GLclampf green, GLclampf blue, GLclampf alpha)
 {
+	/* 0xAABBGGRR again -- see the note above glColor3f(). */
 	shim_clear_color = ((unsigned int)(alpha * 255.0f + 0.5f) << 24) |
-	                   ((unsigned int)(red * 255.0f + 0.5f) << 16) |
+	                   ((unsigned int)(blue * 255.0f + 0.5f) << 16) |
 	                   ((unsigned int)(green * 255.0f + 0.5f) << 8) |
-	                   ((unsigned int)(blue * 255.0f + 0.5f));
+	                   ((unsigned int)(red * 255.0f + 0.5f));
 }
 
 void glClear (GLbitfield mask)
@@ -1228,11 +1317,12 @@ void psp_gl_shim_end_frame (void)
 
 	if (shim_frames <= 3 || (shim_frames % 120) == 0)
 		psp_tracef("gl: frame %u, %u draws, %u vertices, %u screen-size draws, "
-		           "%d KB of textures, scissor %s %d,%d %dx%d, "
+		           "%d KB of textures, ring %u of %d, scissor %s %d,%d %dx%d, "
 		           "viewport %d,%d %dx%d",
 		           shim_frames, shim_frame_draws, shim_frame_verts,
 		           shim_big_draws,
 		           (int)(shim_texture_bytes / 1024),
+		           shim_ge_peak, SHIM_GE_VERTICES,
 		           shim_scissor_on ? "on" : "off",
 		           shim_scr_x, shim_scr_y, shim_scr_w, shim_scr_h,
 		           shim_vp_x, shim_vp_y, shim_vp_w, shim_vp_h);
@@ -1253,6 +1343,11 @@ void psp_gl_shim_begin_frame (void)
 {
 	shim_frame_draws = 0;
 	shim_frame_verts = 0;
+
+	/* gu_psp.c synced the previous frame before it swapped, so the GE is
+	 * finished with every slice it was given last time. */
+	shim_ge_used = 0;
+	shim_ge_peak = 0;
 
 	if (shim_texture_2d)
 		shim_guEnable(GU_TEXTURE_2D);

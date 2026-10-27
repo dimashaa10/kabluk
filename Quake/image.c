@@ -94,9 +94,28 @@ static inline int Buf_GetC(stdio_buffer_t *buf)
 ** */
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_BMP
-#define STBI_ONLY_JPEG
 #ifdef LODEPNG_NO_COMPILE_DECODER
 	#define STBI_ONLY_PNG
+#endif
+#ifndef PLATFORM_PSP
+#ifndef __psp__
+	/* No JPEG on the console.
+	 *
+	 * With a decoder list of "JPEG, PNG, BMP" (that is the order stb_image
+	 * tries them in, see stbi__load_main()), every PNG first goes through the
+	 * JPEG probe -- and on the PSP that probe is both expensive (it puts an
+	 * 18 KB stbi__jpeg on the stack in the middle of a menu redraw) and
+	 * unreliable: the menu art in the paks came back as
+	 * "img: gfx/a_mmenu/mainmenu1.png FAILED: no SOI", which is the JPEG
+	 * decoder saying the file does not start with FF D8 -- for a file whose
+	 * first bytes are 89 50 4E 47 0D 0A 1A 0A, i.e. a perfectly good PNG.
+	 *
+	 * The game's own interface art is PNG, BMP, PCX and TGA, and it has no
+	 * JPEG at all, so the probe is pure liability here: without it, PNG is
+	 * tested first and the "no SOI" class of failure cannot happen.  A .jpg
+	 * would now report "unknown image type" instead of decoding. */
+	#define STBI_ONLY_JPEG
+#endif
 #endif
 #include "stb_image.h"
 static byte *Image_LoadSTBI(FILE *f, int *width, int *height)
