@@ -159,8 +159,11 @@ static void shim_guTexFlush (void)                { if (shim_frame_active) sceGu
 static void shim_guTexFunc (int tfx, int tcc)     { if (shim_frame_active) sceGuTexFunc(tfx, tcc); }
 static void shim_guTexImage (int mip, int w, int h, int tbw, const void *p)
                                                   { if (shim_frame_active) sceGuTexImage(mip, w, h, tbw, p); }
-static void shim_guTexMode (int psm, int mips, int a2, int swz)
-                                                  { if (shim_frame_active) sceGuTexMode(psm, mips, a2, swz); }
+/* NOT "mips": psp-gcc predefines the macro `mips` (the target CPU family is
+ * baked into the compiler), so a parameter of that name is replaced by a
+ * number before it is even parsed.  The desktop syntax check cannot see it. */
+static void shim_guTexMode (int psm, int levels, int a2, int swz)
+                                                  { if (shim_frame_active) sceGuTexMode(psm, levels, a2, swz); }
 static void shim_guDrawArray (int prim, unsigned int fmt, int count, const void *idx, const void *verts)
                                                   { if (shim_frame_active) sceGuDrawArray(prim, fmt, count, idx, verts); }
 
