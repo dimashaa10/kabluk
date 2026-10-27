@@ -178,6 +178,7 @@ static int            shim_frame_active;
 static unsigned int   shim_frames;
 static unsigned int   shim_frame_draws;
 static unsigned int   shim_frame_verts;
+static unsigned int   shim_frame_batches;   /* sceGuDrawArray calls actually sent */
 
 /* Draw tracer.
  *
@@ -199,6 +200,33 @@ static unsigned int shim_3d_warned_frames;
 static unsigned int shim_3d_warned_frame = ~0u;
 
 /* ------------------------------------------------------------------ */
+/* batching                                                           */
+/* ------------------------------------------------------------------ */
+
+/* Consecutive draws that ask the GE for the same primitive with the same
+ * state are one draw, not twenty.
+ *
+ * The engine draws text one character at a time: Draw_Character() is its own
+ * glBegin(GL_QUADS)/glEnd() pair, and the boot console fills eighteen rows of
+ * it.  Every glEnd() used to become its own sceGuDrawArray(), so a menu frame
+ * was 392 GE commands, 382 of them a single 8x8 glyph.  Each command costs a
+ * few words of the 32 KB draw list and, more importantly, a round of GE state
+ * checks; the hardware is perfectly happy to take the same 2300 vertices in
+ * one command.
+ *
+ * The batching is deliberately conservative: it only merges draws that are
+ * already adjacent in the vertex ring (so the merged range is contiguous
+ * memory) and only when the primitive matches.  Every shim_gu* wrapper below
+ * flushes the pending batch before it sends a GE command, so a texture change,
+ * a blend change or a scissor change can never be applied to a draw that was
+ * started before it -- the batch cannot reorder anything. */
+static shim_vertex_t *shim_batch_v;
+static int            shim_batch_n;
+static int            shim_batch_prim;
+
+static void shim_batch_flush (void);
+
+/* ------------------------------------------------------------------ */
 /* the gate                                                           */
 /* ------------------------------------------------------------------ */
 
@@ -209,34 +237,72 @@ static unsigned int shim_3d_warned_frame = ~0u;
  * null list pointer.  So every GE call below goes through one of these
  * wrappers: outside a frame the state is only *recorded*, and
  * psp_gl_shim_begin_frame() replays it into the next list. */
-static void shim_guEnable (int cap)               { if (shim_frame_active) sceGuEnable(cap); }
-static void shim_guDisable (int cap)              { if (shim_frame_active) sceGuDisable(cap); }
+static void shim_guEnable (int cap)               { shim_batch_flush(); if (shim_frame_active) sceGuEnable(cap); }
+static void shim_guDisable (int cap)              { shim_batch_flush(); if (shim_frame_active) sceGuDisable(cap); }
 static void shim_guAlphaFunc (int f, unsigned int v, unsigned int m)
-                                                  { if (shim_frame_active) sceGuAlphaFunc(f, v, m); }
+                                                  { shim_batch_flush(); if (shim_frame_active) sceGuAlphaFunc(f, v, m); }
 static void shim_guBlendFunc (int op, int src, int dst, unsigned int sf, unsigned int df)
-                                                  { if (shim_frame_active) sceGuBlendFunc(op, src, dst, sf, df); }
-static void shim_guClear (unsigned int bits)      { if (shim_frame_active) sceGuClear(bits); }
-static void shim_guClearColor (unsigned int c)    { if (shim_frame_active) sceGuClearColor(c); }
-static void shim_guDepthFunc (int f)              { if (shim_frame_active) sceGuDepthFunc(f); }
-static void shim_guDepthMask (int m)              { if (shim_frame_active) sceGuDepthMask(m); }
+                                                  { shim_batch_flush(); if (shim_frame_active) sceGuBlendFunc(op, src, dst, sf, df); }
+static void shim_guClear (unsigned int bits)      { shim_batch_flush(); if (shim_frame_active) sceGuClear(bits); }
+static void shim_guClearColor (unsigned int c)    { shim_batch_flush(); if (shim_frame_active) sceGuClearColor(c); }
+static void shim_guDepthFunc (int f)              { shim_batch_flush(); if (shim_frame_active) sceGuDepthFunc(f); }
+static void shim_guDepthMask (int m)              { shim_batch_flush(); if (shim_frame_active) sceGuDepthMask(m); }
 static void shim_guScissor (int x, int y, int w, int h)
-                                                  { if (shim_frame_active) sceGuScissor(x, y, w, h); }
-static void shim_guShadeModel (int m)             { if (shim_frame_active) sceGuShadeModel(m); }
-static void shim_guTexFilter (int min, int mag)   { if (shim_frame_active) sceGuTexFilter(min, mag); }
-static void shim_guTexFlush (void)                { if (shim_frame_active) sceGuTexFlush(); }
-static void shim_guTexFunc (int tfx, int tcc)     { if (shim_frame_active) sceGuTexFunc(tfx, tcc); }
+                                                  { shim_batch_flush(); if (shim_frame_active) sceGuScissor(x, y, w, h); }
+static void shim_guShadeModel (int m)             { shim_batch_flush(); if (shim_frame_active) sceGuShadeModel(m); }
+static void shim_guTexFilter (int min, int mag)   { shim_batch_flush(); if (shim_frame_active) sceGuTexFilter(min, mag); }
+static void shim_guTexFlush (void)                { shim_batch_flush(); if (shim_frame_active) sceGuTexFlush(); }
+static void shim_guTexFunc (int tfx, int tcc)     { shim_batch_flush(); if (shim_frame_active) sceGuTexFunc(tfx, tcc); }
 static void shim_guTexImage (int mip, int w, int h, int tbw, const void *p)
-                                                  { if (shim_frame_active) sceGuTexImage(mip, w, h, tbw, p); }
+                                                  { shim_batch_flush(); if (shim_frame_active) sceGuTexImage(mip, w, h, tbw, p); }
 /* NOT "mips": psp-gcc predefines the macro `mips` (the target CPU family is
  * baked into the compiler), so a parameter of that name is replaced by a
  * number before it is even parsed.  The desktop syntax check cannot see it. */
 static void shim_guTexMode (int psm, int levels, int a2, int swz)
-                                                  { if (shim_frame_active) sceGuTexMode(psm, levels, a2, swz); }
+                                                  { shim_batch_flush(); if (shim_frame_active) sceGuTexMode(psm, levels, a2, swz); }
 static void shim_guDrawArray (int prim, unsigned int fmt, int count, const void *idx, const void *verts)
 {
+	shim_batch_flush();
 	shim_frame_verts += (unsigned int)count;
 	if (shim_frame_active)
 		sceGuDrawArray(prim, fmt, count, idx, verts);
+}
+
+/* Queue one draw.  Merged into the pending batch when the primitive matches
+ * and the vertices are exactly where the pending batch ends, i.e. when the two
+ * draws are already one contiguous run in the ring. */
+static void shim_batch_add (int prim, shim_vertex_t *v, int count)
+{
+	if (!v || count <= 0)
+		return;
+
+	shim_frame_verts += (unsigned int)count;
+
+	if (shim_batch_n > 0 && shim_batch_prim == prim &&
+	    shim_batch_v + shim_batch_n == v)
+	{
+		shim_batch_n += count;
+		return;
+	}
+
+	shim_batch_flush();
+
+	shim_batch_v = v;
+	shim_batch_n = count;
+	shim_batch_prim = prim;
+}
+
+static void shim_batch_flush (void)
+{
+	if (shim_batch_n > 0 && shim_batch_v && shim_frame_active)
+	{
+		sceGuDrawArray(shim_batch_prim, SHIM_VERTEX_FORMAT, shim_batch_n,
+		               NULL, shim_batch_v);
+		shim_frame_batches++;
+	}
+
+	shim_batch_n = 0;
+	shim_batch_v = NULL;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1078,7 +1144,7 @@ static void shim_flush_quads (void)
 			v[k * 6 + 5] = shim_vertices[o + 3];
 		}
 
-		shim_guDrawArray(GU_TRIANGLES, SHIM_VERTEX_FORMAT, batch * 6, NULL, v);
+		shim_batch_add(GU_TRIANGLES, v, batch * 6);
 
 		done += batch;
 	}
@@ -1143,8 +1209,7 @@ void glEnd (void)
 		if (v)
 		{
 			memcpy(v, shim_vertices, sizeof(shim_vertex_t) * (size_t)shim_vertex_count);
-			shim_guDrawArray(shim_gu_primitive(shim_primitive), SHIM_VERTEX_FORMAT,
-			                 shim_vertex_count, NULL, v);
+			shim_batch_add(shim_gu_primitive(shim_primitive), v, shim_vertex_count);
 		}
 
 		shim_vertex_count = 0;
@@ -1970,6 +2035,7 @@ static void shim_card_row (int row, float y)
 
 void psp_gl_shim_test_card (void)
 {
+	shim_batch_flush();
 	if (!shim_frame_active)
 		return;
 
@@ -2035,13 +2101,14 @@ void psp_gl_shim_test_card (void)
  * the first picture of the frame is drawn. */
 void psp_gl_shim_end_frame (void)
 {
+	shim_batch_flush();
 	shim_frames++;
 
 	if (shim_frames <= 3 || (shim_frames % 120) == 0)
-		psp_tracef("gl: frame %u, %u draws, %u vertices, %u screen-size draws, "
+		psp_tracef("gl: frame %u, %u draws in %u batches, %u vertices, %u screen-size draws, "
 		           "%d KB of textures, ring %u of %d, scissor %s %d,%d %dx%d, "
 		           "viewport %d,%d %dx%d",
-		           shim_frames, shim_frame_draws, shim_frame_verts,
+		           shim_frames, shim_frame_draws, shim_frame_batches, shim_frame_verts,
 		           shim_big_draws,
 		           (int)(shim_texture_bytes / 1024),
 		           shim_ge_peak, SHIM_GE_VERTICES,
@@ -2068,6 +2135,8 @@ void psp_gl_shim_begin_frame (void)
 
 	/* gu_psp.c synced the previous frame before it swapped, so the GE is
 	 * finished with every slice it was given last time. */
+	shim_batch_n = 0;
+	shim_batch_v = NULL;
 	shim_ge_used = 0;
 	shim_ge_peak = 0;
 
