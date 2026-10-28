@@ -1734,6 +1734,58 @@ void M_Menu_Main_f (void)
 	IN_UpdateGrabs();
 }
 
+/* ---- the animated Kabluk logo, gfx/a_kzlogo/logo<i> --------------------
+ *
+ * 24 frames, picked from realtime.  They are drawn in two places: as a banner
+ * hanging off the top of the menu pages at y = -64 (the two lines the port has
+ * in seven draw functions), and as the logo of the main menu (M_DrawLogo).
+ *
+ * Why the PSP does not show the banner, and does not animate:
+ *
+ * Every frame that is DRAWN becomes a picture in the cache: decoded, uploaded
+ * into the picture arena, and kept -- the engine has no idea that a picture
+ * shown for one eighth of a second is not going to be wanted again.  The cycle
+ * walks through all 24 of them inside three seconds of opening the menu, so the
+ * animation alone puts 24 pictures in a pool that the whole interface has to
+ * share (6 MB, port/psp/psp_mem.c, PSP_PICTURE_POOL).  On the PC that is
+ * decoration; on the console it is a third of the picture budget spent on a
+ * banner.
+ *
+ * Note the wording: not drawing is not enough, the Draw_CachePic() call is what
+ * loads the file.  So the PSP must not make the call at all -- that is why the
+ * banner lives in M_DrawKzLogoStrip() below instead of being repeated at each
+ * of the seven sites, and why M_DrawLogo() picks a fixed frame.
+ *
+ *   MENU_KZLOGO_PSP       1 = banner drawn on the PSP too, 0 = not
+ *   MENU_KZLOGO_ANIM_PSP  1 = logo animates on the PSP, 0 = it stays on frame 1
+ *
+ * Both are 1 everywhere except the PSP, so the PC build loses nothing.  To see
+ * the banner on the console, change the number -- nothing else. */
+#if defined(PLATFORM_PSP) || defined(__psp__)
+#  define MENU_KZLOGO_PSP		0
+#  define MENU_KZLOGO_ANIM_PSP	0
+#else
+#  define MENU_KZLOGO_PSP		1
+#  define MENU_KZLOGO_ANIM_PSP	1
+#endif
+
+/* The banner above the menu pages: frame <i> of the sequence, centred, at
+ * y = -64.  png picks the file extension the menu it belongs to uses. */
+static void M_DrawKzLogoStrip (qboolean png)
+{
+#if MENU_KZLOGO_PSP
+	qpic_t *p = Draw_CachePic(va(png ? "gfx/a_kzlogo/logo%i.png"
+	                                 : "gfx/a_kzlogo/logo%i.bmp",
+	                            (int)(realtime * 8) % 24 + 1));
+
+	M_DrawPic((320 - p->width) / 2, -64, p);
+#else
+	/* Not loaded and not drawn: see the note above.  (void) because the
+	 * argument is part of every call site and disappears only here. */
+	(void) png;
+#endif
+}
+
 void M_DrawLogo (void)
 {
 	qpic_t* p;
@@ -1745,7 +1797,14 @@ void M_DrawLogo (void)
 	glDisable(GL_SCISSOR_TEST); // Отключаем clipping, если он включён
 	GL_SetCanvas(CANVAS_DEFAULT); // Переключаемся на полный экран (0,0 = верхний левый угол)
 
+	/* The animation walks all 24 frames, and every frame it shows stays in
+	 * the picture cache; on the console the logo is therefore a still picture
+	 * (frame 1) instead of a sequence.  See the note above M_DrawKzLogoStrip. */
+#if MENU_KZLOGO_ANIM_PSP
 	p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.png", (int)(realtime * 8) % 24 + 1));
+#else
+	p = Draw_CachePic("gfx/a_kzlogo/logo1.png");
+#endif
 
 	// Рисуем в центре экрана (пример)
 	int logo_x = (glwidth - p->width) / 2;
@@ -2042,8 +2101,7 @@ void M_SinglePlayer_Draw(void)
 {
 	qpic_t* p;
 
-	p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.png", (int)(realtime * 8) % 24 + 1));
-	M_DrawPic((320 - p->width) / 2, -64, p);
+	M_DrawKzLogoStrip(true); /* gfx/a_kzlogo banner: PC only */
 
 	M_DrawTransPic(16, 4, Draw_CachePic("gfx/qplaque.pcx"));
 	p = Draw_CachePic(va("gfx/a_sgl/asgl%i.bmp", (int)(realtime * 2) % 3 + 1));
@@ -2974,8 +3032,7 @@ void M_Skill_Draw(void)
 	int		x, y, f;
 	qpic_t* p;
 
-	p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.bmp", (int)(realtime * 8) % 24 + 1));
-	M_DrawPic((320 - p->width) / 2, -64, p);
+	M_DrawKzLogoStrip(false); /* gfx/a_kzlogo banner: PC only */
 	//pixda
 	M_DrawTransPic(16, 4, Draw_CachePic("gfx/qplaque.pcx"));
 	p = Draw_CachePic(m_skill_usecustomtitle ? (va("gfx/a_skill/askill%i.lmp", (int)(realtime * 2) % 3 + 1))  : "gfx/a_sgl/asgl1.lmp");
@@ -3138,8 +3195,7 @@ void M_MultiPlayer_Draw (void)
 	int		f, i; // woods
 	qpic_t	*p;
 
-	p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.bmp", (int)(realtime * 8) % 24 + 1));
-	M_DrawPic((320 - p->width) / 2, -64, p);
+	M_DrawKzLogoStrip(false); /* gfx/a_kzlogo banner: PC only */
 
 	M_DrawTransPic (16, 4, Draw_CachePic ("gfx/qplaque.pcx") );
 	p = Draw_CachePic(va("gfx/a_mp/amp%i.bmp", (int)(realtime * 2) % 3 + 1));
@@ -3464,8 +3520,7 @@ void M_Setup_Draw (void)
 		Cbuf_AddText("chase_active 1\n");
 	}
 
-	p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.bmp", (int)(realtime * 8) % 24 + 1));
-	M_DrawPic((320 - p->width) / 2, -64, p);
+	M_DrawKzLogoStrip(false); /* gfx/a_kzlogo banner: PC only */
 
 	M_DrawTransPic (16, 4, Draw_CachePic ("gfx/qplaque.pcx") );
 	p = Draw_CachePic(va("gfx/a_pasaan/pasaan%i.png", (int)(realtime * 2) % 3 + 1));
@@ -4067,8 +4122,7 @@ void M_Net_Draw (void)
 	int		f;
 	qpic_t	*p;
 
-	p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.bmp", (int)(realtime * 8) % 24 + 1));
-	M_DrawPic((320 - p->width) / 2, -64, p);
+	M_DrawKzLogoStrip(false); /* gfx/a_kzlogo banner: PC only */
 
 	M_DrawTransPic (16, 4, Draw_CachePic ("gfx/qplaque.pcx") );
 	p = Draw_CachePic(va("gfx/a_mp/amp%i.bmp", (int)(realtime * 2) % 3 + 1));
@@ -11176,8 +11230,7 @@ void M_LanConfig_Draw (void)
 	//const char	*protocol;
 
 
-	p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.bmp", (int)(realtime * 8) % 24 + 1));
-	M_DrawPic((320 - p->width) / 2, -64, p);
+	M_DrawKzLogoStrip(false); /* gfx/a_kzlogo banner: PC only */
 
 	M_DrawTransPic (16, 4, Draw_CachePic ("gfx/qplaque.pcx") );
 	p = Draw_CachePic(va("gfx/a_join/joining%i.png", (int)(realtime * 2) % 4 + 1));
@@ -12668,8 +12721,7 @@ void M_GameOptions_Draw (void)
 	qpic_t	*p;
 	int y = 40;
 
-	p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.bmp", (int)(realtime * 8) % 24 + 1));
-	M_DrawPic((320 - p->width) / 2, -64, p);
+	M_DrawKzLogoStrip(false); /* gfx/a_kzlogo banner: PC only */
 
 	M_DrawTransPic (16, 4, Draw_CachePic ("gfx/qplaque.pcx") );
 	p = Draw_CachePic(va("gfx/a_creat/creating%i.bmp", (int)(realtime * 2) % 3 + 1));

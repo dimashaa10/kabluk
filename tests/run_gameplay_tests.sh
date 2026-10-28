@@ -225,3 +225,35 @@ fi
 grep -q 'if (!draw_backtile)' Quake/gl_draw.c
 grep -q 'if (!pic || (uintptr_t)pic->data < 0x1000)' Quake/gl_draw.c
 echo "PASS: no picture-drawing entry point dereferences a missing picture."
+# The animated Kabluk logo (gfx/a_kzlogo/logo1..24) is menu decoration that
+# costs 24 pictures in the cache within three seconds of opening the menu --
+# and NOT drawing a picture does not avoid loading it: the Draw_CachePic()
+# call is what loads it.  So on the PSP the call itself has to be gone, which
+# is why every banner site goes through M_DrawKzLogoStrip() and the main-menu
+# logo is pinned to one frame.
+awk '
+  /^#if defined\(PLATFORM_PSP\)/ { inpsp = 1 }
+  inpsp && /define MENU_KZLOGO_PSP/ {
+      value = $NF; gsub(/[^0-9]/, "", value)
+      if (value != "0") { printf "FAIL: MENU_KZLOGO_PSP is not 0 on the PSP\n"; bad = 1 }
+      found = 1
+  }
+  inpsp && /^#else/ { inpsp = 0 }
+  END { if (!found) { printf "FAIL: MENU_KZLOGO_PSP is not defined in menu.c\n"; bad = 1 }
+        exit (bad ? 1 : 0) }
+' Quake/menu.c || exit 1
+if [ "$(grep -c 'M_DrawKzLogoStrip(' Quake/menu.c)" -lt 8 ]; then
+    echo "FAIL: a menu banner still loads the logo itself instead of going"
+    echo "FAIL: through M_DrawKzLogoStrip(), so the PSP would load its frames"
+    exit 1
+fi
+# Exactly three requests for the sequence may survive: the two inside the
+# helper and the animated one in M_DrawLogo.  A fourth means a call site was
+# added without the guard.
+if [ "$(grep -c 'gfx/a_kzlogo/logo%i' Quake/menu.c)" -gt 4 ]; then
+    echo "FAIL: a menu still asks for gfx/a_kzlogo/logo%i directly"
+    exit 1
+fi
+grep -q 'p = Draw_CachePic("gfx/a_kzlogo/logo1.png");' Quake/menu.c
+echo "PASS: the animated logo is PC-only: the PSP loads no frames of it and"
+echo "PASS: the main-menu logo is a single still picture."
