@@ -96,6 +96,17 @@ CPPFLAGS += -DSDL_MAIN_HANDLED
 # gnu11, not the compiler default: GCC 15 defaults to gnu23, where true and
 # false are keywords, and q_stdinc.h declares them as enum constants.
 CFLAGS += -std=gnu11
+# Debug information for the .elf only.  psp-strip throws all of it away when
+# data.psp (and so EBOOT.PBP) is built, so the EBOOT does not grow by a byte --
+# but build/kabluk.elf keeps file and line numbers, which is what turns the
+# address in a failed allocation's log line into an answer:
+#
+#     malloc: NULL for 17400000 bytes at 0x08912c40 -- last ...
+#     C:/pspdev/bin/psp-addr2line.exe -f -e build/kabluk.elf 0x08912c40
+#
+# Without it psp-addr2line still finds the function name from the symbol table,
+# but not the line inside it, and the caller is what a crash hunt needs.
+CFLAGS += -g
 CFLAGS += -O2 -G0 -Wall
 CFLAGS += -Wno-unused-variable -Wno-unused-but-set-variable
 CFLAGS += -fno-strict-aliasing

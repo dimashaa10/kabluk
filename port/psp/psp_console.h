@@ -50,7 +50,8 @@ void psp_mark (const char *what);
 /* One line for an allocation that returned NULL (malloc, realloc, memalign:
  * `what` names which).  The size and the breadcrumb of whoever asked.  Called from the allocator hook in psp_heap.c, before the
  * caller can turn the NULL into a fault.  Never more than eight lines. */
-void psp_con_note_alloc_failure (const char *what, unsigned int size);
+void psp_con_note_alloc_failure (const char *what, unsigned int size,
+                                 unsigned int caller);
 
 /* Called once the frame loop starts: stops writing marks to the card.  The
  * boot trail is what matters, and the drawing code emits a mark per picture.

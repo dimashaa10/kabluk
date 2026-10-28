@@ -22,6 +22,10 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "quakedef.h"
 #include "crc.h"
+/* q_isalnum(), for the whole-word rule below: the same "C" locale test
+ * q_memmem() in common.c applies to a buffer, and one that does not depend on
+ * the locale the console happens to be in. */
+#include "q_ctype.h"
 
 // this is a 16 bit, non-reflected CRC using the polynomial 0x1021
 // and the initial and final xor values shown below...  in other words, the
@@ -91,6 +95,189 @@ unsigned short CRC_Block (const byte *start, size_t count)
 		crc = (crc << 8) ^ crctable[(crc >> 8) ^ *start++];
 
 	return crc;
+}
+
+/*
+================
+CRC_ScanBegin / CRC_ScanStep / CRC_ScanFinish / CRC_ScanFile
+
+A CRC of a file and a whole-word search in it, without the file in memory.
+
+Why this exists.  HasBots() in menu.c wants two things from progs.dat: its CRC
+(are these the stock Quake progs?) and whether one small word occurs in it as a
+whole word (does this progs know about bots?).  It used to get both by reading
+the entire file into one malloc():
+
+	malloc: NULL for 17400000 bytes -- last pic: cached, phase host frame:
+
+-- 17.4 MB asked of a console whose whole newlib heap block is 10 MB
+(port/psp/psp_heap.c), for two passes over the bytes that are sequential by
+nature.  The request could not succeed, and the menu it happened in is the one
+drawn just before a map starts.
+
+So the work is a state machine over a window of the caller's choosing, and the
+caller may stop after any window: menu.c feeds it 256 KB per frame, which turns
+one multi-second card read into a scan that finishes while the player is
+reading the menu.  Nothing is allocated, and no size of file can fail it.
+
+The answers are the same as the memory versions:
+
+  * the CRC uses the same table, the same initial value and the same update as
+    CRC_Block() -- and, like CRC_Block(), it does NOT apply CRC_Value();
+  * "whole word" is q_memmem()'s rule in common.c: the match counts when the
+    byte in front is not alphanumeric (or there is no byte in front: start of
+    file) and the byte behind is not alphanumeric (or there is no byte behind:
+    end of file);
+  * overlapping occurrences count, so "aab" in "aaab" is found.
+
+CRC_ScanStep() returns 1 as soon as the word is found, at which point the CRC
+is only partial -- a caller that stops there must not use it.  That is fine for
+menu.c, which reports "found" first.
+
+tests/test_crc_scan.c checks all of this against CRC_Block() and a brute-force
+search on random data, split at random points and resumed the way the menu
+resumes it.
+================
+*/
+void CRC_ScanBegin (crc_scan_t *scan, const char *word)
+{
+	size_t len;
+
+	if (!scan)
+		return;
+
+	memset (scan, 0, sizeof(*scan));
+	CRC_Init (&scan->crc);
+
+	scan->before = -1;
+	scan->prev = -1;
+
+	/* A word longer than CRC_SCAN_WORD_MAX cannot be searched for; the only
+	 * caller passes three bytes ("crx"), and a truncated word would silently
+	 * match the wrong thing, so nothing is searched for at all. */
+	len = word ? strlen (word) : 0;
+	if (len > CRC_SCAN_WORD_MAX)
+		len = 0;
+
+	if (len)
+		memcpy (scan->word, word, len);
+
+	scan->word[len] = '\0';
+	scan->wordlen = (int)len;
+}
+
+int CRC_ScanStep (crc_scan_t *scan, const byte *buf, size_t count)
+{
+	size_t i;
+	int wl;
+
+	if (!scan || !buf)
+		return 0;
+
+	if (!count || scan->wordlen <= 0 || scan->found)
+		return scan->found ? 1 : 0;
+
+	wl = scan->wordlen;
+
+	for (i = 0; i < count; i++)
+	{
+		int c = buf[i];
+
+		/* Every byte goes through the CRC, found or not: this is the same
+		 * update CRC_Block() does, and it has to stay that way. */
+		scan->crc = (unsigned short)((scan->crc << 8) ^
+		                             crctable[(scan->crc >> 8) ^ c]);
+
+		/* A full match is a whole word only if the byte behind it is not
+		 * alphanumeric; that byte is this one, so it decides now. */
+		if (scan->pending)
+		{
+			scan->pending = 0;
+			if (!q_isalnum (c))
+			{
+				scan->found = true;
+				return 1;
+			}
+			/* Otherwise the match was part of a longer word; the search
+			 * carries on from this byte, which may start a new one. */
+		}
+
+		if (scan->matched > 0 && c == (unsigned char)scan->word[scan->matched])
+			scan->matched++;
+		else if (c == (unsigned char)scan->word[0])
+		{
+			scan->matched = 1;
+			scan->before = scan->prev;	/* the byte in front of the match */
+		}
+		else
+			scan->matched = 0;
+
+		if (scan->matched == wl)
+		{
+			/* The byte in front has already been checked, once, when the
+			 * match started. */
+			if (scan->before < 0 || !q_isalnum (scan->before))
+				scan->pending = 1;
+
+			scan->matched = 0;
+		}
+
+		scan->prev = c;
+	}
+
+	return scan->found ? 1 : 0;
+}
+
+/* End of the data: a match still waiting for the byte behind it is a whole
+ * word, because there is no byte behind it. */
+int CRC_ScanFinish (crc_scan_t *scan)
+{
+	if (!scan)
+		return 0;
+
+	if (scan->pending)
+	{
+		scan->pending = 0;
+		scan->found = true;
+	}
+
+	return scan->found ? 1 : 0;
+}
+
+/* The above, in one call, for a file that is already open: the whole file is
+ * read in 4 KB windows.  Used by anything that can afford to block (and by the
+ * tests); returns false only if the file could not be read, in which case
+ * *crc_out and *found_out hold what was read. */
+#define CRC_SCAN_FILE_WINDOW 4096
+
+qboolean CRC_ScanFile (FILE *file, const char *word,
+                       unsigned short *crc_out, qboolean *found_out)
+{
+	byte buf[CRC_SCAN_FILE_WINDOW];
+	crc_scan_t scan;
+	size_t n;
+
+	if (crc_out)
+		*crc_out = 0;
+	if (found_out)
+		*found_out = false;
+
+	if (!file)
+		return false;
+
+	CRC_ScanBegin (&scan, word);
+
+	while (!scan.found && (n = fread (buf, 1, sizeof(buf), file)) > 0)
+		CRC_ScanStep (&scan, buf, n);
+
+	CRC_ScanFinish (&scan);
+
+	if (crc_out)
+		*crc_out = scan.crc;
+	if (found_out)
+		*found_out = scan.found;
+
+	return !ferror (file);
 }
 
 qboolean CL_MapCRC_Validate(const char *bsp, unsigned server_crc_quick, unsigned server_crc_full) // woods #mapcrc

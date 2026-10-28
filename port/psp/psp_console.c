@@ -1189,7 +1189,8 @@ static void con_steps_tail (char *out, size_t outlen, int want)
 	}
 }
 
-void psp_con_note_alloc_failure (const char *what, unsigned int size)
+void psp_con_note_alloc_failure (const char *what, unsigned int size,
+                                 unsigned int caller)
 {
 	static int noted;
 	char line[CON_LINE_MAX + 2];
@@ -1201,10 +1202,26 @@ void psp_con_note_alloc_failure (const char *what, unsigned int size)
 	noted++;
 
 	/* The two strings are written by the engine without a lock; the
-	 * precision caps what a torn copy can make the line read. */
-	snprintf(line, sizeof(line),
-	         "%.8s: NULL for %u bytes -- last %.55s, phase %.39s",
-	         what ? what : "alloc", size, con_last_step, con_phase);
+	 * precision caps what a torn copy can make the line read.
+	 *
+	 * `caller` is the address of the instruction that called malloc(), taken
+	 * from $ra by the wrapper in psp_heap.c.  The breadcrumbs say which file
+	 * was being worked on; the address says which line asked, and one
+	 * command turns it into a name and a line number:
+	 *
+	 *     C:/pspdev/bin/psp-addr2line.exe -f -e <build>/kabluk.elf 0x08...
+	 *
+	 * (The EBOOT is built from that .elf and loads where the linker put it,
+	 * so the address in the log is an address in the .elf.)  Only printed
+	 * when there is one -- 0 means the wrapper could not get it. */
+	if (caller)
+		snprintf(line, sizeof(line),
+		         "%.8s: NULL for %u bytes at 0x%08x -- last %.43s, phase %.32s",
+		         what ? what : "alloc", size, caller, con_last_step, con_phase);
+	else
+		snprintf(line, sizeof(line),
+		         "%.8s: NULL for %u bytes -- last %.55s, phase %.39s",
+		         what ? what : "alloc", size, con_last_step, con_phase);
 
 	con_log_direct(line);
 

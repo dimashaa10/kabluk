@@ -272,9 +272,9 @@ grep -q 'void \*__wrap_memalign (size_t align, size_t size)' port/psp/psp_heap.c
 grep -q 'void \*__wrap_realloc (void \*p, size_t size)' port/psp/psp_heap.c
 grep -q 'void \*__real_malloc (size_t size);' port/psp/psp_heap.c
 grep -q 'void \*__real_memalign (size_t align, size_t size);' port/psp/psp_heap.c
-grep -q 'psp_con_note_alloc_failure(what, (unsigned int)size);' port/psp/psp_heap.c
-grep -q 'void psp_con_note_alloc_failure (const char \*what, unsigned int size)' port/psp/psp_console.c
-grep -q 'void psp_con_note_alloc_failure (const char \*what, unsigned int size);' port/psp/psp_console.h
+grep -q 'psp_con_note_alloc_failure(what, (unsigned int)size,' port/psp/psp_heap.c
+grep -q 'void psp_con_note_alloc_failure (const char \*what, unsigned int size,' port/psp/psp_console.c
+grep -q 'void psp_con_note_alloc_failure (const char \*what, unsigned int size,' port/psp/psp_console.h
 grep -q 'psp_heap_malloc_fails' port/psp/main_psp.c
 echo "PASS: a malloc that fails is logged with its size and breadcrumb instead"
 echo "PASS: of becoming a fault, and the count is on the heartbeat line."
@@ -748,8 +748,12 @@ echo "PASS: build machine, and only a perspective primitive goes through it."
 #
 #     malloc: NULL for 17400000 bytes -- last pic: cached
 #
-# An image decoder asking for 17.4 MB while eight were free.  Refusing the file
-# by name costs a missing texture; attempting it cost the session.
+# A 17.4 MB request while eight were free.  Round 66 found out that the request
+# was not the decoder's after all (see the progs.dat section at the end of this
+# file), but the limits below are still right on their own: an image decoder
+# asking for the impossible is a missing texture, and the alternative was a
+# lost session.  Refusing the file by name costs nothing that was not already
+# lost.
 grep -q 'PSP_IMAGE_FILE_LIMIT' Quake/image.c || {
     echo "FAIL: the picture loader has no file-size limit again"
     exit 1
@@ -853,3 +857,106 @@ awk '
 ' port/psp/psp_console.c || exit 1
 echo "PASS: a line written on the crash path is retried, so a busy card cannot"
 echo "PASS: swallow the one line that says what failed."
+
+# ---- the 17.4 MB request was a whole file, not a picture -----------------
+#
+# The log that started round 66 was
+#
+#     mark: gfx/a_kazik/lemon.pcx
+#     img: gfx/conchars_ru.png ok 256x256 (3499 bytes)
+#     malloc: NULL for 17400000 bytes -- last pic: cached, phase host frame:
+#     hist: tex32: done <- tex: free hunk <- tex: done <- pic 256x128 <- pic: copy <- pic: cached
+#
+# and the trail ends with a picture that was *cached*, i.e. finished.  The
+# picture decoders were not asking for anything (both limits above are in
+# place); the menu was.  HasBots() in Quake/menu.c read the whole of progs.dat
+# into one malloc() to look at each byte in order -- 17.4 MB, once, in the menu
+# drawn just before a map starts.  It is a scan now (Quake/crc.c), fed a window
+# per frame, and it allocates nothing.
+#
+# The scan has to keep giving the same answers as the two functions it
+# replaces, so it is checked against them on random data, split and resumed at
+# random points: tests/test_crc_scan.c.
+compile -c "$repo/Quake/crc.c" -o "$work/crc.o"
+compile "$repo/tests/test_crc_scan.c" "$work/crc.o" \
+    ${LDFLAGS:-} -Wl,--gc-sections -o "$work/crc_scan"
+if ! "$work/crc_scan" > "$work/crc_scan.out" 2>&1; then
+    cat "$work/crc_scan.out"
+    exit 1
+fi
+# The whole-file read must not come back: no malloc in the progs check at all,
+# and the file read through the resumable scan instead.
+awk '
+  /^static qboolean Bots_ScanStep/ { inf = 1 }
+  inf && /malloc/ { printf "FAIL: the progs check allocates again\n"; exit 1 }
+  inf && /CRC_ScanStep *\(/ { step = 1 }
+  inf && /CRC_ScanFinish *\(/ { fin = 1 }
+  inf && /fclose *\(bots_file\)/ { closed = 1 }
+  inf && /^}/ { inf = 0 }
+  /^qboolean HasBots/ { inh = 1 }
+  inh && /Bots_ScanStep *\(/ { called = 1 }
+  inh && /^}/ { inh = 0 }
+  END {
+      if (!step)   { printf "FAIL: the progs check no longer scans\n"; exit 1 }
+      if (!fin)    { printf "FAIL: the last window is never finished\n"; exit 1 }
+      if (!closed) { printf "FAIL: the progs check leaves the file open\n"; exit 1 }
+      if (!called) { printf "FAIL: HasBots does not run the scan\n"; exit 1 }
+  }
+' Quake/menu.c || exit 1
+# One window per call, and it is not on the stack: the main thread had 249 KB
+# of stack free on the hardware, and a 256 KB local would end the run.
+grep -q '#define BOTS_SCAN_WINDOW (256 \* 1024)' Quake/menu.c || {
+    echo "FAIL: the progs scan window changed size without a measurement"
+    exit 1
+}
+grep -q 'static byte       bots_window \[BOTS_SCAN_WINDOW\]' Quake/menu.c || {
+    echo "FAIL: the progs scan window is on the stack again"
+    exit 1
+}
+# The CRC has to stay CRC_Block()'s: the same initial value, the same table,
+# and no CRC_Value() on the way out (CRC_Block() does not apply it either).
+grep -q 'CRC_Init (&scan->crc);' Quake/crc.c || {
+    echo "FAIL: the streaming scan no longer starts from the CRC initial value"
+    exit 1
+}
+grep -q 'crctable\[(scan->crc >> 8) ^ c\]' Quake/crc.c || {
+    echo "FAIL: the streaming scan updates the CRC differently from CRC_Block()"
+    exit 1
+}
+echo "PASS: the progs check reads the file a window per frame and allocates"
+echo "PASS: nothing, and it gives CRC_Block()'s CRC and q_memmem()'s whole-word"
+echo "PASS: answer -- checked against both on the build machine."
+
+# ---- a failed allocation names the line that asked for it ----------------
+#
+# Round 65 read `last pic: cached` and concluded "a picture decoder".  Round 66
+# found the actual caller -- menu.c reading progs.dat -- by reading the code, not
+# the log, because the log did not name it.  That is what this closes: the
+# breadcrumbs say which file was being worked on, and the return address of the
+# malloc says which of the thousand lines in that file asked.
+#
+# __wrap_malloc() is called by the code that calls malloc(), so
+# __builtin_return_address(0) inside it is the caller.  It is read into a local
+# before the real malloc runs -- the register it arrives in is not something to
+# hand to argument evaluation order on MIPS.
+grep -q 'void \*caller = __builtin_return_address(0);' port/psp/psp_heap.c || {
+    echo "FAIL: the malloc hook no longer records who called it"
+    exit 1
+}
+grep -q 'psp_con_note_alloc_failure(what, (unsigned int)size,' port/psp/psp_heap.c || {
+    echo "FAIL: the caller address is not handed to the failure line"
+    exit 1
+}
+# ...and the line has to print it, or the address is collected and thrown away.
+awk '
+  /^void psp_con_note_alloc_failure/ { inf = 1 }
+  inf && /at 0x%08x/ { printed = 1 }
+  inf && /^}/ { inf = 0 }
+  END { if (!printed) { printf "FAIL: the failure line drops the caller address\n"; exit 1 } }
+' port/psp/psp_console.c || exit 1
+grep -q 'unsigned int caller);' port/psp/psp_console.h || {
+    echo "FAIL: psp_con_note_alloc_failure lost its caller argument"
+    exit 1
+}
+echo "PASS: an allocation that fails says which instruction asked for it, so the"
+echo "PASS: next one has a name and a line (psp-addr2line) and not just a size."

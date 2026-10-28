@@ -223,7 +223,20 @@ unsigned int psp_heap_chunks (void)  { return heap_read(3); }
  *
  * The count goes on the two-second heartbeat line next to the free bytes, so
  * "the pool was empty" and "something asked for the impossible" can be told
- * apart without reading the whole log. */
+ * apart without reading the whole log.
+ *
+ * And it names the line that asked.  The breadcrumb ring says which file was
+ * being worked on, which narrowed round 65 to "the menu, after a picture", but
+ * a menu is a thousand lines of code; $ra says which of them.  __wrap_malloc()
+ * is called directly by the code that calls malloc(), so
+ * __builtin_return_address(0) inside it IS the caller, and the failure line
+ * carries it (`at 0x08...`).  One command turns it into a function and a line:
+ *
+ *     C:/pspdev/bin/psp-addr2line.exe -f -e C:/.../port/psp/build/kabluk.elf 0x08...
+ *
+ * (The linker puts a PSP module at 0x08804000 and the loader maps it there, so
+ * the address in the log is an address in the .elf.  The .elf is not stripped:
+ * data.psp is made from a copy, which is why a name is still available.) */
 void *__real_malloc (size_t size);
 void *__real_realloc (void *p, size_t size);
 void *__real_memalign (size_t align, size_t size);
@@ -233,7 +246,8 @@ static unsigned int heap_malloc_fails;
 
 /* Counting and reporting for all three, so the number on the heartbeat line is
  * "allocations this program could not have" and not "malloc() failures". */
-static void *heap_note (const char *what, void *p, size_t size)
+static void *heap_note (const char *what, void *p, size_t size,
+                        void *caller)
 {
 	heap_mallocs++;
 
@@ -241,7 +255,8 @@ static void *heap_note (const char *what, void *p, size_t size)
 	{
 		heap_malloc_fails++;
 
-		psp_con_note_alloc_failure(what, (unsigned int)size);
+		psp_con_note_alloc_failure(what, (unsigned int)size,
+		                           (unsigned int)(unsigned long)caller);
 	}
 
 	return p;
@@ -249,23 +264,33 @@ static void *heap_note (const char *what, void *p, size_t size)
 
 void *__wrap_malloc (size_t size)
 {
-	return heap_note("malloc", __real_malloc(size), size);
+	/* Taken before anything else runs: the address of the instruction that
+	 * called malloc(), which is the caller of *this* function.  Reading it
+	 * first also keeps the answer away from the call below -- the register
+	 * the return address arrives in is not something to leave to argument
+	 * evaluation order. */
+	void *caller = __builtin_return_address(0);
+
+	return heap_note("malloc", __real_malloc(size), size, caller);
 }
 
 void *__wrap_realloc (void *p, size_t size)
 {
+	void *caller = __builtin_return_address(0);
 	void *q = __real_realloc(p, size);
 
 	/* realloc(p, 0) is a free() and answers NULL: not a failure. */
 	if (size == 0)
 		return q;
 
-	return heap_note("realloc", q, size);
+	return heap_note("realloc", q, size, caller);
 }
 
 void *__wrap_memalign (size_t align, size_t size)
 {
-	return heap_note("memalign", __real_memalign(align, size), size);
+	void *caller = __builtin_return_address(0);
+
+	return heap_note("memalign", __real_memalign(align, size), size, caller);
 }
 
 /* Calls that went through the hook.  Kept for the heartbeat line: a number

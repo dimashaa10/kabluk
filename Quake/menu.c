@@ -12745,69 +12745,140 @@ int gameoptions_cursor_table[] = {40, 56, 64, 72, 80, 88, 96, 104, 120, 128, 152
 #define	NUM_GAMEOPTIONS	11
 int		gameoptions_cursor;
 
-qboolean HasBots(void) // woods -- check if deathmatch needs difficulty #botdetect
+/*
+ * HasBots -- is the progs.dat in this game a stock one, or a custom one that
+ * knows about bots?
+ *
+ * The answer is two things read out of progs.dat: its CRC (the three stock
+ * files are known by number) and whether it contains the three-byte word
+ * "crx".  It used to be read into one malloc:
+ *
+ *     malloc: NULL for 17400000 bytes -- last pic: cached, phase host frame:
+ *
+ * -- the whole file, 17.4 MB, for one look at each byte in order.  On the
+ * console that is a request the heap can never satisfy (10 MB block, see
+ * port/psp/psp_heap.c), it happened in the menu drawn just before a map
+ * started, and the session ended there.  crc.c now answers both questions as a
+ * resumable scan (CRC_ScanBegin/CRC_ScanStep), so this reads the file 256 KB at
+ * a time and never asks for memory at all.
+ *
+ * A window per call is deliberate: the same card that takes 18 ms for one
+ * open/write/close (port/psp/psp_console.c) reads at a few MB/s, so 17 MB in
+ * one go is a several-second freeze inside a menu.  Spread over the frames the
+ * menu is open it finishes while the player is reading it, and until it does
+ * the menu shows what it showed before.
+ */
+#define BOTS_SCAN_WINDOW (256 * 1024)
+#define BOTS_CUSTOM_MARKER "crx"
+
+#if defined(PLATFORM_PSP) || defined(__psp__)
+extern void psp_tracef (const char *fmt, ...);
+#define BOTS_NOTE(...)	psp_tracef(__VA_ARGS__)
+#else
+#define BOTS_NOTE(...)	do { } while (0)
+#endif
+
+static FILE      *bots_file;		/* open while the scan is in progress */
+static crc_scan_t bots_scan;
+static qboolean   bots_running;		/* the scan holds an open file        */
+static int        bots_size;		/* its size, for the log line         */
+static byte       bots_window [BOTS_SCAN_WINDOW];	/* not on the stack */
+
+/* One window of the scan per call.  Returns true once the answer is in
+ * has_custom_progs (which also sets progs_check_done).
+ *
+ * The scan starts on the first call and finishes on the call that reaches the
+ * end of the file.  Two places forget the answer (a new mod, back to the main
+ * menu) by clearing progs_check_done; the call after that starts a fresh scan,
+ * because bots_running is false again.  A scan caught in the middle of one of
+ * those two events finishes with the answer of the file it was reading and
+ * re-checks at the next reset -- it is a menu label, not game state, and it is
+ * not worth a crash or a leak to make it perfect. */
+static qboolean Bots_ScanStep (void)
 {
-	if (!progs_check_done)
+	static const unsigned short valid_crcs[] = { 32913, 10067, 51593 };	// shareware/steam/regisrted pak0, rogue, hipnotic
+	size_t n, i;
+	qboolean is_valid_crc = false;
+
+	if (!bots_running)
 	{
-		FILE* file;
-		byte* buffer;
-		long size;
-		unsigned short crc;
+		int size;
 
-		const unsigned short valid_crcs[] = { 32913, 10067, 51593 }; // shareware/steam/regisrted pak0, rogue, hipnotic
-		const size_t num_valid_crcs = sizeof(valid_crcs) / sizeof(valid_crcs[0]);
-
-		const char* custom_marker = "crx"; // custom progs without bots
-		size_t custom_marker_len = strlen(custom_marker);
-
-		if (COM_FOpenFile("progs.dat", &file, NULL) < 0 || !file)
+		size = COM_FOpenFile ("progs.dat", &bots_file, NULL);
+		if (size < 0 || !bots_file)
 		{
-			progs_check_done = true;
-			return false;
+			bots_file = NULL;
+			progs_check_done = true;	/* no progs.dat: the stock answer */
+			return true;
 		}
 
-		fseek(file, 0, SEEK_END);
-		size = ftell(file);
-		fseek(file, 0, SEEK_SET);
+		bots_running = true;
+		bots_size = size;
+		CRC_ScanBegin (&bots_scan, BOTS_CUSTOM_MARKER);
+	}
 
-		buffer = (byte*)malloc(size);
-		if (!buffer)
+	/* Nothing left to read means the end of the file: the CRC is complete,
+	 * and a match that was waiting for the byte behind it is a whole word. */
+	n = bots_scan.found ? 0 : fread (bots_window, 1, sizeof(bots_window), bots_file);
+	if (n)
+	{
+		CRC_ScanStep (&bots_scan, bots_window, n);
+		return false;
+	}
+
+	if (ferror (bots_file))
+	{
+		/* A card that stopped answering is not an end of file: half a
+		 * progs.dat must not be turned into a CRC that means nothing.  The
+		 * menu falls back to the answer it gives with no progs.dat. */
+		fclose (bots_file);
+		bots_file = NULL;
+		bots_running = false;
+		progs_check_done = true;
+		BOTS_NOTE ("bots: progs.dat stopped reading -- no answer this time");
+		return true;
+	}
+
+	CRC_ScanFinish (&bots_scan);
+	fclose (bots_file);
+	bots_file = NULL;
+	bots_running = false;
+	progs_check_done = true;
+
+	/* The marker is checked first, because a scan that found it stopped
+	 * early and the CRC then covers only the part that was read. */
+	if (bots_scan.found)
+	{
+		has_custom_progs = false;	/* this progs knows about bots */
+	}
+	else
+	{
+		for (i = 0; i < sizeof(valid_crcs) / sizeof(valid_crcs[0]); i++)
 		{
-			fclose(file);
-			progs_check_done = true;
-			return false;
-		}
-
-		if (fread(buffer, 1, size, file) != (size_t)size)
-		{
-			free(buffer);
-			fclose(file);
-			progs_check_done = true;
-			return false;
-		}
-		fclose(file);
-
-		crc = CRC_Block(buffer, size);
-
-		qboolean is_valid_crc = false;
-		for (size_t i = 0; i < num_valid_crcs; i++)
-		{
-			if (crc == valid_crcs[i]) {
+			if (bots_scan.crc == valid_crcs[i])
+			{
 				is_valid_crc = true;
 				break;
 			}
 		}
 
-		if (is_valid_crc) 
-			has_custom_progs = false;
-		else if (q_memmem(buffer, size, custom_marker, custom_marker_len) != NULL)
-			has_custom_progs = false;
-		else 
-			has_custom_progs = true;
-
-		free(buffer);
-		progs_check_done = true;
+		has_custom_progs = !is_valid_crc;
 	}
+
+	BOTS_NOTE ("bots: progs.dat is %d KB, scanned in %d KB windows, crc 0x%04x, "
+	           "marker \"%s\" %s -> custom progs %s",
+	           bots_size / 1024, (int)(BOTS_SCAN_WINDOW / 1024), (unsigned)bots_scan.crc,
+	           BOTS_CUSTOM_MARKER, bots_scan.found ? "found" : "not found",
+	           has_custom_progs ? "yes" : "no");
+
+	return true;
+}
+
+qboolean HasBots(void) // woods -- check if deathmatch needs difficulty #botdetect
+{
+	if (!progs_check_done)
+		Bots_ScanStep ();
+
 	return has_custom_progs;
 }
 
