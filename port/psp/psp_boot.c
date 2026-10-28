@@ -15,20 +15,28 @@ PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER);
  * overflow on the PSP does not say "stack overflow" -- it takes the screen. */
 PSP_MAIN_THREAD_STACK_SIZE_KB(512);
 /*
- * The newlib heap.  main_psp.c hands the engine one big block, and
- * PSP_HEAP_SIZE_KB is the ceiling malloc() can reach, so this has to be the
- * largest number the module can afford -- with 2048 the first malloc(24 MB)
- * failed and the engine died with "Not enough memory free".
+ * The newlib heap -- and it is a FIXED size, on purpose.
  *
- * The size is "as much as the kernel will give": with MEMSIZE=1 in PARAM.SFO
- * the user partition is around 52 MB on a 2000/3000/E1000, without it 24 MB,
- * and a hard-coded number would either waste one case or refuse to boot in the
- * other.
+ * pspsdk src/user/pspmoduleinfo.h:
  *
- * A negative size is pspsdk's documented way of saying "whatever is left":
- * libcglue/glue.c, __psp_sbrk(), casts the value to int and, when it comes out
- * negative, sizes the block as sceKernelMaxFreeMemSize() minus the 512 KB
- * threshold it keeps for the rest of the SDK.  main_psp.c then finds the real
- * figure by trying.
+ *      #define PSP_HEAP_SIZE_KB(size_kb)  int sce_newlib_heap_kb_size = (size_kb)
+ *
+ * and src/libcglue/glue.c, _sbrk(): the first malloc() allocates exactly that
+ * many kilobytes from PSP_MEMORY_PARTITION_USER and never asks for more.  So
+ * this number IS the ceiling of everything the engine malloc()s, and the rest
+ * of the partition is free for the two blocks psp_mem.c takes.
+ *
+ * It used to be -1, which glue.c reads as "sceKernelMaxFreeMemSize() minus
+ * 512 KB" -- i.e. the heap took the whole partition at the first malloc (before
+ * main()), and every later attempt to size anything from what was left read a
+ * flat ~750 KB.  That is how three builds in a row were lost.  A fixed number
+ * is the whole point of having a memory layout: nothing else may grow into this
+ * region, and this may not grow into anything else.
+ *
+ * 10 MB holds what the engine asks malloc() for -- gfx.wad (~1 MB), IPLog's
+ * Q_malloc(2 MB), the decoder's w*h*4 buffers (1.2 MB for 640x480), the model
+ * loader's scratch and the .cfg/.rc files -- with room for the fragmentation a
+ * long session creates.  The zone and the pictures do NOT come from here; see
+ * psp_mem.c.
  */
-PSP_HEAP_SIZE_KB(-1);
+PSP_HEAP_SIZE_KB(10 * 1024);

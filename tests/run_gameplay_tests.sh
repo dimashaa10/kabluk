@@ -152,31 +152,47 @@ if grep -qE 'want[[:space:]]*=[[:space:]]*psp_zone_sizes_mb' port/psp/main_psp.c
     echo "FAIL: the zone size is a table of guesses again, not a measurement"
     exit 1
 fi
-# Sizing from sceKernelMaxFreeMemSize() in main() is the mistake that produced
+# The memory layout is one file, and it is built on the firmware's allocator
+# rather than on newlib's.  Three builds in a row died the other way:
 #
-#     mem: biggest free block 512 KB   ->   heap ceiling: 0 MB
-#     Zone: 8 MB                       ->   Hunk_Alloc: failed on 1048608 bytes
+#   heap: after Host_Init: in use 34430 KB, free 9 KB of 34439 KB   (zone ate the heap)
+#   malloc pool: 5 KB free of 36870 KB after free(reserve)          (free() never gives back)
+#   heap ceiling: 0 MB -> Zone: 8 MB -> Hunk_Alloc: failed          (wrong number)
 #
-# because pspsdk's _sbrk() takes the whole partition block at the first malloc(),
-# before main().  The room has to be measured with the reversible sbrk() probe.
-if grep -q 'ceiling = mem_max_free' port/psp/main_psp.c; then
-    echo "FAIL: the zone is sized from sceKernelMaxFreeMemSize() again -- that"
-    echo "FAIL: number is the partition leftover, not the heap's room"
+# pspsdk src/libcglue/glue.c _sbrk() explains all three: newlib's heap is ONE
+# block, sized at the first malloc before main(), never grown, and never given
+# back.  So the zone and the picture arena are taken from the partition with
+# sceKernelAllocPartitionMemory() and the heap is a fixed size.
+for f in port/psp/psp_mem.c port/psp/psp_mem.h; do
+    if [ ! -f "$f" ]; then
+        echo "FAIL: $f is missing -- the memory layout has no owner again"
+        exit 1
+    fi
+done
+grep -q 'sceKernelAllocPartitionMemory(PSP_MEMORY_PARTITION_USER' port/psp/psp_mem.c
+grep -q 'sceKernelGetBlockHeadAddr' port/psp/psp_mem.c
+grep -q 'PSP_HEAP_SIZE_KB(10 \* 1024)' port/psp/psp_boot.c
+if grep -q 'PSP_HEAP_SIZE_KB(-1)' port/psp/psp_boot.c; then
+    echo "FAIL: the newlib heap takes the whole partition again (-1) -- nothing"
+    echo "FAIL: else can then be sized from what is left"
     exit 1
 fi
-grep -q 'unsigned int psp_heap_room (void)' port/psp/psp_heap.c
-grep -q 'unsigned int room = psp_heap_room();' port/psp/main_psp.c
-grep -q 'room - pool - PSP_ENGINE_RESERVE' port/psp/main_psp.c
-grep -q 'psp_heap_expect_failure(1);' port/psp/main_psp.c
-grep -q 'void psp_heap_expect_failure (int on)' port/psp/psp_heap.c
-# The pictures get their own block, and a pooled arena must never hand chunks
-# back: free() of a big block is a one-way loss on this platform (build 17:53).
-grep -q 'void psp_gl_shim_set_pool (void \*base, size_t bytes)' port/psp/gl_shim.c
-grep -q 'void psp_gl_shim_set_pool (void \*base, size_t bytes);' port/psp/gl_shim.h
-grep -q 'psp_gl_shim_set_pool(block, pool);' port/psp/main_psp.c
+# No more measuring by probing, and no more guessing tables: both were attempts
+# to work out, from inside a fixed block, how much memory exists.
+if grep -q 'psp_heap_room' port/psp/*.c; then
+    echo "FAIL: the sbrk() probing is back -- the layout must come from psp_mem.c"
+    exit 1
+fi
+grep -q 'psp_mem_init' port/psp/main_psp.c
+grep -q 'psp_mem_zone' port/psp/main_psp.c
+grep -q 'psp_gl_shim_set_pool(pics, pic_bytes);' port/psp/main_psp.c
+grep -q 'psp_mem.o' port/psp/Makefile
+# The picture arena, when it owns a block, must never ask malloc for another
+# chunk and never hand one back.
 grep -q 'if (shim_arena_pooled)' port/psp/gl_shim.c
-echo "PASS: the room malloc can still reach is measured with sbrk(), the"
-echo "PASS: pictures get a block of their own, and nothing big is freed."
+grep -q 'void psp_gl_shim_set_pool (void \*base, size_t bytes)' port/psp/gl_shim.c
+echo "PASS: the zone and the picture pool come from the firmware partition,"
+echo "PASS: the newlib heap is a fixed 10 MB, and the layout lives in psp_mem.c.
 # A malloc() that returns NULL and is not checked is a write through address 0,
 # and this console reports that by switching itself off -- no log line, no
 # message.  --wrap=malloc is what turns that into "malloc: NULL for N bytes --

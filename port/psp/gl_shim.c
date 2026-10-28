@@ -846,6 +846,13 @@ static int shim_arena_grow (size_t need)
 	size_t chunk = need + TEX_ARENA_ALIGN + 4096u;
 	void *base;
 
+	/* A pooled arena (psp_gl_shim_set_pool) IS its block: it is exactly
+	 * SHIM_ARENA_LIMIT big, so there is nothing to grow into and no reason to
+	 * call memalign() while a frame is being drawn.  Growing is only for the
+	 * fallback case where psp_mem.c could not get a block. */
+	if (shim_arena_pooled)
+		return 0;
+
 	if (!shim_arena_ready)
 	{
 		tex_arena_init(&shim_arena);
