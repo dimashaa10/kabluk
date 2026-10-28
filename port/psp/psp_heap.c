@@ -151,11 +151,18 @@ unsigned int psp_heap_chunks (void)  { return heap_read(3); }
  * Con_Printf, and half the callers of malloc() in this engine do not check the
  * answer at all -- they store through it, and the console switches off.
  *
- * So every malloc() goes through here instead (port/psp/Makefile:
- * -Wl,--wrap=malloc).  ld rewrites the undefined references to `malloc` -- in
- * the engine, in the shim, in the model loader -- to `__wrap_malloc`, which
- * calls the real one and then, if the answer is NULL, writes one line to
- * kabluk.log naming the size and the breadcrumb of the caller.
+ * So the three allocators the engine and the shim actually use go through here
+ * instead (port/psp/Makefile: -Wl,--wrap=malloc,--wrap=realloc,
+ * --wrap=memalign).  ld rewrites the undefined references -- in the engine, in
+ * the shim, in the model loader, in stb_image -- to `__wrap_*`, which call the
+ * real one and then, if the answer is NULL, write one line to kabluk.log
+ * naming the size and the breadcrumb of the caller.
+ *
+ * memalign() matters as much as malloc(): every picture arena chunk
+ * (gl_shim.c, 256 KB-1 MB, 16-byte aligned for the GE) comes from it, so
+ * "no memory for a picture" was reported by the shim's own line while the
+ * reason -- which request, how big -- stayed invisible.  realloc() is what
+ * stb_image grows its decode buffers with.
  *
  * Two things this deliberately does NOT do:
  *
@@ -171,6 +178,8 @@ unsigned int psp_heap_chunks (void)  { return heap_read(3); }
  * "the pool was empty" and "something asked for the impossible" can be told
  * apart without reading the whole log. */
 void *__real_malloc (size_t size);
+void *__real_realloc (void *p, size_t size);
+void *__real_memalign (size_t align, size_t size);
 
 static unsigned int heap_mallocs;
 static unsigned int heap_malloc_fails;
@@ -194,10 +203,10 @@ void psp_heap_expect_failure (int on)
 	heap_quiet = on ? 1 : 0;
 }
 
-void *__wrap_malloc (size_t size)
+/* Counting and reporting for all three, so the number on the heartbeat line is
+ * "allocations this program could not have" and not "malloc() failures". */
+static void *heap_note (const char *what, void *p, size_t size)
 {
-	void *p = __real_malloc(size);
-
 	heap_mallocs++;
 
 	if (!p)
@@ -205,10 +214,31 @@ void *__wrap_malloc (size_t size)
 		heap_malloc_fails++;
 
 		if (!heap_quiet)
-			psp_con_note_alloc_failure((unsigned int)size);
+			psp_con_note_alloc_failure(what, (unsigned int)size);
 	}
 
 	return p;
+}
+
+void *__wrap_malloc (size_t size)
+{
+	return heap_note("malloc", __real_malloc(size), size);
+}
+
+void *__wrap_realloc (void *p, size_t size)
+{
+	void *q = __real_realloc(p, size);
+
+	/* realloc(p, 0) is a free() and answers NULL: not a failure. */
+	if (size == 0)
+		return q;
+
+	return heap_note("realloc", q, size);
+}
+
+void *__wrap_memalign (size_t align, size_t size)
+{
+	return heap_note("memalign", __real_memalign(align, size), size);
 }
 
 /* Calls that went through the hook.  Kept for the heartbeat line: a number

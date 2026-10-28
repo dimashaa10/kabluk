@@ -931,7 +931,7 @@ static void con_log_direct (const char *text)
  * Capped at eight lines -- some failures are expected and recovered from (the
  * picture arena trims itself and retries), and a run with hundreds of them
  * must not turn the log into a list of them. */
-void psp_con_note_alloc_failure (unsigned int size)
+void psp_con_note_alloc_failure (const char *what, unsigned int size)
 {
 	static int noted;
 	char line[CON_LINE_MAX + 2];
@@ -944,8 +944,8 @@ void psp_con_note_alloc_failure (unsigned int size)
 	/* The two strings are written by the engine without a lock; the
 	 * precision caps what a torn copy can make the line read. */
 	snprintf(line, sizeof(line),
-	         "malloc: NULL for %u bytes -- last %.63s, phase %.47s",
-	         size, con_last_step, con_phase);
+	         "%.8s: NULL for %u bytes -- last %.55s, phase %.39s",
+	         what ? what : "alloc", size, con_last_step, con_phase);
 
 	con_log_direct(line);
 	con_log_sync();

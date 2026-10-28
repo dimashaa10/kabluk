@@ -164,11 +164,16 @@ echo "PASS: anything allocates, and the pool keeps a floor of 12 MB."
 # last <breadcrumb>" in kabluk.log.  Losing the flag, or the hook, silently
 # restores the blind spot, so both halves are asserted.
 grep -q -- '-Wl,--wrap=malloc' port/psp/Makefile
+grep -q -- '-Wl,--wrap=memalign' port/psp/Makefile
+grep -q -- '-Wl,--wrap=realloc' port/psp/Makefile
 grep -q 'void \*__wrap_malloc (size_t size)' port/psp/psp_heap.c
+grep -q 'void \*__wrap_memalign (size_t align, size_t size)' port/psp/psp_heap.c
+grep -q 'void \*__wrap_realloc (void \*p, size_t size)' port/psp/psp_heap.c
 grep -q 'void \*__real_malloc (size_t size);' port/psp/psp_heap.c
-grep -q 'psp_con_note_alloc_failure((unsigned int)size);' port/psp/psp_heap.c
-grep -q 'void psp_con_note_alloc_failure (unsigned int size)' port/psp/psp_console.c
-grep -q 'void psp_con_note_alloc_failure (unsigned int size);' port/psp/psp_console.h
+grep -q 'void \*__real_memalign (size_t align, size_t size);' port/psp/psp_heap.c
+grep -q 'psp_con_note_alloc_failure(what, (unsigned int)size);' port/psp/psp_heap.c
+grep -q 'void psp_con_note_alloc_failure (const char \*what, unsigned int size)' port/psp/psp_console.c
+grep -q 'void psp_con_note_alloc_failure (const char \*what, unsigned int size);' port/psp/psp_console.h
 grep -q 'psp_heap_malloc_fails' port/psp/main_psp.c
 echo "PASS: a malloc that fails is logged with its size and breadcrumb instead"
 echo "PASS: of becoming a fault, and the count is on the heartbeat line."
