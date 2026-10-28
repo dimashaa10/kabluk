@@ -1062,11 +1062,69 @@ qpic_t	*Draw_TryCachePic (const char *path, unsigned int texflags)
 	return &pic->pic;
 }
 
+/* Draw_MakePic() builds a picture out of raw palette-indexed bytes; it lives
+ * further down this file, and the fallback below needs it. */
+qpic_t *Draw_MakePic (const char *name, int width, int height, byte *data);
+
+/* The picture that stands in for one that could not be loaded.
+ *
+ * Repeating what the light allows: one 1x1 texel, palette index 255, which is
+ * the transparent one, marked PERSIST so the texture manager never frees it.
+ * Drawing it costs a single quad that covers nothing. */
+static qpic_t *Draw_MissingPic (void)
+{
+	static qpic_t *pic;
+	static byte transparent_texel = 255;
+
+	if (!pic)
+		pic = Draw_MakePic ("pic: missing", 1, 1, &transparent_texel);
+
+	return pic;
+}
+
 qpic_t	*Draw_CachePic (const char *path)
 {
 	qpic_t *pic = Draw_TryCachePic(path, TEXPREF_ALPHA | TEXPREF_PAD | TEXPREF_NOPICMIP);
+
 	if (!pic)
+	{
+		/* A picture that cannot be read is not a reason to end the game.
+		 *
+		 * On the console Sys_Error() is psp_con_panic(): it prints what it
+		 * can, waits thirty seconds and calls sceKernelExitGame().  The
+		 * hardware log of the single-player menu ends exactly at one of
+		 * these failures --
+		 *
+		 *     img: gfx/a_spmenu/aspm2.png FAILED: bad png sig ...
+		 *
+		 * -- and the menu alternates aspm1/aspm2 once a second, so opening
+		 * that screen reaches the broken file immediately.  One unreadable
+		 * byte in one pak took the whole run with it.
+		 *
+		 * The engine already draws pictures that do not fit in memory as a
+		 * null texture, so a transparent stand-in is the same rule: the menu
+		 * keeps its layout (pic->width of 1 instead of the real one), the
+		 * failure is named once in kabluk.log, and the game goes on. */
+#if defined(PLATFORM_PSP) || defined(__psp__)
+		{
+			static int missing_logs;
+
+			if (missing_logs < 8)
+			{
+				missing_logs++;
+				PSP_NOTE("pic: \"%s\" could not be loaded: drawn as a 1x1 "
+				         "transparent picture, the game keeps running", path);
+			}
+
+			pic = Draw_MissingPic();
+			if (pic)
+				return pic;
+		}
+#endif
+
 		Sys_Error ("Draw_CachePic: failed to load %s", path);
+	}
+
 	return pic;
 }
 

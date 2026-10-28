@@ -134,58 +134,153 @@ static inline int Buf_GetC(stdio_buffer_t *buf)
 #if defined(__GNUC__)
 #pragma GCC diagnostic pop
 #endif
+/* A decoded picture is copied into the hunk and the decoder's buffer is freed.
+ * stb hands back w*h*4 bytes of RGBA; the engine wants them in the hunk because
+ * that is where the rest of the loader puts image data. */
+static byte *Image_STBIDone (byte *heap, int width, int height)
+{
+	byte *hunk;
+
+	if (!heap)
+		return NULL;
+
+	//this is silly, but we do it for consistency.
+	//frankly, most people should be using tga-inside-pk3.
+	hunk = Hunk_Alloc(width * height * 4);
+	memcpy(hunk, heap, width * height * 4);
+	free(heap);
+
+	return hunk;
+}
+
+/* Files larger than this are streamed instead of read into memory: the decode
+ * needs its own w*h*4 buffer on top of the file, and the port only keeps about
+ * ten megabytes of malloc() for pictures.  Every menu picture in this game is a
+ * few kilobytes, so the two-megabyte path handles the real work and the stream
+ * path stays as a safety net for something huge in a pak. */
+#define IMG_STBI_READ_LIMIT (2u * 1024u * 1024u)
+
 static byte *Image_LoadSTBI(FILE *f, int *width, int *height)
 {
 	int bytesPerPixel;
-	byte *heap;
+	byte *heap = NULL;
+	unsigned char *in;
+	size_t want, got = 0;
 
-#if defined(PLATFORM_PSP) || defined(__psp__)
-	/* This is the PNG decoder on the console: image.c defines
-	 * LODEPNG_NO_COMPILE_DECODER at the top, so Image_LoadPNG() hands the
-	 * file straight here and lodepng never runs.  A decode that fails
-	 * leaves *width and *height untouched, the picture arrives in the engine as
-	 * 0x0, is uploaded as a single texel and drawn with no area at all --
-	 * which is exactly what the log showed for logo1.png and
-	 * mainmenu1.png, while ademos1.png worked.  So both outcomes are named,
-	 * with the file's own first bytes: that tells a file stb cannot read
-	 * from a file that is not a PNG at all, from one whose allocation did
-	 * not fit. */
+	/* One read, then decode from memory.
+	 *
+	 * The previous version read the first eight bytes for the log, seeked
+	 * back to where it started, and handed the FILE* to
+	 * stbi_load_from_file().  The hardware log says why that is not
+	 * trustworthy:
+	 *
+	 *   img: gfx/a_spmenu/aspm2.png FAILED: bad png sig (2023 bytes,
+	 *        sig 89 50 4E 47 0D 0A 1A 0A)
+	 *
+	 * "Not a PNG", about a file whose own first bytes -- read one line
+	 * earlier from the same stream -- are the PNG signature exactly.  Two
+	 * reads of one stream cannot disagree unless the second one does not
+	 * start where the first one did, and the only thing between them is the
+	 * seek back.  A stream that came out of a pak is a file handle positioned
+	 * at an entry, not a file that begins at zero, so "seek to where I was"
+	 * is one operation away from "seek to the start of something else".
+	 *
+	 * With the file read into memory once, the signature the log prints and
+	 * the bytes stb decodes are the same bytes, and a failure is finally what
+	 * it claims to be.  It also reads the file once instead of twice. */
+	want = (size_t)(com_filesize > 0 ? com_filesize : 0);
+
+	if (want > IMG_STBI_READ_LIMIT)
 	{
-		extern void psp_tracef (const char *fmt, ...);
-		unsigned char sig[8];
-		long mark = ftell(f);
-		size_t got = fread(sig, 1, sizeof(sig), f);
-
-		fseek(f, mark, SEEK_SET);
-
+		/* Too big to hold twice: let stb read the stream itself, as before.
+		 * The position question above does not disappear, so the answer is
+		 * still named, only without the signature bytes. */
 		heap = stbi_load_from_file(f, width, height, &bytesPerPixel, 4);
 		fclose(f);
 
-		if (heap)
-			psp_tracef("img: %s ok %dx%d (%d bytes)", loadfilename,
-			           *width, *height, (int)com_filesize);
-		else
-			psp_tracef("img: %s FAILED: %s (%d bytes, sig %02X %02X %02X %02X %02X %02X %02X %02X)",
-			           loadfilename, stbi_failure_reason(),
-			           (int)com_filesize, got > 0 ? sig[0] : 0, got > 1 ? sig[1] : 0,
-			           got > 2 ? sig[2] : 0, got > 3 ? sig[3] : 0,
-			           got > 4 ? sig[4] : 0, got > 5 ? sig[5] : 0,
-			           got > 6 ? sig[6] : 0, got > 7 ? sig[7] : 0);
-	}
+#if defined(PLATFORM_PSP) || defined(__psp__)
+		{
+			extern void psp_tracef (const char *fmt, ...);
+
+			if (heap)
+				psp_tracef("img: %s ok %dx%d (%d bytes, streamed)",
+				           loadfilename, *width, *height, (int)want);
+			else
+				psp_tracef("img: %s FAILED: %s (%d bytes, streamed)",
+				           loadfilename,
+				           stbi_failure_reason() ? stbi_failure_reason() : "(no reason)",
+				           (int)want);
+		}
 #else
-	heap = stbi_load_from_file(f, width, height, &bytesPerPixel, 4);
-	fclose(f);
+		(void)bytesPerPixel;
 #endif
 
-	if (heap)
-	{	//this is silly, but we do it for consistency.
-		//frankly, most people should be using tga-inside-pk3.
-		byte *hunk = Hunk_Alloc(*width**height*4);
-		memcpy(hunk, heap, *width**height*4);
-		free(heap);
-		return hunk;
+		return Image_STBIDone(heap, *width, *height);
 	}
-	return NULL;
+
+	in = want ? (unsigned char *)malloc(want) : NULL;
+
+	if (in)
+		got = fread(in, 1, want, f);
+
+	fclose(f);
+
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	{
+		extern void psp_tracef (const char *fmt, ...);
+
+		if (!in)
+		{
+			psp_tracef("img: %s: no %d-byte buffer to read the file into",
+			           loadfilename, (int)want);
+			return NULL;
+		}
+
+		if (got != want)
+		{
+			/* A short read is its own answer: the size the file system
+			 * reported and the bytes it handed over disagree. */
+			psp_tracef("img: %s: read %d of %d bytes -- file truncated or "
+			           "not where the file system says it is",
+			           loadfilename, (int)got, (int)want);
+			free(in);
+			return NULL;
+		}
+	}
+#endif
+
+	if (!in || !got)
+	{
+		free(in);
+		return NULL;
+	}
+
+	heap = stbi_load_from_memory(in, (int)got, width, height, &bytesPerPixel, 4);
+
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	{
+		extern void psp_tracef (const char *fmt, ...);
+
+		if (heap)
+			psp_tracef("img: %s ok %dx%d (%d bytes)", loadfilename,
+			           *width, *height, (int)got);
+		else
+			psp_tracef("img: %s FAILED: %s (%d bytes, sig %02X %02X %02X %02X "
+			           "%02X %02X %02X %02X)", loadfilename,
+			           stbi_failure_reason() ? stbi_failure_reason() : "(no reason)",
+			           (int)got,
+			           got > 0 ? in[0] : 0, got > 1 ? in[1] : 0,
+			           got > 2 ? in[2] : 0, got > 3 ? in[3] : 0,
+			           got > 4 ? in[4] : 0, got > 5 ? in[5] : 0,
+			           got > 6 ? in[6] : 0, got > 7 ? in[7] : 0);
+	}
+#else
+	(void)bytesPerPixel;
+#endif
+
+	free(in);
+
+	return Image_STBIDone(heap, *width, *height);
 }
 
 static unsigned int Image_ReadLE32(const byte *p)
