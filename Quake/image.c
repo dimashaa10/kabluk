@@ -186,7 +186,10 @@ static byte *Image_STBIDone (byte *heap, int width, int height)
  * retried blindly -- each line in the log names the allocation, its size, how
  * many pictures were released and what the heap looked like on both sides. */
 extern int psp_gl_shim_reclaim_pictures (void);
-extern unsigned int psp_heap_free (void);
+/* How much malloc() can still reach in its heap block, not what the allocator
+ * happens to be holding: the difference between the two is the whole point of
+ * this line (psp_heap.c explains). */
+extern unsigned int psp_heap_block_left (void);
 
 #define IMG_RECLAIM_LOGS 16
 static int img_reclaim_logs;
@@ -196,10 +199,10 @@ static int img_reclaim_logs;
 static int Image_ReclaimForPicture (const char *what, size_t size)
 {
 	int released;
-	unsigned int before = psp_heap_free (), after;
+	unsigned int before = psp_heap_block_left (), after;
 
 	released = psp_gl_shim_reclaim_pictures ();
-	after = psp_heap_free ();
+	after = psp_heap_block_left ();
 
 	if (img_reclaim_logs < IMG_RECLAIM_LOGS)
 	{
@@ -209,12 +212,12 @@ static int Image_ReclaimForPicture (const char *what, size_t size)
 
 		if (size)
 			psp_tracef ("img: %s: %d bytes failed, %d idle pictures "
-			            "released, heap free %d -> %d KB",
+			            "released, heap left %d -> %d KB",
 			            what, (int)size, released,
 			            (int)(before / 1024), (int)(after / 1024));
 		else
 			psp_tracef ("img: %s: the decoder's buffer failed, %d idle "
-			            "pictures released, heap free %d -> %d KB",
+			            "pictures released, heap left %d -> %d KB",
 			            what, released,
 			            (int)(before / 1024), (int)(after / 1024));
 	}

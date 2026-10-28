@@ -187,6 +187,30 @@ grep -q 'psp_mem_init' port/psp/main_psp.c
 grep -q 'psp_mem_zone' port/psp/main_psp.c
 grep -q 'psp_gl_shim_set_pool(pics, pic_bytes);' port/psp/main_psp.c
 grep -q 'psp_mem.o' port/psp/Makefile
+# mallinfo is not a memory map, and reading it as one cost this port three
+# rounds.  A healthy run printed
+#
+#     heap: after Host_Init: in use 2166 KB, free 4 KB of 2170 KB in 1 chunks
+#
+# which looks like a heap about to die: the allocator had simply not grown past
+# 2170 KB of its 10 MB block, and `arena` (pspsdk newlib _mallinfo_r) is only
+# what it has sbrk()ed so far.  The size of the block is not a secret --
+# PSP_HEAP_SIZE_KB() defines `sce_newlib_heap_kb_size`, _sbrk() reads it -- so
+# "how much can malloc() still reach" is block minus arena, and both the boot
+# line and the per-frame line must say that instead of mallinfo's free.
+grep -q 'sce_newlib_heap_kb_size' port/psp/psp_heap.c
+grep -q 'psp_heap_block_left' port/psp/psp_heap.c
+grep -q 'psp_heap_block_left' port/psp/psp_mem.c
+grep -q 'psp_heap_block_left' port/psp/main_psp.c
+grep -q 'psp_heap_block_left' Quake/image.c
+if grep -q 'psp_heap_free (void);' Quake/image.c; then
+    echo "FAIL: image.c measures the picture reclaim by mallinfo's free again --"
+    echo "FAIL: that number stays at 0 KB on a healthy heap and the line reads"
+    echo "FAIL: 'released 3 pictures, heap 4 -> 4 KB'"
+    exit 1
+fi
+echo "PASS: the heap is reported as used-of-block with the rest reachable, not as"
+echo "PASS: mallinfo's free, which reads 0 KB whenever the allocator has not grown."
 # The picture arena, when it owns a block, must never ask malloc for another
 # chunk and never hand one back.
 grep -q 'if (shim_arena_pooled)' port/psp/gl_shim.c

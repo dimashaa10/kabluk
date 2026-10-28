@@ -21,9 +21,12 @@
 extern unsigned int psp_heap_in_use (void);
 extern unsigned int psp_heap_sbrk (void);
 extern unsigned int psp_heap_sbrk_peak_bytes (void);
-extern unsigned int psp_heap_free (void);
 extern unsigned int psp_heap_arena (void);
 extern unsigned int psp_heap_chunks (void);
+/* How much malloc() can still reach inside the 10 MB heap block (psp_boot.c).
+ * mallinfo alone reports 0 KB here when the allocator has simply not grown yet,
+ * which reads as "about to die" on a healthy run. */
+extern unsigned int psp_heap_block_left (void);
 /* How many malloc() calls came back NULL.  Counted by the --wrap=malloc hook
  * in psp_heap.c, because a NULL nothing checks is a write through address 0,
  * and on this console that is not a message: it is the power going off. */
@@ -224,15 +227,11 @@ int main (int argc, char *argv[])
 				 * count they show whether the pool grows per
 				 * frame (a leak) or was simply never big enough
 				 * for one large request. */
-				psp_tracef("run: f %d state %d, heap %d KB grown "
-				           "(peak %d KB), malloc %d/%d KB in %d chunks, "
-				           "NULL %d, tex %d KB",
+				psp_tracef("run: f %d state %d, malloc %d KB used, %d KB left "
+				           "in the heap block, NULL %d, tex %d KB",
 				           frame, (int)cls.state,
-				           (int)(psp_heap_sbrk() / 1024),
-				           (int)(psp_heap_sbrk_peak_bytes() / 1024),
 				           (int)(psp_heap_in_use() / 1024),
-				           (int)(psp_heap_free() / 1024),
-				           (int)psp_heap_chunks(),
+				           (int)(psp_heap_block_left() / 1024),
 				           (int)psp_heap_malloc_fails(),
 				           (int)(psp_gl_shim_texture_bytes() / 1024));
 				nextbeat = newtime + 2.0;

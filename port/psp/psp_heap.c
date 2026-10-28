@@ -135,6 +135,52 @@ unsigned int psp_heap_sbrk_peak_bytes (void)
 	return heap_sbrk_peak;
 }
 
+/* Forward: the arena number (what the allocator has taken so far) is defined
+ * below with the other readers, and this file's own header is what other files
+ * include; see psp_heap_block_left(). */
+unsigned int psp_heap_arena (void);
+
+/* ---- the heap's real ceiling -------------------------------------------
+ *
+ * mallinfo's `arena` is only what the allocator has taken from sbrk SO FAR; the
+ * rest of newlib's heap block is invisible in it.  So a perfectly healthy run
+ * reads
+ *
+ *     heap: after Host_Init: in use 2166 KB, free 4 KB of 2170 KB in 1 chunks
+ *     run: f 1900 ... malloc 2166/0 KB in 1 chunks, NULL 0, tex 1494 KB
+ *
+ * -- zero kilobytes free, while nothing at all is wrong: the allocator simply
+ * had not grown into the block yet, and can, up to its end.  Three rounds of
+ * this port were spent chasing numbers like that, so it is worth fixing: the
+ * size of the block is not a secret.  pspsdk defines it as a variable
+ * (src/user/pspmoduleinfo.h: `PSP_HEAP_SIZE_KB(x)` expands to
+ * `int sce_newlib_heap_kb_size = (x)`) and _sbrk() reads exactly that variable
+ * (src/libcglue/glue.c).  psp_boot.c sets it to 10 MB, so "how much can malloc
+ * still reach" is block - arena, known at run time.
+ *
+ * Weak on purpose: this file is also linked into test EBOOTs, and a test that
+ * never sizes a heap must read "unknown" rather than fail to link. */
+
+extern int sce_newlib_heap_kb_size __attribute__((weak));
+
+unsigned int psp_heap_block_bytes (void)
+{
+	if (&sce_newlib_heap_kb_size == NULL || sce_newlib_heap_kb_size <= 0)
+		return 0;
+
+	return (unsigned int)sce_newlib_heap_kb_size * 1024u;
+}
+
+/* Bytes malloc() can still get before the block is exhausted.  0 when the size
+ * is not known (see above) -- callers print that as "?" and not as "0". */
+unsigned int psp_heap_block_left (void)
+{
+	unsigned int block = psp_heap_block_bytes();
+	unsigned int arena = psp_heap_arena();
+
+	return block > arena ? block - arena : 0;
+}
+
 unsigned int psp_heap_in_use (void)  { return heap_read(0); }
 unsigned int psp_heap_free (void)    { return heap_read(1); }
 unsigned int psp_heap_arena (void)   { return heap_read(2); }
@@ -234,10 +280,11 @@ unsigned int psp_heap_malloc_fails (void) { return heap_malloc_fails; }
  * allocation fails, so it stays cheap: no formatting of its own. */
 void psp_heap_report (const char *where)
 {
-	psp_tracef("heap: %s: in use %d KB, free %d KB of %d KB in %d chunks [system free %d KB]",
+	psp_tracef("heap: %s: in use %d KB, %d KB left in the heap block "
+	           "(allocator holds %d KB in %d chunks) [system free %d KB]",
 	           where ? where : "?",
 	           (int)(psp_heap_in_use() / 1024),
-	           (int)(psp_heap_free() / 1024),
+	           (int)(psp_heap_block_left() / 1024),
 	           (int)(psp_heap_arena() / 1024),
 	           (int)psp_heap_chunks(),
 	           sceKernelTotalFreeMemSize() / 1024);

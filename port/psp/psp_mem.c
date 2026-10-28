@@ -88,7 +88,8 @@
 
 /* newlib's own accounting (psp_heap.c), for the report line. */
 extern unsigned int psp_heap_in_use (void);
-extern unsigned int psp_heap_free (void);
+extern unsigned int psp_heap_block_bytes (void);
+extern unsigned int psp_heap_block_left (void);
 
 /* Pictures: the arena's cap (gl_shim.c keeps SHIM_ARENA_LIMIT in step with
  * this) plus the room one big picture needs on top of it. */
@@ -251,12 +252,13 @@ void *psp_mem_pictures (unsigned int *bytes)
 
 void psp_mem_report (void)
 {
-	/* The heap line is newlib's own accounting: what malloc() has taken and
-	 * what it has left, separate from the two blocks above.  Side by side
-	 * with the free partition space it says where every byte went. */
-	Sys_Printf ("mem: zone %u KB, pictures %u KB, newlib heap %u KB in use "
-	            "with %u KB free, partition free %u KB\n",
+	/* The heap line is newlib's own accounting: what malloc() has taken, and
+	 * how much of its block is still reachable -- `used` of `block`, not of
+	 * what the allocator happens to be holding right now (which reads as
+	 * "4 KB free" on a healthy run; see psp_heap.c). */
+	Sys_Printf ("mem: zone %u KB, pictures %u KB, newlib heap %u KB used of "
+	            "%u KB (%u KB left), partition free %u KB\n",
 	            mem_zone_bytes / 1024, mem_picture_bytes / 1024,
-	            psp_heap_in_use() / 1024, psp_heap_free() / 1024,
-	            mem_free() / 1024);
+	            psp_heap_in_use() / 1024, psp_heap_block_bytes() / 1024,
+	            psp_heap_block_left() / 1024, mem_free() / 1024);
 }
