@@ -1512,11 +1512,15 @@ static void shim_trace_draw (int count, const char *what, int quad_mode)
 	}
 
 	/* One frame in full, once: every draw in the order the engine made
-	 * them, one short line each, nothing filtered.  Two frames of a menu that
-	 * settles are about 400 lines apiece, which is a log one can read -- and
-	 * it is the only way to answer "where did this wedge come from" without
-	 * guessing, because a filtered window always leaves something out. */
-	if (shim_frames == 120 || shim_frames == 121)
+	 * them, one short line each, nothing filtered.  It is the only way to
+	 * answer "where did this wedge come from" without guessing, because a
+	 * filtered window always leaves something out.
+	 *
+	 * One frame, not two.  The second one was there in case the first had a
+	 * draw the second did not -- and it doubled four hundred lines to eight
+	 * hundred to say that the same menu draws the same thing twice.  Half of
+	 * the log of a menu session was this dump. */
+	if (shim_frames == 120)
 	{
 		if (shim_trace_dump < 400)
 		{

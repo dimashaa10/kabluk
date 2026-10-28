@@ -735,6 +735,34 @@ void psp_trace (const char *step)
 	}
 }
 
+/*
+ * psp_tracef -- one diagnostic line: the screen, and the log buffer.  Not the
+ * card.
+ *
+ * This used to be psp_trace() with a format string, and psp_trace() ends in
+ * con_log_sync(), which is an open/write/close on the memory stick.  For a boot
+ * step that is the point (see psp_trace above): the very next instruction may
+ * kill the module, so the line has to be on the card before it runs.
+ *
+ * For the drawing diagnostics it is exactly backwards, and the log of a menu
+ * session shows why: gl_shim.c reports a window of up to thirty lines inside a
+ * single frame every sixty frames, and two frames in full (four hundred draws
+ * each).  Eight hundred and thirty memory-stick round trips, every one of them
+ * in the middle of a frame, is not a diagnostic of the frame -- it is a
+ * bottleneck the diagnostic invented, and it is the one number a stalled
+ * frame does not need.
+ *
+ * The console already batches: con_flush() appends to a 4 KB log buffer, and
+ * the watchdog thread drains it once a second (see "Once a second, whatever the
+ * engine traced goes to the card" below), so a hard death still leaves at most
+ * one second of lines behind.  That is the same granularity the status line
+ * has, and it is what the batch is for.
+ *
+ * The `[free N KB]` suffix and the LAST: row on the screen belong to psp_trace
+ * and stay there: this side is cadence output, not a breadcrumb, and a
+ * "LAST: d 120 37 Q t18 512x512 ..." would overwrite the one line on the screen
+ * that says where the module died.
+ */
 void psp_tracef (const char *fmt, ...)
 {
 	/* Long enough for the frame diagnostics, which carry a dozen numbers
@@ -749,7 +777,8 @@ void psp_tracef (const char *fmt, ...)
 	vsnprintf(buf, sizeof(buf), fmt, args);
 	va_end(args);
 
-	psp_trace(buf);
+	con_write(buf);
+	con_putc('\n');
 }
 
 /*

@@ -68,6 +68,10 @@ void psp_phase (const char *what);
  * game uses, so from here on console text goes to kabluk.log only, and a
  * frame is never polluted with stray console triangles. */
 void psp_con_screen_off (void);
+
+/* One diagnostic line, formatted: screen plus the log buffer.  NOT a card write
+ * -- the watchdog drains the batch once a second (see psp_tracef in
+ * psp_console.c).  For anything that can fire many times inside one frame. */
 void psp_tracef (const char *fmt, ...);
 
 /* Force the log out of the memory stick's cache.  Called after every line

@@ -309,3 +309,39 @@ awk '
 echo "PASS: the spinning model previews and their sizing pictures are PC-only;"
 echo "PASS: on the PSP neither the model nor gfx/david/tanec1.lmp is looked at."
 
+# The port's own diagnostics must not become the thing they measure.
+#
+# A menu session logged 2000+ lines and every one of them was an
+# open/write/close on the memory stick, because psp_tracef() was psp_trace()
+# with a format string and psp_trace() ends in con_log_sync().  gl_shim.c emits
+# a window of up to thirty lines inside a single frame every sixty frames, so
+# those were thirty memory-stick round trips inside one frame -- a stall the
+# diagnostic invented, on the console whose stalls we are trying to explain.
+# The console already batches into a 4 KB buffer that the watchdog thread
+# drains once a second, which is the intended granularity.
+tracef_body=$(awk '/^void psp_tracef /,/^}/' port/psp/psp_console.c)
+if [ -z "$tracef_body" ]; then
+    echo "FAIL: psp_tracef is gone from psp_console.c"
+    exit 1
+fi
+if echo "$tracef_body" | grep -q 'con_log_sync'; then
+    echo "FAIL: psp_tracef syncs the card per line again -- a 30-line window in"
+    echo "FAIL: one frame becomes 30 memory-stick round trips (see psp_console.c)"
+    exit 1
+fi
+if echo "$tracef_body" | grep -q 'psp_trace *( *buf'; then
+    echo "FAIL: psp_tracef calls psp_trace() again, which syncs the card"
+    exit 1
+fi
+grep -q 'con_log_sync();' port/psp/psp_console.c
+# And the full-frame dump is one frame, not two: the second doubled 400 lines
+# to 800 to show that the same menu draws the same thing twice.
+grep -q 'shim_frames == 120)' port/psp/gl_shim.c
+if grep -q 'shim_frames == 121' port/psp/gl_shim.c; then
+    echo "FAIL: the full-frame dump covers two frames again -- half the log of a"
+    echo "FAIL: menu session was this"
+    exit 1
+fi
+echo "PASS: diagnostic lines are batched to the card, not synced one by one, and"
+echo "PASS: the full-frame draw dump covers one frame."
+
