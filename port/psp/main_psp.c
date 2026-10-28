@@ -45,6 +45,13 @@ extern void         psp_gl_shim_set_pool (void *base, size_t bytes);
  * from the firmware partition once, before anything else allocates. */
 #include "psp_mem.h"
 
+/* port/psp/gu_psp.c -- where the frame time goes: the engine's own drawing,
+ * the wait for the GE, and the wait for the panel, as three separate numbers.
+ * The heartbeat below prints them, because a frame rate of seventeen on a
+ * console that should manage sixty is a question only these three can
+ * answer. */
+#include "gu_psp.h"
+
 
 /* The memory layout lives in psp_mem.c: the pictures' pool and the engine's
  * zone are two blocks taken straight from the firmware partition
@@ -227,13 +234,41 @@ int main (int argc, char *argv[])
 				 * count they show whether the pool grows per
 				 * frame (a leak) or was simply never big enough
 				 * for one large request. */
-				psp_tracef("run: f %d state %d, malloc %d KB used, %d KB left "
-				           "in the heap block, NULL %d, tex %d KB",
-				           frame, (int)cls.state,
-				           (int)(psp_heap_in_use() / 1024),
-				           (int)(psp_heap_block_left() / 1024),
-				           (int)psp_heap_malloc_fails(),
-				           (int)(psp_gl_shim_texture_bytes() / 1024));
+				double t_cpu, t_ge, t_vb, t_all;
+				int    t_frames;
+
+				/* The four times on the same line as the rest:
+				 *  cpu     engine drawing, frame_begin -> sceGuFinish
+				 *  ge      sceGuFinish -> sceGuSync (the GE drawing)
+				 *  vblank  sceDisplayWaitVblankStart (pacing)
+				 *  all     the whole frame, so the remainder -- swap,
+				 *          input, the client frame -- is visible too.
+				 * If cpu is the biggest, the cost is ours; if vblank
+				 * is, the frame is simply locked to the panel; if all
+				 * is far above all three, the time is outside the
+				 * drawing code entirely and the search moves there. */
+				t_frames = psp_gu_timing_take (&t_cpu, &t_ge, &t_vb, &t_all);
+
+				if (t_frames > 0)
+					psp_tracef("run: f %d state %d, malloc %d KB used, %d KB "
+					           "left in the heap block, NULL %d, tex %d KB, "
+					           "%.1f ms/frame over %d (cpu %.1f, ge %.1f, "
+					           "vblank %.1f)",
+					           frame, (int)cls.state,
+					           (int)(psp_heap_in_use() / 1024),
+					           (int)(psp_heap_block_left() / 1024),
+					           (int)psp_heap_malloc_fails(),
+					           (int)(psp_gl_shim_texture_bytes() / 1024),
+					           t_all, t_frames, t_cpu, t_ge, t_vb);
+				else
+					psp_tracef("run: f %d state %d, malloc %d KB used, %d KB "
+					           "left in the heap block, NULL %d, tex %d KB, "
+					           "no frames drawn in the last 2 s",
+					           frame, (int)cls.state,
+					           (int)(psp_heap_in_use() / 1024),
+					           (int)(psp_heap_block_left() / 1024),
+					           (int)psp_heap_malloc_fails(),
+					           (int)(psp_gl_shim_texture_bytes() / 1024));
 				nextbeat = newtime + 2.0;
 			}
 

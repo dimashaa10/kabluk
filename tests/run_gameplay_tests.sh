@@ -345,3 +345,38 @@ fi
 echo "PASS: diagnostic lines are batched to the card, not synced one by one, and"
 echo "PASS: the full-frame draw dump covers one frame."
 
+# Seventeen frames a second in a menu that draws 393 quads and 2358 vertices is
+# not geometry, and the log named the places a frame can stop without ever
+# saying how long it stopped there.  Three numbers, taken with
+# sceKernelGetSystemTimeWide (pspsdk src/kernel/... -- a microsecond clock that
+# does not wrap in a session), say which of the three it is: the engine's own
+# drawing, the GE, or the panel's vblank.
+grep -q 'sceKernelGetSystemTimeWide' port/psp/gu_psp.c
+grep -q 'psp_gu_timing_take' port/psp/gu_psp.c
+grep -q 'psp_gu_timing_take' port/psp/gu_psp.h
+grep -q 'psp_gu_timing_take' port/psp/main_psp.c
+grep -q 'vblank %.1f' port/psp/main_psp.c
+if ! grep -q 'gu_t_vb_us += gu_now_us () - t_wait;' port/psp/gu_psp.c; then
+    echo "FAIL: the vblank wait is not timed -- the one number that says"
+    echo "FAIL: whether the frame is merely paced or actually slow"
+    exit 1
+fi
+echo "PASS: a frame's time is split into engine drawing, GE and vblank, and the"
+echo "PASS: heartbeat prints all three."
+# A name with no file name in it cannot match a file, and probing
+# "textures/.tga" and twenty other names on the memory stick to prove it is
+# what the tail of the last log was doing instead of drawing.
+awk '
+  /^byte \*Image_LoadImage/ { infunc = 1 }
+  infunc && /COM_SkipPath \(name\)\[0\]/ { guarded = 1 }
+  infunc && /for \(i = 0; i < sizeof\(prefixes\)/ { before = guarded }
+  END {
+      if (!before) {
+          printf "FAIL: Image_LoadImage probes file names for an empty name again\n"
+          exit 1
+      }
+  }
+' Quake/image.c || exit 1
+echo "PASS: a picture name that names no file is refused before twenty-one file"
+echo "PASS: names are tried on the memory stick."
+

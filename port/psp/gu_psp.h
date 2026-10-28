@@ -44,4 +44,12 @@ void psp_gu_frame_end (void);
  * pattern, which moves. */
 unsigned int psp_gu_frame_count (void);
 
+/* Average frame time since the last call, in milliseconds: the engine's own
+ * drawing, the wait for the GE, the wait for the panel, and the whole frame.
+ * Returns the number of frames averaged, or 0 when none were drawn.  See the
+ * note above the timers in gu_psp.c for why these are three numbers and not
+ * one. */
+int psp_gu_timing_take (double *cpu_ms, double *ge_ms, double *vb_ms,
+                        double *all_ms);
+
 #endif /* GU_PSP_H */

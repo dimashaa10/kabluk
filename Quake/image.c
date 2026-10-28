@@ -1000,6 +1000,35 @@ byte *Image_LoadImage (const char *name, int *width, int *height, enum srcformat
 	*malloced = false;
 	*fmt = SRC_RGBA;
 
+	/* Nothing to look for.
+	 *
+	 * A menu session's log ends with "mark: textures/.tga": a caller asked for
+	 * a picture whose name is empty, or is nothing but a directory, and this
+	 * function dutifully tried twenty-one file names -- ".dds", ".tga",
+	 * "textures/.dds", "textures/.tga", ... -- on the memory stick before
+	 * giving up on all of them.  An empty base name cannot match a file, and
+	 * the twenty-one failed opens are what the trail then reports as "the
+	 * engine was loading a texture" when in fact it was loading nothing.
+	 *
+	 * Say it once, by name, and leave.  Every caller here already handles
+	 * NULL (that is the path a missing texture has always taken). */
+	if (!name || !COM_SkipPath (name)[0])
+	{
+#if defined(PLATFORM_PSP) || defined(__psp__)
+		extern void psp_tracef (const char *fmt, ...);
+		static int said;
+
+		if (!said)
+		{
+			said = 1;
+			psp_tracef ("img: asked for \"%s\", which names no file -- not "
+			            "looking (the first one only; the caller is the mark "
+			            "before this line)", name ? name : "(null)");
+		}
+#endif
+		return NULL;
+	}
+
 	for (i = 0; i < sizeof(prefixes)/sizeof(prefixes[0]); i++)
 	{
 		if (i == 2)	//last resort...

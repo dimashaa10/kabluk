@@ -247,10 +247,65 @@ void psp_gu_shutdown (void)
 /* Stage M4 step 2: the GL shim (gl_shim.c) draws the real interface, so the
  * step-1 test pattern is gone.  What is left here is the frame plumbing. */
 
+/* ---- where the frame time goes -----------------------------------------
+ *
+ * A menu session runs at about seventeen frames a second -- 33 frames every
+ * two seconds in the heartbeat line -- while drawing three hundred and ninety
+ * quads and a couple of thousand vertices.  That is not the geometry: a GE
+ * eats that without noticing, and thirteen batches is not a draw-call problem
+ * either.  So the time is going somewhere else, and the log had no way to say
+ * where; the phases it prints (`psp_phase`) name the places a frame can stop
+ * but never say how long it stopped there.
+ *
+ * Three numbers, taken with sceKernelGetSystemTimeWide() -- a microsecond
+ * clock that does not wrap during a session:
+ *
+ *   cpu      the engine's own drawing, from psp_gu_frame_begin() to the
+ *            sceGuFinish() that closes the list
+ *   ge       sceGuFinish() to sceGuSync(): how long the GE needed to draw it
+ *   vblank   sceDisplayWaitVblankStart(): time spent waiting for the panel
+ *
+ * If cpu dominates, the cost is in our software path (the shim, the picture
+ * cache, the engine's 2D code).  If ge dominates, the list is doing something
+ * expensive for the GE.  If vblank is the whole frame, the frame is faster
+ * than the panel and is simply being paced -- which is what 60 fps looks like.
+ * Guessing between those three is what this replaces. */
+static unsigned long long gu_t_frame_start;
+static unsigned long long gu_t_cpu_us, gu_t_ge_us, gu_t_vb_us, gu_t_all_us;
+static unsigned int       gu_t_frames;
+
+static unsigned long long gu_now_us (void)
+{
+	return (unsigned long long)sceKernelGetSystemTimeWide();
+}
+
+/* Average everything since the last call, in milliseconds, and start again.
+ * Returns 0 when no frame was drawn (a paused engine still beats). */
+int psp_gu_timing_take (double *cpu_ms, double *ge_ms, double *vb_ms,
+                        double *all_ms)
+{
+	int frames = (int)gu_t_frames;
+
+	if (!frames)
+		return 0;
+
+	*cpu_ms = (double)gu_t_cpu_us / frames / 1000.0;
+	*ge_ms  = (double)gu_t_ge_us  / frames / 1000.0;
+	*vb_ms  = (double)gu_t_vb_us  / frames / 1000.0;
+	*all_ms = (double)gu_t_all_us / frames / 1000.0;
+
+	gu_t_cpu_us = gu_t_ge_us = gu_t_vb_us = gu_t_all_us = 0;
+	gu_t_frames = 0;
+
+	return frames;
+}
+
 void psp_gu_frame_begin (void)
 {
 	if (!gu_up || gu_in_frame)
 		return;
+
+	gu_t_frame_start = gu_now_us();
 
 	psp_phase("gu: opening the frame's draw list");
 	sceGuStart(GU_DIRECT, gu_list);
@@ -305,8 +360,16 @@ void psp_gu_frame_end (void)
 	 * freezes here, the watchdog says "waiting for the GE" -- and that is a
 	 * completely different investigation from a freeze inside a picture. */
 	psp_phase("gu: waiting for the GE to finish the list");
-	gu_list_words = sceGuFinish();          /* words, see the note above */
-	sceGuSync(0, 0);
+	{
+		unsigned long long t_drawn = gu_now_us ();
+
+		gu_t_cpu_us += t_drawn - gu_t_frame_start;
+
+		gu_list_words = sceGuFinish();          /* words, see the note above */
+		sceGuSync(0, 0);
+
+		gu_t_ge_us += gu_now_us () - t_drawn;
+	}
 	gu_in_frame = 0;
 
 	if (gu_list_words > gu_list_peak)
@@ -326,11 +389,24 @@ void psp_gu_frame_end (void)
 	/* Wait for the panel before flipping, not after: this is what keeps the
 	 * frame rate at 60 and stops a half-drawn buffer from being shown. */
 	psp_phase("gu: waiting for the next vblank");
-	sceDisplayWaitVblankStart();
+	{
+		unsigned long long t_wait = gu_now_us ();
+
+		sceDisplayWaitVblankStart ();
+
+		gu_t_vb_us += gu_now_us () - t_wait;
+	}
 	psp_phase("gu: swapping buffers");
 	gu_disp_buffer = gu_draw_buffer;		/* what we just drew becomes visible */
 	gu_draw_buffer = (unsigned int)(uintptr_t)sceGuSwapBuffers();
 	gu_frames++;
+
+	/* The whole frame, so the three numbers above can be read against it:
+	 * whatever is left over after cpu, ge and vblank is the swap, the input
+	 * poll, the client frame -- everything the engine does between two
+	 * psp_gu_frame_begin() calls. */
+	gu_t_all_us += gu_now_us () - gu_t_frame_start;
+	gu_t_frames++;
 
 	/* First presented frame: take the screen over from the debug console.
 	 * The console draws with the same GPU, so it has to stop here -- both its
