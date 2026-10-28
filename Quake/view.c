@@ -34,6 +34,16 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 extern void psp_trace (const char *step);
 static int psp_view_frames;
 #define VIEW_MARK(x)	do { if (psp_view_frames < 3) psp_trace(x); } while (0)
+
+/* How many world frames have been drawn, for the marks outside this file.
+ * GL_EndRendering() (port/psp/vid_psp.c) and SCR_UpdateScreen() both cover
+ * steps that only exist once there is a world, and both used to be silent
+ * about them: the round-74 log ends on "view: polyblend", which says the
+ * world was drawn and nothing about what happened next. */
+int psp_view_frame_count (void)
+{
+	return psp_view_frames;
+}
 #else
 #define VIEW_MARK(x)	do { } while (0)
 #endif
@@ -1155,6 +1165,7 @@ void V_RenderView (void)
 
 	VIEW_MARK("view: polyblend");
 	V_PolyBlend (); //johnfitz -- moved here from R_Renderview ();
+	VIEW_MARK("view: polyblend done");
 
 #if defined(PLATFORM_PSP) || defined(__psp__)
 	if (psp_view_frames < 100)

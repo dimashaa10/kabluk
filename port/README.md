@@ -1774,6 +1774,92 @@ port/
            строку `3d: first perspective primitive: ...` (это и есть первый
            нарисованный мир — до сих пор её не было ни разу) и новый `hunk:`
            отчёт, если нехватка всё-таки осталась.
+        3aw. **мир дошёл до GE. Смерть — после рендера, и теперь она назовёт шаг.**
+           Лог сборки `06:22` — первый за всю историю порта, где 3D-мир нарисован
+           железом:
+           ```
+           Video: lightmap blocks are 128x128
+           particles: budget 8192 of 65536 particles, 1024 of 8192 decals
+           r_newmap: 36 surfaces, lightmaps first
+           r_newmap: lightmaps done: 1 blocks of 128x128 for 36 surfaces
+           r_newmap: done
+           signon: R_NewMap done, the first world frame is next
+           signon: reply 2 of 4 (state 2, worldmodel yes)
+           player entered the game
+           signon: reply 4 of 4 (state 2, worldmodel yes)
+             > view: calc refdef
+             > render: setup view
+             > scene: world
+           3d: first world primitive on the GE: polygon of 8 vertices, near plane w 0.0010,
+               proj m11 -1.000 m14 -8.002, viewport 0,0 480x272 (panel 480x272)
+             > scene: entities
+             > alias: pose
+             > render: scene done
+             > view: polyblend
+           ```
+           Итак: карта загрузилась, лайтмапы собрались (1 блок 128×128 на 36
+           поверхностей), сервер отдал все четыре ответа синьона, игрок вошёл в
+           карту, мир прошёл `scene: world` и **первый примитив мира пришёл на GE
+           с правильной перспективой** (`proj m11 -1.000` — это `-1/w` из
+           `glFrustum`, `m14 -8.002` — near/far этого кадра), сущности
+           отрисованы, сцена закончена.
+           То есть требование раунда 71 — «мир рисуется GE, а не процессором» —
+           выполнено на уровне кода и подтверждено логом. **Как это выглядит на
+           экране, я утверждать не буду: пришлите фото панели.** Лог говорит,
+           что примитив ушёл в железо; правильно ли он лёг в пиксели — знает
+           только экран.
+           **Где умерло.** Последняя строка — `view: polyblend`, и это
+           последняя метка внутри `V_RenderView()`. Дальше в логе ничего: ни
+           `scr: V_RenderView done`, ни `scr: sbar done`. Причина, почему их
+           нет, — гейт меток:
+           ```c
+           #define SCR_MARK(x) do { if (psp_scr_frames < 3) psp_trace(x); } while (0)
+           ```
+           `psp_scr_frames` считает вызовы `SCR_UpdateScreen()`, а к моменту
+           входа в карту их уже было больше трёх — то есть метки закрылись
+           ровно тогда, когда впервые понадобились. Аналогично `V_PolyBlend()`
+           не имел метки после себя.
+           Так что окно смерти — от `V_PolyBlend()` до второго кадра мира:
+           полибленд, HUD (`SCR_TileClear`, `Sbar_Draw`, прицел), оверлеи
+           (`SCR_DrawNet` … `M_Draw`), гамма и **конец кадра** — `sceGuFinish()`
+           и `sceGuSync()` в `psp_gu_frame_end()`. Последнее важно отделить:
+           падение указателя и «GE никогда не закончит список» выглядят снаружи
+           одинаково (консоль замолкает), а чинятся в разных файлах.
+           **Что сделано (диагностика, не догадки):**
+           1. `SCR_MARK` теперь открыт и для первых трёх кадров, в которых
+              **рисуется мир** (`psp_scr_world_frames`), а не для первых трёх
+              вызовов функции.
+           2. В `V_RenderView()` появилась метка `view: polyblend done` —
+              сразу после `V_PolyBlend()`, и `view: frame done` в конце.
+           3. В оверлеях — метки `scr: overlays: net / text / hud extras /
+              console and menu`, чтобы 20 вызовов HUD не были одним шагом.
+           4. В `GL_EndRendering()` (`vid_psp.c`) две метки: `frame: close the
+              draw list and wait for the GE` и `frame: presented`. Вторая
+              означает, что `sceGuSync()` вернулся и кадр ушёл на экран — то
+              есть список не содержал ничего, на чём железо застревает.
+           Всё это печатается только для первых трёх кадров мира, дальше — тишина.
+           **Тесты:** 145 PASS.
+           **Что сделать на консоли** (правки в `view.c`, `gl_screen.c`,
+           `vid_psp.c` — нужна полная пересборка):
+           ```
+           cd C:\Users\dimas\Desktop\dimashaa10\kabluk\port\psp
+           make clean
+           make game
+           ```
+           удалить `ms0:/PSP/GAME/kabluk/kabluk.log`, скопировать `EBOOT.PBP`
+           **и** `PARAM.SFO`, запустить **New Game**.
+           И пришлите **фото экрана** вместе с логом: если мир видно — дальше
+           вопрос только в картинке (текстуры/HUD), если экран пустой или
+           мусор — это отдельный, уже другой разговор.
+           В логе смотреть, какая из новых строк последняя:
+           `view: polyblend` → смерть в `V_PolyBlend`;
+           `view: polyblend done` → смерть в HUD/оверлеях;
+           `scr: sbar done` → в оверлеях;
+           `scr: overlays` → в `M_Draw`/консоли;
+           `scr: gamma`/`scr: end` → в гамме;
+           `frame: close the draw list and wait for the GE` → **GE застрял на
+           нашем списке**, и тогда искать команду, которую он не смог выполнить.
+
         3av. **карта дошла до лайтмапов и умерла на блоке 0×0.**
            Лог сборки `06:06`:
            ```

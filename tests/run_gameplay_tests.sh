@@ -1671,3 +1671,41 @@ grep -q 'void psp_gl_shim_priority_texture (int on)' port/psp/gl_shim.c || {
 }
 echo "PASS: the lightmap block size is set by the PSP backend, a 0x0 block is a"
 echo "PASS: named error, and lightmaps get memory past the full picture pool."
+
+# ---- the marks cover the whole world frame, not just R_RenderView ------
+#
+# Round 74's log is the first one that draws the world: "3d: first world
+# primitive on the GE" is in it, and the map, the lightmaps and the signon all
+# completed.  It then ends on "view: polyblend" -- the last mark inside
+# V_RenderView -- and nothing after it.  Whether the run died in V_PolyBlend,
+# in the HUD, or waiting for the GE in sceGuSync() could not be said, because
+# the marks after that point were gated on the first three calls of
+# SCR_UpdateScreen, which a level is well past by the time it draws anything.
+grep -q 'psp_scr_world_frames' Quake/gl_screen.c || {
+    echo "FAIL: the screen marks still close after three calls, which a level"
+    echo "FAIL: is past before its first world frame"
+    exit 1
+}
+grep -q 'psp_scr_frames < 3 || psp_scr_world_frames < 3' Quake/gl_screen.c || {
+    echo "FAIL: SCR_MARK does not stay open for the first world frames"
+    exit 1
+}
+grep -q 'view: polyblend done' Quake/view.c || {
+    echo "FAIL: nothing says whether V_PolyBlend returned"
+    exit 1
+}
+grep -q 'int psp_view_frame_count (void)' Quake/view.c || {
+    echo "FAIL: the frame-end marks have no way to ask how many world frames ran"
+    exit 1
+}
+grep -q 'frame: close the draw list and wait for the GE' port/psp/vid_psp.c || {
+    echo "FAIL: the two blocking calls at the end of a frame (sceGuFinish," 
+    echo "FAIL: sceGuSync) are not covered by a mark"
+    exit 1
+}
+grep -q 'frame: presented' port/psp/vid_psp.c || {
+    echo "FAIL: nothing says a frame reached the display"
+    exit 1
+}
+echo "PASS: a death after the renderer returns is covered by a mark: the HUD,"
+echo "PASS: the overlays, the GE sync and the present all name themselves."

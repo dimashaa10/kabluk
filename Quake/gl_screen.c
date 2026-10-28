@@ -36,7 +36,16 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #if defined(PLATFORM_PSP) || defined(__psp__)
 extern void psp_trace (const char *step);
 static int psp_scr_frames;
-#define SCR_MARK(x)	do { if (psp_scr_frames < 3) psp_trace(x); } while (0)
+/* The marks below were gated on the first three calls of SCR_UpdateScreen,
+ * which is right for a menu and wrong for a level: by the time a map is
+ * entered this function has been called a few times already, so the gate was
+ * shut exactly when the world's frames needed naming.  The round-74 log ends
+ * on "view: polyblend" for that reason -- the mark after V_RenderView
+ * ("scr: V_RenderView done") and the whole HUD/overlay path were silent.
+ * So the gate is now "the first three frames that draw the world" as well. */
+static int psp_scr_world_frames;
+#define SCR_MARK(x)	do { if (psp_scr_frames < 3 || psp_scr_world_frames < 3) \
+		psp_trace(x); } while (0)
 #else
 #define SCR_MARK(x)	do { } while (0)
 #endif
@@ -5446,6 +5455,7 @@ void SCR_UpdateScreen (void)
 	}
 	else
 	{
+		SCR_MARK("scr: overlays: net");
 		SCR_DrawNet ();
 		SCR_DrawTurtle ();
 		SCR_DrawPause ();
@@ -5453,6 +5463,7 @@ void SCR_UpdateScreen (void)
 		Pong_Update (); // woods #pong
 		Pong_Draw (); // woods #pong
 		SCR_CheckDrawCenterString ();
+		SCR_MARK("scr: overlays: text");
 		SCR_DrawDevStats (); //johnfitz
 		SCR_DrawFPS (); //johnfitz
 		SCR_DrawClock (); //johnfitz
@@ -5462,6 +5473,7 @@ void SCR_UpdateScreen (void)
 		SCR_DrawMatchClock (); // woods #matchhud
 		SCR_DrawMatchScores (); // woods #matchhud
 		SCR_ShowFlagStatus (); // woods #matchhud #flagstatus
+		SCR_MARK("scr: overlays: hud extras");
 		SCR_ShowObsFrags (); // woods #observerhud
 		SCR_DrawSpeed (); // woods #speed
 		SCR_DrawMovementKeys (); // woods #movementkeys
@@ -5471,6 +5483,7 @@ void SCR_UpdateScreen (void)
 		SCR_Observing (); // woods
 		TexturePointer_Draw (); // woods #texturepointer
 		SCR_DrawScopeOverlay (); // woods #scope
+		SCR_MARK("scr: overlays: console and menu");
 		SCR_DrawConsole ();
 		M_Draw ();
 	}
@@ -5487,6 +5500,12 @@ void SCR_UpdateScreen (void)
 #if defined(PLATFORM_PSP) || defined(__psp__)
 	if (psp_scr_frames < 100)
 		psp_scr_frames++;
+
+	/* Counted only when the 3D world was drawn, so the marks above stay open
+	 * for the first three frames that have one -- see SCR_MARK. */
+	if (cls.state == ca_connected && r_refdef.drawworld && !con_forcedup &&
+	    psp_scr_world_frames < 100)
+		psp_scr_world_frames++;
 #endif
 }
 

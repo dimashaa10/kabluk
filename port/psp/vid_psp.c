@@ -275,6 +275,37 @@ void GL_BeginRendering (int *x, int *y, int *width, int *height)
 
 void GL_EndRendering (void)
 {
-	/* Closes the list, waits for the GPU and presents with vsync. */
+	/* Closes the list, waits for the GPU and presents with vsync.
+	 *
+	 * Named for the first three world frames, like the marks in view.c and
+	 * gl_screen.c: a frame that dies AFTER the renderer has returned has no
+	 * line of its own otherwise, and this is where it would die -- the only
+	 * two blocking calls in a frame are sceGuFinish() and sceGuSync() inside
+	 * psp_gu_frame_end(), and a GE that never finishes looks exactly like a
+	 * crash from the outside (the console stops; nothing is written).  The
+	 * difference matters: a crash is a bad pointer, a GE that never
+	 * finishes is a bad command, and they are fixed in different files. */
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	{
+		extern int psp_view_frame_count (void);
+		extern void psp_trace (const char *step);
+
+		if (psp_view_frame_count () < 3)
+			psp_trace ("frame: close the draw list and wait for the GE");
+	}
+#endif
+
 	psp_gu_frame_end();
+
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	{
+		extern int psp_view_frame_count (void);
+		extern void psp_trace (const char *step);
+
+		/* Reached means the GE finished the list and the frame was
+		 * presented -- the list held nothing the hardware chokes on. */
+		if (psp_view_frame_count () < 3)
+			psp_trace ("frame: presented");
+	}
+#endif
 }
