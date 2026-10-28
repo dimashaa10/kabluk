@@ -1769,6 +1769,40 @@ void M_Menu_Main_f (void)
 #  define MENU_KZLOGO_ANIM_PSP	1
 #endif
 
+/* ---- the spinning 3D model previews (DrawSpinningModelToMenuPixels) ----
+ *
+ * M_Main_Draw, M_Maps_Draw, M_Setup_Draw and M_Casino_Draw each render a
+ * rotating model into a rectangle next to the menu: progs/soldier.mdl,
+ * progs/player.mdl, progs/invulner.mdl and -- in the maps menu -- the BSP of
+ * the map under the cursor.  The rectangle's size comes from a picture the
+ * callers load first, gfx/david/tanec1.lmp (the setup menu uses
+ * gfx/menuplyr.lmp), with 256x256 as the fallback.
+ *
+ * What that costs, and why the PSP does not do it:
+ *
+ *   - the picture is decoded and sits in the picture cache for as long as the
+ *     menu is open, and it is loaded *before* the model is even considered --
+ *     gfx/david/tanec1.lmp is one more entry in the 6 MB pool that the whole
+ *     interface shares (port/psp/psp_mem.c, PSP_PICTURE_POOL);
+ *   - the model is a whole alias model: its skins are uploaded as textures and
+ *     the .bsp of a map is loaded and parsed as one, i.e. tens of textures and
+ *     the map's geometry, held for a preview a few centimetres wide.
+ *
+ * The PSP port has no 3D pipeline in front of the GE yet (DrawSpinningModelToMenuPixels
+ * returns immediately there, pr_ext.c), so on the console this was memory spent
+ * on something that never appeared on the panel: the block below skips the
+ * preview AND the picture, so nothing is loaded either.
+ *
+ *   MENU_MODELPREVIEW_PSP  1 = spin the model on the PSP too, 0 = not
+ *
+ * 1 everywhere except the PSP.  Turning it back on is a one-line change, and
+ * it is all that is needed: every call site reads this one number. */
+#if defined(PLATFORM_PSP) || defined(__psp__)
+#  define MENU_MODELPREVIEW_PSP	0
+#else
+#  define MENU_MODELPREVIEW_PSP	1
+#endif
+
 /* The banner above the menu pages: frame <i> of the sequence, centred, at
  * y = -64.  png picks the file extension the menu it belongs to uses. */
 static void M_DrawKzLogoStrip (qboolean png)
@@ -1832,22 +1866,32 @@ void M_Main_Draw (void) // woods #modsmenu #demosmenu (iw)
 	
 	int cursor, f;
 	qpic_t* p;
-	qpic_t* menup = Draw_CachePic("gfx/david/tanec1.lmp");
-	int boxw = menup ? menup->width : 256;
-	int boxh = menup ? menup->height : 256;
-	vrect_t bounds, vp;
-	Draw_GetMenuTransform(&bounds, &vp);
-	// Convert menu virtual coords (640x200) to absolute pixels via viewport
-	float s = (float)vp.width / (float)bounds.width;
-	float px = vp.x + 300 * s;
-	float py = vp.y + 32 * s;
-	float pw = boxw * s;
-	float ph = boxh * s;
-	DrawSpinningModelToMenuPixels("progs/soldier.mdl",
-		px, py, pw, ph,
-		15.0f,
-		-15.0f,
-		1, 2, 3, 4);
+
+#if MENU_MODELPREVIEW_PSP
+	/* Preview box: the size comes from a picture, drawn by the model code
+	 * over it.  The picture is loaded here because DrawSpinningModelToMenuPixels
+	 * needs the rectangle; on the PSP neither exists (see the note above). */
+	{
+		qpic_t* menup = Draw_CachePic("gfx/david/tanec1.lmp");
+		int boxw = menup ? menup->width : 256;
+		int boxh = menup ? menup->height : 256;
+		vrect_t bounds, vp;
+
+		Draw_GetMenuTransform(&bounds, &vp);
+		// Convert menu virtual coords (640x200) to absolute pixels via viewport
+		float s = (float)vp.width / (float)bounds.width;
+		float px = vp.x + 300 * s;
+		float py = vp.y + 32 * s;
+		float pw = boxw * s;
+		float ph = boxh * s;
+
+		DrawSpinningModelToMenuPixels("progs/soldier.mdl",
+			px, py, pw, ph,
+			15.0f,
+			-15.0f,
+			1, 2, 3, 4);
+	}
+#endif
 
 	// Restore menu 2D canvas to keep coordinates/cursor aligned
 	GL_SetCanvas(CANVAS_MENU);
@@ -2710,17 +2754,22 @@ void M_Maps_Draw(void)
 
 	// ya loh
 	qpic_t* p;
-	qpic_t* menup = Draw_CachePic("gfx/david/tanec1.lmp");
-	int boxw = menup ? menup->width : 256;
-	int boxh = menup ? menup->height : 256;
 	vrect_t bounds, vp;
 	Draw_GetMenuTransform(&bounds, &vp);
 
+	/* The scale and the viewport are also what the mouse hit-testing below
+	 * needs, so they stay; the preview rectangle and the picture it is sized
+	 * from are PC-only (see MENU_MODELPREVIEW_PSP). */
 	float s = (float)vp.width / (float)bounds.width;
+#if MENU_MODELPREVIEW_PSP
+	qpic_t* menup = Draw_CachePic("gfx/david/tanec1.lmp");
+	int boxw = menup ? menup->width : 256;
+	int boxh = menup ? menup->height : 256;
 	float px = vp.x + 300 * s;
 	float py = vp.y + 32 * s;
 	float pw = boxw * s;
 	float ph = boxh * s;
+#endif
 
 	// --- Определение элемента под мышью ---
 	int hovered_map_idx = -1;
@@ -2772,8 +2821,12 @@ void M_Maps_Draw(void)
 		}
 	}
 
+#if MENU_MODELPREVIEW_PSP
 	// Рендерим модель
 	DrawSpinningModelToMenuPixels(preview_map, px, py, pw, ph, 90.0f, -50.0f, 0, 0, 0, 0);
+#else
+	(void) preview_map;
+#endif
 
 	// --- Дальше стандартная логика меню ---
 	if (!keydown[K_MOUSE1])
@@ -3554,7 +3607,11 @@ void M_Setup_Draw (void)
 
 	// woods #spinnymodel
 
+#if MENU_MODELPREVIEW_PSP
+	/* Only the preview below needs this picture (its width/height are the
+	 * rectangle the model is drawn into). */
 	qpic_t* menup = Draw_CachePic("gfx/menuplyr.lmp");
+#endif
 
 	// Normalize setup colors to a canonical form
 	setup_top = CL_PLColours_Parse(CL_PLColours_ToString(setup_top));
@@ -3574,6 +3631,7 @@ void M_Setup_Draw (void)
 		PR_SetMenuPreviewLegacyColors(top_legacy, bot_legacy);
 	}
 
+#if MENU_MODELPREVIEW_PSP
 	// Draw spinning player model aligned to CANVAS_MENU pixels
 	int boxw = menup ? menup->width : 96;
 	int boxh = menup ? menup->height : 96;
@@ -3590,6 +3648,7 @@ void M_Setup_Draw (void)
 		25.0f,
 		0.0f,
 		0, 0, 0, 0);
+#endif
 
 	// Restore menu 2D canvas to keep coordinates/cursor aligned
 	GL_SetCanvas(CANVAS_MENU);
@@ -15747,6 +15806,7 @@ void M_Casino_Draw(void)
 	char str[64];
 	int cursor, f;
 
+#if MENU_MODELPREVIEW_PSP
 	qpic_t* menup = Draw_CachePic("gfx/david/tanec1.lmp");
 	int boxw = menup ? menup->width : 256;
 	int boxh = menup ? menup->height : 256;
@@ -15763,6 +15823,7 @@ void M_Casino_Draw(void)
 		45.0f,
 		-10.0f,
 		0, 0, 0, 0);
+#endif
 
 	// Restore menu 2D canvas to keep coordinates/cursor aligned
 	GL_SetCanvas(CANVAS_MENU);

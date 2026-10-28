@@ -257,3 +257,31 @@ fi
 grep -q 'p = Draw_CachePic("gfx/a_kzlogo/logo1.png");' Quake/menu.c
 echo "PASS: the animated logo is PC-only: the PSP loads no frames of it and"
 echo "PASS: the main-menu logo is a single still picture."
+# The spinning 3D previews are the same story, one step further: the drawing
+# already returns immediately on the PSP (pr_ext.c), but the callers loaded
+# gfx/david/tanec1.lmp (three menus) and gfx/menuplyr.lmp (the setup menu) just
+# to size a rectangle that never appeared.  Those loads are the cost, so on the
+# PSP the whole block -- picture included -- has to be gone.
+awk '
+  /^#define MENU_MODELPREVIEW_PSP/ || /^#[[:space:]]*define MENU_MODELPREVIEW_PSP/ {
+      value = $NF; gsub(/[^0-9]/, "", value)
+      if (inpsp && value != "0") { printf "FAIL: MENU_MODELPREVIEW_PSP is not 0 on the PSP\n"; bad = 1 }
+      if (inpsp) seen_psp = 1
+  }
+  /^#if defined\(PLATFORM_PSP\)/ { inpsp = 1 }
+  /^#else/ { inpsp = 0 }
+  /^#endif/ { inpsp = 0 }
+  /^#if MENU_MODELPREVIEW_PSP/ { guard = 1 }
+  /DrawSpinningModelToMenuPixels[[:space:]]*\(/ {
+      if (!guard) { printf "FAIL: line %d draws a 3D preview outside MENU_MODELPREVIEW_PSP\n", NR; bad = 1 }
+  }
+  /gfx\/(david\/tanec1|menuplyr)\.lmp/ && !/^[[:space:]]*\*/ {
+      if (!guard) { printf "FAIL: line %d loads a preview picture outside MENU_MODELPREVIEW_PSP\n", NR; bad = 1 }
+  }
+  guard && /^#endif/ { guard = 0 }
+  END { if (!seen_psp) { printf "FAIL: MENU_MODELPREVIEW_PSP is not defined for the PSP\n"; bad = 1 }
+        exit (bad ? 1 : 0) }
+' Quake/menu.c || exit 1
+echo "PASS: the spinning model previews and their sizing pictures are PC-only;"
+echo "PASS: on the PSP neither the model nor gfx/david/tanec1.lmp is looked at."
+
