@@ -3692,6 +3692,22 @@ void SCR_DrawConsole (void)
 {
 	if (scr_con_current)
 	{
+#if defined(PLATFORM_PSP) || defined(__psp__)
+		/* The menu is about to paint the same console background over this
+		 * whole area -- M_Draw() calls Draw_ConsoleBackground() first thing,
+		 * and it runs right after this function.  Everything Con_DrawConsole
+		 * would draw here is therefore invisible, and it is not cheap here:
+		 * one glBegin()/glEnd() pair per character, 382 of them in a frame
+		 * whose own menu is eight pictures (the draw dump in the log counts
+		 * them).  Skip it; the screen is identical because the menu's
+		 * background covers exactly the same rectangle. */ 
+		if (M_WillCoverConsole ())
+		{
+			SCR_MARK ("scr: console covered by the menu, not drawn");
+			clearconsole = 0;
+			return;
+		}
+#endif
 		Con_DrawConsole (scr_con_current, true);
 		clearconsole = 0;
 	}

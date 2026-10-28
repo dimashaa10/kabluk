@@ -15121,6 +15121,36 @@ void M_Init (void)
 }
 
 
+/*
+ * M_WillCoverConsole -- will M_Draw() paint over the console this frame?
+ *
+ * M_Draw() begins with Draw_ConsoleBackground() whenever the console is up
+ * (both in the menuqc branch and in the normal one), and that picture covers
+ * the whole panel.  It runs *after* SCR_DrawConsole(), so by the time the menu
+ * has its background the console's text has already been drawn and is then
+ * painted over.
+ *
+ * On a desktop nobody notices: the text goes into the OpenGL pipeline and is
+ * forgotten.  On the PSP every character is its own glBegin()/glEnd() pair, and
+ * a frame's draw dump from the hardware shows what that costs -- of 392 draws
+ * in the menu, 382 are 8x8 glyph quads and the menu's own pictures are the last
+ * eight.  All 382 of them are then covered by the draw that follows them.
+ *
+ * The conditions below are exactly the two branches at the top of M_Draw();
+ * keeping them in one place means the answer here cannot drift from what
+ * M_Draw() actually does. */
+qboolean M_WillCoverConsole (void)
+{
+	if (!scr_con_current)
+		return false;
+
+	if (cls.menu_qcvm.extfuncs.m_draw)
+		return (qboolean)(host_initialized && key_dest == key_menu);
+
+	return (qboolean)(m_state != m_none && key_dest == key_menu &&
+	                  !m_recursiveDraw);
+}
+
 void M_Draw (void)
 {
 	if (cls.menu_qcvm.extfuncs.m_draw)

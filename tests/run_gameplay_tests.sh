@@ -380,3 +380,52 @@ awk '
 echo "PASS: a picture name that names no file is refused before twenty-one file"
 echo "PASS: names are tried on the memory stick."
 
+# The console's text was drawn and then painted over, every frame, in the menu.
+#
+# The draw dump of frame 120 from the hardware is the proof: 392 draws, of which
+# 382 are 8x8 glyph quads at the console's font atlas, and then draw 384 is the
+# console background again -- the same full-panel picture, in the same place.
+# That draw comes from M_Draw() (menu.c: "if (scr_con_current)
+# Draw_ConsoleBackground()"), which runs right after SCR_DrawConsole() has drawn
+# the background AND the text.  Every one of those 382 glyph draws is therefore
+# invisible, and each one is its own glBegin()/glEnd() pair.
+#
+# On the PSP SCR_DrawConsole() now asks the menu whether it is about to paint
+# over the console, and skips the text when the answer is yes.  On the PC the
+# drawing is unchanged.
+grep -q 'qboolean M_WillCoverConsole (void)' Quake/menu.c
+grep -q 'M_WillCoverConsole' Quake/menu.h
+grep -q 'M_WillCoverConsole' Quake/gl_screen.c
+awk '
+  /^void SCR_DrawConsole/ { infunc = 1 }
+  infunc && /Con_DrawConsole \(scr_con_current, true\)/ {
+      if (!guarded) {
+          printf "FAIL: SCR_DrawConsole draws the console text without asking the\n"
+          printf "FAIL: menu whether it is about to cover it -- 382 invisible glyph\n"
+          printf "FAIL: draws per frame in the menu\n"
+          exit 1
+      }
+      found = 1
+  }
+  infunc && /M_WillCoverConsole \(\)/ { guarded = 1 }
+  infunc && /^}/ { infunc = 0 }
+  END { if (!found) { printf "FAIL: Con_DrawConsole is not called from SCR_DrawConsole\n"; exit 1 } }
+' Quake/gl_screen.c || exit 1
+# The two branches M_Draw() takes: the answer must cover both, or the skip
+# becomes a black screen where the console used to be in one of them.
+awk '
+  /^qboolean M_WillCoverConsole/ { infunc = 1 }
+  infunc && /menu_qcvm.extfuncs.m_draw/ { qcvm = 1 }
+  infunc && /m_state != m_none/ { normal = 1 }
+  infunc && /key_dest == key_menu/ { menu = 1 }
+  infunc && /^}/ { infunc = 0 }
+  END {
+      if (!qcvm || !normal || !menu) {
+          printf "FAIL: M_WillCoverConsole does not mirror both branches of M_Draw\n"
+          exit 1
+      }
+  }
+' Quake/menu.c || exit 1
+echo "PASS: the console text is not drawn when the menu is about to paint the"
+echo "PASS: same background over it -- 382 invisible glyph draws per frame."
+
