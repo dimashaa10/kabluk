@@ -643,10 +643,15 @@ static void shim_edge_extend (shim_texture_t *t)
 
 #define SHIM_ARENA_CHUNK_MIN   (256u * 1024u)	/* smallest chunk we take    */
 #define SHIM_ARENA_CHUNK_MAX   (1024u * 1024u)	/* largest single chunk      */
-#define SHIM_ARENA_LIMIT       (5u * 1024u * 1024u)	/* pictures never exceed */
+/* Pictures never exceed this.  It matches PSP_PICTURE_POOL in main_psp.c: the
+ * port takes one block of that size at start-up and hands it to the arena
+ * (psp_gl_shim_set_pool), so the cap and the block are the same number and the
+ * arena can never need a chunk the block does not have. */
+#define SHIM_ARENA_LIMIT       (6u * 1024u * 1024u)
 
 static tex_arena_t  shim_arena;
 static int          shim_arena_ready;
+static int          shim_arena_pooled;	/* holds one block, see below      */
 static int          shim_arena_refused;	/* the cap, for the log           */
 static int          shim_arena_fallback;	/* pictures that had to use memalign */
 static int          shim_arena_short_logs;	/* "arena short" lines written  */
@@ -660,6 +665,32 @@ static int (*shim_evict_hook)(void);
 void psp_gl_shim_set_evict_hook (int (*fn)(void))
 {
 	shim_evict_hook = fn;
+}
+
+/* Hand the arena one block for the whole run (main_psp.c sizes and takes it).
+ *
+ * Two things change when this is used.  The arena stops asking malloc for a
+ * 256 KB-1 MB chunk every time it runs out -- one block, no fragmentation, no
+ * calls into the allocator in the middle of drawing.  And it stops giving
+ * chunks back: free() of a block this size does not return memory on this
+ * platform (see the measurements in main_psp.c), so trimming a pooled arena
+ * would be a one-way loss of picture memory.  The cap still bounds it, and a
+ * picture the pool cannot hold still falls back to memalign(). */
+void psp_gl_shim_set_pool (void *base, size_t bytes)
+{
+	if (!base || !bytes)
+		return;
+
+	if (!shim_arena_ready)
+	{
+		tex_arena_init(&shim_arena);
+		shim_arena_ready = 1;
+	}
+
+	if (!tex_arena_add_chunk(&shim_arena, base, bytes))
+		return;
+
+	shim_arena_pooled = 1;
 }
 
 /* What a new picture could actually get right now: the biggest free run in the
@@ -752,6 +783,10 @@ static void shim_arena_trim (void)
 	int index;
 
 	if (!shim_arena_ready)
+		return;
+
+	/* A pooled arena owns its block and nothing may take it back. */
+	if (shim_arena_pooled)
 		return;
 
 	while ((index = tex_arena_idle_chunk(&shim_arena)) >= 0)

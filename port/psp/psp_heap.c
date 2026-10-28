@@ -248,6 +248,69 @@ void *__wrap_memalign (size_t align, size_t size)
 unsigned int psp_heap_mallocs (void)     { return heap_mallocs; }
 unsigned int psp_heap_malloc_fails (void) { return heap_malloc_fails; }
 
+/* ---- how much malloc() can still get: measured, not guessed ------------
+ *
+ * mallinfo cannot answer this.  Its `arena` is sbrked_mem -- what has already
+ * been handed to the allocator -- and the rest of the partition block is
+ * invisible to it.  sceKernelMaxFreeMemSize() cannot answer it either, and that
+ * mistake cost a round: pspsdk's _sbrk() takes the whole block at the first
+ * malloc(), which happens before main(), so from main() onward the partition
+ * reports a flat ~750 KB whatever the heap still has.  The log of build 18:11
+ * read "mem: biggest free block 512 KB" and the zone was sized from it:
+ *
+ *     heap ceiling: 0 MB   ->   Zone: 8 MB   ->   Hunk_Alloc: failed
+ *
+ * sbrk itself can answer it, because a request that does not fit is free:
+ * pspsdk libcglue/glue.c, _sbrk(), returns (void*)-1 when the new break would
+ * leave the block and does not move anything in that case.  So ask, and put the
+ * break back after every probe -- the allocator's top chunk then ends exactly
+ * where it started, which is the state malloc_trim() checks for before it will
+ * touch anything.
+ *
+ * Doubling, then bisecting in 64 KB steps: a few dozen sbrk() calls, no memory
+ * taken, and the answer is the room ceil, not a table of guesses. */
+unsigned int psp_heap_room (void)
+{
+	unsigned int lo = 0, hi = 0, step;
+	char *p;
+
+	if (!sbrk || sbrk(0) == (char *)-1)
+		return 0;
+
+	for (step = 1u << 20; step && step <= (64u << 20); step <<= 1)
+	{
+		p = sbrk((ptrdiff_t)step);
+		if (p == (char *)-1)
+		{
+			hi = step;
+			break;
+		}
+
+		sbrk(-(ptrdiff_t)step);
+		lo = step;
+		hi = step << 1;
+	}
+
+	if (!hi)
+		return lo;          /* 64 MB fit: nothing to bisect */
+
+	while (hi - lo > (64u * 1024u))
+	{
+		unsigned int mid = lo + (hi - lo) / 2;
+
+		p = sbrk((ptrdiff_t)mid);
+		if (p == (char *)-1)
+			hi = mid;
+		else
+		{
+			sbrk(-(ptrdiff_t)mid);
+			lo = mid;
+		}
+	}
+
+	return lo;
+}
+
 /* One line in kabluk.log (and on the screen while the console still owns it).
  * Called from the two-second heartbeat, from Sys_Error() paths and whenever an
  * allocation fails, so it stays cheap: no formatting of its own. */

@@ -23,6 +23,10 @@ extern unsigned int psp_heap_sbrk (void);
 extern unsigned int psp_heap_sbrk_peak_bytes (void);
 extern unsigned int psp_heap_free (void);
 extern unsigned int psp_heap_arena (void);
+/* Bytes malloc() can still reach, measured with a reversible sbrk() probe. */
+extern unsigned int psp_heap_room (void);
+/* Hand the picture arena one block it owns for the whole run. */
+extern void         psp_gl_shim_set_pool (void *base, size_t bytes);
 extern unsigned int psp_heap_chunks (void);
 /* How many malloc() calls came back NULL.  Counted by the --wrap=malloc hook
  * in psp_heap.c, because a NULL nothing checks is a write through address 0,
@@ -41,84 +45,78 @@ extern void         psp_heap_note_main_thread (void);
 extern size_t       psp_gl_shim_texture_bytes (void);
 
 
-/* How the size of the zone is decided -- measured, not assumed.
+/* How the memory is split -- measured, not assumed.
  *
- * Four facts, from pspsdk's source and from this port's own logs:
+ * The facts this is built on, from pspsdk's source and from this port's logs:
  *
  *   1. newlib gets ONE block from the system.  pspsdk src/libcglue/glue.c,
  *      _sbrk(): the first call allocates
  *
  *          sceKernelMaxFreeMemSize() - 512 KB
  *
- *      out of PSP_MEMORY_PARTITION_USER, records heap_bottom/heap_top once,
- *      and every later call can only move a pointer INSIDE that block.  So
- *      malloc() can never reach a byte outside it: the block *is* the pool.
+ *      out of PSP_MEMORY_PARTITION_USER and records heap_bottom/heap_top.  Every
+ *      later call moves a pointer INSIDE that block, so malloc() can never reach
+ *      a byte outside it: the block is the whole pool.
  *
- *   2. Its size is not a property of the console.  The same EBOOT was given
- *      34.4 MB in one run ("malloc 35710/40 KB in 1 chunks") and more than
- *      46 MB in another (a 10 MB request and a 36 MB request both succeeded).
- *      It is whatever sceKernelMaxFreeMemSize() answers at that moment, so it
- *      has to be read, not guessed at.
+ *   2. That block is created BEFORE main() -- by whatever in the C runtime
+ *      malloc()s first -- so from main() onward the partition reports a flat
+ *      ~750 KB of free memory no matter how big the block is:
  *
- *   3. Freeing a big block does not give it back.  newlib's free() calls
- *      malloc_trim() (newlib/libc/stdlib/_mallocr.c), which hands the bytes at
- *      the top of the heap back through MORECORE(-n) and subtracts them from
- *      mallinfo's `arena`.  After the zone had been taken, releasing a 10 MB
- *      block left
+ *          Free RAM: 752 KB total, 512 KB contiguous
  *
- *          malloc pool: 5 KB free of 36870 KB in 1 chunks
+ *      Sizing anything from sceKernelMaxFreeMemSize() here is meaningless, and
+ *      that mistake cost a whole round: the log of build 18:11 read
+ *      "heap ceiling: 0 MB" and the zone fell to the 8 MB minimum, after which
+ *      Hunk_Alloc failed on the first 1 MB screen buffer.  So the room is
+ *      measured with sbrk() instead (psp_heap_room(), psp_heap.c): a request
+ *      that does not fit returns -1 and moves nothing, so asking is free.
  *
- *      and the next 2 MB request (IPLog_Init) failed: a heap whose top has been
- *      given away does not get it back.  Nothing here allocates a block "for
- *      later" and frees it any more -- not a reserve, not the zone.
+ *   3. free() of a big block does not give it back.  newlib's free() calls
+ *      malloc_trim() (newlib/libc/stdlib/_mallocr.c), which hands the top of the
+ *      heap back through MORECORE(-n) and subtracts it from mallinfo's arena.
+ *      Measured, in build 17:53: a 10 MB reserve was freed and the next 2 MB
+ *      request failed with "malloc pool: 5 KB free of 36870 KB".  So nothing
+ *      here allocates a block "for later" and frees it.
  *
- *   4. The engine already works this way.  Quake/zone.c: Memory_Init() takes
- *      one Hunk_Alloc block (parms.memsize, handed over here) and carves a
- *      DYNAMIC_SIZE zone inside it; Z_Malloc() serves small strings and
- *      structures from that zone and everything big from the hunk.  The port
- *      only has to decide, once, how much of the console's memory that block
- *      should be.
+ *   4. The engine already works this way: Quake/zone.c, Memory_Init() takes one
+ *      block (parms.memsize) and carves a DYNAMIC_SIZE zone inside it.
  *
- * So: zone = (what _sbrk() will take) - PSP_MALLOC_FLOOR, rounded down to a
- * megabyte, and the rest of the heap is left to malloc() for the pictures, the
- * decoder and the engine's own Q_malloc() calls.  The downward probe stays as
- * a safety net (if the block turns out smaller than measured, the next
- * megabyte down is tried before giving up).  -mem <MB> overrides all of it. */
+ * The split: the port takes two blocks out of the room malloc() has left.
+ *
+ *      pictures  PSP_PICTURE_POOL   -- handed to the picture arena, one chunk,
+ *                                      owned for the whole run
+ *      zone      everything else minus PSP_ENGINE_RESERVE
+ *      reserve   left in the heap -- NOT taken: gfx.wad, IPLog's 2 MB request,
+ *                                      the decoder's w*h*4 buffers, the cfg file
+ *
+ * The reserve is the part that is deliberately not allocated: memory that stays
+ * in the heap is the only memory malloc() can still use.  -mem <MB> overrides
+ * the zone. */
 #define PSP_MIN_MEMORY (8 * 1024 * 1024)
 
-/* What malloc() must keep, i.e. what the zone may not take.
+/* The pictures' own block.
  *
  * The 2D GL shim keeps one 16-bit copy of every uploaded picture for the GE to
  * sample (sceGu reads textures out of main memory; EDRAM holds the frame
- * buffers), and its arena is capped at 5 MB (gl_shim.c, SHIM_ARENA_LIMIT).  On
- * top of that a single picture decode needs its own buffer -- 640x480 at 4
- * bytes is 1.2 MB -- and IPLog_Init() asks Q_malloc() for 2 MB (that request
- * is what ended the run with "Not enough memory free" when the pool was
- * starved).  gfx.wad, the .cfg/.rc files and the pak directory scan come out
- * of the same pool.  12 MB is those four numbers with room to breathe, and it
- * is the figure that keeps the zone from eating the pool. */
-#define PSP_MALLOC_FLOOR (12 * 1024 * 1024)
+ * buffers) and its arena is capped at 5 MB (gl_shim.c, SHIM_ARENA_LIMIT).  On
+ * top of the cap the arena needs room for the largest single picture, so the
+ * pool is 6 MB -- taken once, in one piece, and never returned.  A pooled arena
+ * also stops asking malloc() for 256 KB-1 MB chunks while a frame is being
+ * drawn, which is what used to shred the free space the decoder needed. */
+#define PSP_PICTURE_POOL (6 * 1024 * 1024)
 
-/* What pspsdk keeps for the rest of the SDK when it sizes the heap:
- * _sbrk() takes sceKernelMaxFreeMemSize() minus this (512 KB,
- * DEFAULT_HEAP_THRESHOLD_SIZE_KB in src/libcglue/glue.c).  Subtracting it here
- * as well means the first zone attempt is the size the block can really hold,
- * instead of one megabyte of probe failures every boot. */
-#define PSP_HEAP_THRESHOLD (512 * 1024)
+/* What is deliberately LEFT for malloc().
+ *
+ * gfx.wad (about a megabyte), IPLog_Init()'s Q_malloc(2 MB) -- the request that
+ * ended build 17:53 -- the picture decoder's w*h*4 buffer (640x480 at 4 bytes is
+ * 1.2 MB) and the .cfg/.rc files.  These are the engine's own malloc() calls and
+ * they cannot be moved into the zone, so the zone must not take this. */
+#define PSP_ENGINE_RESERVE (5 * 1024 * 1024)
 
 static quakeparms_t	parms;
 
 /* 64 KB that is deliberately never freed; see main(). */
 static void *heap_anchor;
-
-/* Measured before this program allocates anything, see main().
- *
- * sceKernelMaxFreeMemSize() is the number pspsdk's _sbrk() reads to size the
- * heap block, so reading it first is reading the pool's real ceiling.  The
- * total is kept for the log: the two disagreeing is how you tell a console
- * whose memory is fragmented at boot from one that simply has less. */
-static unsigned int mem_max_free;
-static unsigned int mem_total_free;
 
 static quakeparms_t	parms;
 
@@ -128,14 +126,6 @@ static void *heap_anchor;
 int main (int argc, char *argv[])
 {
 	double	time, oldtime, newtime;
-
-	/* First statement of the program, because it is only true before this
-	 * program has allocated anything: pspsdk's _sbrk() sizes the newlib heap
-	 * block as sceKernelMaxFreeMemSize() - 512 KB, once, on the first
-	 * malloc().  Read afterwards, this number is what that block left over.
-	 * See the memory note above. */
-	mem_max_free = sceKernelMaxFreeMemSize();
-	mem_total_free = sceKernelTotalFreeMemSize();
 
 	psp_con_init();
 
@@ -147,12 +137,11 @@ int main (int argc, char *argv[])
 	 * EBOOT is still on the card (or in a second game folder). */
 	psp_con_printf("Kabluk for PSP -- build " __DATE__ " " __TIME__ "\n");
 
-	/* The two numbers the zone choice is based on.  If the console gave this
-	 * run less memory than the last one, the log says so here instead of
-	 * leaving it to be inferred from a pool that ran dry three screens
-	 * later. */
-	psp_con_printf("mem: biggest free block %d KB, all free %d KB, measured first\n",
-	               (int)(mem_max_free / 1024), (int)(mem_total_free / 1024));
+	/* How much the heap can still grow is the number the whole split is based
+	 * on, and it is measured here, with sbrk() -- see the memory note at the
+	 * top of this file.  Printed before anything takes any of it. */
+	psp_con_printf("heap room: %d KB that malloc can still reach (measured)\n",
+	               (int)(psp_heap_room() / 1024));
 
 	/* From here on a stall is visible: if nothing is printed for eight seconds
 	 * the watchdog names the step we are stuck in, on the screen and in the
@@ -229,28 +218,45 @@ int main (int argc, char *argv[])
 	}
 	else
 	{
-		unsigned int ceiling;
+		unsigned int room = psp_heap_room();
+		unsigned int pool = PSP_PICTURE_POOL;
 		int want, tried = 0;
 
-		/* mem_max_free was read before anything allocated, so it is the number
-		 * _sbrk() sizes the block from; minus the 512 KB pspsdk keeps, it is
-		 * the block.  If the block already existed when we measured, what we
-		 * read was the leftover instead: the block is then what the heap says
-		 * it has plus that leftover. */
-		ceiling = mem_max_free > PSP_HEAP_THRESHOLD ?
-		          mem_max_free - PSP_HEAP_THRESHOLD : 0;
+		/* If the console is too small for the nice split, give up the picture
+		 * pool first: the arena can still grow chunk by chunk with memalign(),
+		 * it just fragments more.  The engine reserve is not negotiable -- the
+		 * run that ignored it died inside IPLog_Init. */
+		if (room < (unsigned)(pool + PSP_ENGINE_RESERVE + PSP_MIN_MEMORY))
+			pool = 0;
 
-		if (psp_heap_arena() > ceiling)
-			ceiling = psp_heap_arena() + mem_max_free;
-
-		want = (int)(ceiling > (PSP_MALLOC_FLOOR + PSP_MIN_MEMORY) ?
-		             ceiling - PSP_MALLOC_FLOOR : PSP_MIN_MEMORY);
+		want = (int)(room > (pool + PSP_ENGINE_RESERVE + PSP_MIN_MEMORY) ?
+		             room - pool - PSP_ENGINE_RESERVE : PSP_MIN_MEMORY);
 		want &= ~(1024 * 1024 - 1);	/* whole megabytes */
 
-		Sys_Printf("heap ceiling: %d MB (%d MB free at start), malloc keeps %d MB\n",
-		           (int)(ceiling / (1024 * 1024)),
-		           (int)(mem_total_free / (1024 * 1024)),
-		           (int)(PSP_MALLOC_FLOOR / (1024 * 1024)));
+		Sys_Printf("heap room: %d MB for the zone, the pictures and malloc\n",
+		           (int)(room / (1024 * 1024)));
+
+		/* The pictures first: the smaller block, and the one whose absence is
+		 * felt immediately (white rectangles instead of a menu). */
+		if (pool)
+		{
+			void *block;
+
+			psp_heap_expect_failure(1);
+			block = malloc(pool);
+			psp_heap_expect_failure(0);
+
+			if (block)
+			{
+				psp_gl_shim_set_pool(block, pool);
+				Sys_Printf("pictures: %d MB, owned by the picture arena\n",
+				           (int)(pool / (1024 * 1024)));
+			}
+			else
+				Sys_Printf("pictures: no %d MB block -- the arena will ask "
+				           "malloc for chunks instead\n",
+				           (int)(pool / (1024 * 1024)));
+		}
 
 		psp_heap_expect_failure(1);
 
@@ -260,9 +266,9 @@ int main (int argc, char *argv[])
 			if (parms.membase)
 			{
 				parms.memsize = want;
-				Sys_Printf("Zone: %d MB of the %d MB pool, chosen by measurement\n",
+				Sys_Printf("Zone: %d MB of the %d MB measured room\n",
 				           want / (1024 * 1024),
-				           (int)(ceiling / (1024 * 1024)));
+				           (int)(room / (1024 * 1024)));
 				break;
 			}
 
@@ -274,23 +280,12 @@ int main (int argc, char *argv[])
 
 		psp_heap_expect_failure(0);
 
-		/* What is left is the pool: the pictures, the decoder and the
-		 * engine's own Q_malloc() calls.  Nothing is going to hand it back, so
-		 * its size is worth a line of its own -- and the number has to include
-		 * the part of the block malloc() has not taken yet, or a healthy pool
-		 * reads as "0 MB free" simply because nothing has asked for it. */
+		/* What is left is the engine's own malloc() room.  Nothing hands it
+		 * back later, so its size is worth a line of its own. */
 		if (parms.membase)
-		{
-			unsigned int left = psp_heap_free();
-
-			if (ceiling > psp_heap_arena())
-				left += ceiling - psp_heap_arena();
-
-			Sys_Printf("malloc pool: %d MB left (%d KB free now, %d KB not yet taken)\n",
-			           (int)(left / (1024 * 1024)),
-			           (int)(psp_heap_free() / 1024),
-			           (int)((left - psp_heap_free()) / 1024));
-		}
+			Sys_Printf("malloc keeps: %d MB free now, %d KB still in the block\n",
+			           (int)(psp_heap_free() / (1024 * 1024)),
+			           (int)(psp_heap_room() / 1024));
 	}
 
 	if (!parms.membase)

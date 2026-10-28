@@ -152,12 +152,31 @@ if grep -qE 'want[[:space:]]*=[[:space:]]*psp_zone_sizes_mb' port/psp/main_psp.c
     echo "FAIL: the zone size is a table of guesses again, not a measurement"
     exit 1
 fi
-grep -q 'mem_max_free = sceKernelMaxFreeMemSize();' port/psp/main_psp.c
-grep -q 'ceiling - PSP_MALLOC_FLOOR' port/psp/main_psp.c
+# Sizing from sceKernelMaxFreeMemSize() in main() is the mistake that produced
+#
+#     mem: biggest free block 512 KB   ->   heap ceiling: 0 MB
+#     Zone: 8 MB                       ->   Hunk_Alloc: failed on 1048608 bytes
+#
+# because pspsdk's _sbrk() takes the whole partition block at the first malloc(),
+# before main().  The room has to be measured with the reversible sbrk() probe.
+if grep -q 'ceiling = mem_max_free' port/psp/main_psp.c; then
+    echo "FAIL: the zone is sized from sceKernelMaxFreeMemSize() again -- that"
+    echo "FAIL: number is the partition leftover, not the heap's room"
+    exit 1
+fi
+grep -q 'unsigned int psp_heap_room (void)' port/psp/psp_heap.c
+grep -q 'unsigned int room = psp_heap_room();' port/psp/main_psp.c
+grep -q 'room - pool - PSP_ENGINE_RESERVE' port/psp/main_psp.c
 grep -q 'psp_heap_expect_failure(1);' port/psp/main_psp.c
 grep -q 'void psp_heap_expect_failure (int on)' port/psp/psp_heap.c
-echo "PASS: the zone size is measured from sceKernelMaxFreeMemSize() before"
-echo "PASS: anything allocates, and the pool keeps a floor of 12 MB."
+# The pictures get their own block, and a pooled arena must never hand chunks
+# back: free() of a big block is a one-way loss on this platform (build 17:53).
+grep -q 'void psp_gl_shim_set_pool (void \*base, size_t bytes)' port/psp/gl_shim.c
+grep -q 'void psp_gl_shim_set_pool (void \*base, size_t bytes);' port/psp/gl_shim.h
+grep -q 'psp_gl_shim_set_pool(block, pool);' port/psp/main_psp.c
+grep -q 'if (shim_arena_pooled)' port/psp/gl_shim.c
+echo "PASS: the room malloc can still reach is measured with sbrk(), the"
+echo "PASS: pictures get a block of their own, and nothing big is freed."
 # A malloc() that returns NULL and is not checked is a write through address 0,
 # and this console reports that by switching itself off -- no log line, no
 # message.  --wrap=malloc is what turns that into "malloc: NULL for N bytes --

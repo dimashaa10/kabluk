@@ -53,6 +53,13 @@ size_t psp_gl_shim_texture_bytes (void);
  * number of pictures it released (0 if it could not free anything). */
 void psp_gl_shim_set_evict_hook (int (*fn)(void));
 
+/* Hand the picture arena one block for the whole run.  main_psp.c measures how
+ * much malloc() can still reach and takes this block out of it, so the pictures
+ * do not fragment the same free space the map and the decoder need, and the
+ * arena never asks malloc() for another chunk.  A pooled arena also stops
+ * handing chunks back (free() of a big block is a one-way loss here). */
+void psp_gl_shim_set_pool (void *base, size_t bytes);
+
 /* The biggest free run in the picture arena, payload only: what a new picture
  * could get right now.  Read between frames by the port. */
 size_t psp_gl_shim_texture_room (void);
