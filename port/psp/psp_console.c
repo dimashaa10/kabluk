@@ -398,6 +398,17 @@ static void con_write (const char *s)
  * says it plainly ("undefined reference", because we no longer link
  * libpspkernel to provide the kernel stub).
  *
+ * Checked again later, from pspsdk's side, and the same answer comes back:
+ * pspDebugInstallErrorHandler() lives in src/debug/exception.c, which calls
+ * sceKernelRegisterDefaultExceptionHandler() -- NID 0x565C0B0E of
+ * ExceptionManagerForKernel (pspsdk src/kernel/ExceptionManagerForKernel.S),
+ * i.e. a kernel library, i.e. 8002013C for a user-mode EBOOT.  This is the
+ * same rule the Makefile's link rule enforces by grepping the ELF for
+ * "*ForKernel" and refusing to produce the EBOOT at all.  So there is no
+ * register dump here, and the dump has to be replaced by evidence that is
+ * reachable from user mode: the per-second status line (watchdog), and the
+ * malloc failures.
+ *
  * A crash therefore still takes the screen with it.  What survives is
  * kabluk.log -- and, for the two cases the port can still see for itself (a
  * Sys_Error/assert and a stall the watchdog notices), the text console put
@@ -900,6 +911,44 @@ static void con_log_direct (const char *text)
 
 	if (con_log_path)
 		con_log_try(buf);
+}
+
+/* psp_con_note_alloc_failure -- one line for a malloc() that came back NULL.
+ *
+ * Called from the --wrap=malloc hook in psp_heap.c (port/psp/Makefile passes
+ * -Wl,--wrap=malloc), i.e. from inside the allocator, on whatever thread asked
+ * for the memory and at whatever point in the frame.
+ *
+ * Why this is worth a card write of its own: a NULL that nothing checks is a
+ * write through address 0, and on the PSP that is not an error message -- the
+ * CPU faults, the module dies, and the console switches itself off.  The log
+ * then ends in the middle of a frame with no reason.  This line is the reason,
+ * printed *before* the dereference: the size that could not be served and the
+ * breadcrumb of the step that asked for it.
+ *
+ * Lock-free on purpose (con_log_direct, the same path the watchdog uses): the
+ * engine may be holding its log lock, or may be about to die while holding it.
+ * Capped at eight lines -- some failures are expected and recovered from (the
+ * picture arena trims itself and retries), and a run with hundreds of them
+ * must not turn the log into a list of them. */
+void psp_con_note_alloc_failure (unsigned int size)
+{
+	static int noted;
+	char line[CON_LINE_MAX + 2];
+
+	if (noted >= 8)
+		return;
+
+	noted++;
+
+	/* The two strings are written by the engine without a lock; the
+	 * precision caps what a torn copy can make the line read. */
+	snprintf(line, sizeof(line),
+	         "malloc: NULL for %u bytes -- last %.63s, phase %.47s",
+	         size, con_last_step, con_phase);
+
+	con_log_direct(line);
+	con_log_sync();
 }
 
 /* The tail of the breadcrumb ring: the last dozen steps, oldest first.  Printed

@@ -223,7 +223,14 @@ GAME_LIBS := $(GAME_LIB_NAMES)
 # strtol above, and what it hid was a kernel-library import that made the EBOOT
 # unloadable.  With -lc first there is no duplicate to allow, and if another
 # one ever appears we want the link to fail loudly.
-GAME_LDFLAGS :=
+# --wrap=malloc: every undefined reference to malloc in the engine, the shim and
+# the picture decoder is rewritten to __wrap_malloc (psp_heap.c), which calls
+# the real allocator and, when it answers NULL, writes one line to kabluk.log
+# naming the size and the last breadcrumb.  A NULL nothing checks is a write
+# through address 0, and this console reports that by switching itself off.
+# -lm and the SDK libraries keep working: only references that are still
+# undefined at link time are rewritten, and __wrap_malloc calls __real_malloc.
+GAME_LDFLAGS := -Wl,--wrap=malloc
 
 # Without this, a recipe that fails after the linker has written the output
 # leaves the file in place and the next make calls it up to date.  That is how

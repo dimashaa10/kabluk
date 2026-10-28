@@ -2553,9 +2553,19 @@ void Draw_SubPic_QW (int x, int y, qpic_t *pic, int ofsx, int ofsy, int w, int h
 
 	pic = Draw_RevivePic(pic);
 
+	/* Same two checks Draw_Pic() has had since #democontrols, and for the
+	 * same reason: Draw_RevivePic() hands back NULL for a NULL argument,
+	 * and a picture whose upload failed has no glpic_t.  Both used to be
+	 * dereferenced here, i.e. a status bar or a menu could fault the
+	 * console into switching itself off with nothing in the log. */
+	if (!pic)
+		return;
+
 	if (scrap_dirty)
 		Scrap_Upload ();
 	gl = (glpic_t *)pic->data;
+	if ((uintptr_t)gl < 0x1000)
+		return;
 	GL_Bind (gl->gltexture);
 
     oldw = gl->sh - gl->sl;
@@ -2587,12 +2597,18 @@ void Draw_SubPic (float x, float y, float w, float h, qpic_t *pic, float s1, flo
 
 	pic = Draw_RevivePic(pic);
 
+	/* see the note in Draw_SubPic_QW */
+	if (!pic)
+		return;
+
 	s2 += s1;
 	t2 += t1;
 
 	if (scrap_dirty)
 		Scrap_Upload ();
 	gl = (glpic_t *)pic->data;
+	if ((uintptr_t)gl < 0x1000)
+		return;
 	GL_Bind (gl->gltexture);
 	glBegin (GL_QUADS);
 	glTexCoord2f (gl->sl*(1-s1) + s1*gl->sh, gl->tl*(1-t1) + t1*gl->th);
@@ -2613,9 +2629,15 @@ void Draw_PicPolygon(qpic_t *pic, unsigned int numverts, polygonvert_t *verts)
 
 	pic = Draw_RevivePic(pic);
 
+	/* see the note in Draw_SubPic_QW */
+	if (!pic)
+		return;
+
 	if (scrap_dirty)
 		Scrap_Upload ();
 	gl = (glpic_t *)pic->data;
+	if ((uintptr_t)gl < 0x1000)
+		return;
 	GL_Bind (gl->gltexture);
 	glBegin (GL_TRIANGLE_FAN);
 	while (numverts --> 0)
@@ -2641,6 +2663,11 @@ void Draw_TransPicTranslate (int x, int y, qpic_t *pic, plcolour_t top, plcolour
 	static plcolour_t oldbottom = {{-2}};
 
 	pic = Draw_RevivePic(pic);
+
+	/* see the note in Draw_SubPic_QW -- and this one dereferenced the
+	 * glpic_t *before* Draw_Pic() got the chance to reject it */
+	if (!pic || (uintptr_t)pic->data < 0x1000)
+		return;
 
 	if (!CL_PLColours_Equals(top, oldtop) || !CL_PLColours_Equals(bottom, oldbottom))
 	{
@@ -2889,7 +2916,16 @@ void Draw_TileClear (int x, int y, int w, int h)
 	glpic_t	*gl;
 
 	draw_backtile = Draw_RevivePic(draw_backtile);
+
+	/* The back tile is loaded once at start-up; if that load ever fails,
+	 * draw_backtile stays NULL and this used to dereference it.  Screen
+	 * updates happen in gameplay, i.e. after the menu this port crashes
+	 * in -- a missing tile must not be what ends the run. */
+	if (!draw_backtile)
+		return;
 	gl = (glpic_t *)draw_backtile->data;
+	if ((uintptr_t)gl < 0x1000)
+		return;
 
 	glColor3f (1,1,1);
 	GL_Bind (gl->gltexture);

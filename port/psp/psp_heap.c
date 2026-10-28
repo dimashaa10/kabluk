@@ -139,6 +139,64 @@ unsigned int psp_heap_free (void)    { return heap_read(1); }
 unsigned int psp_heap_arena (void)   { return heap_read(2); }
 unsigned int psp_heap_chunks (void)  { return heap_read(3); }
 
+/* ---- malloc failures ---------------------------------------------------
+ *
+ * The pool this file measures is the pool the engine, the picture decoder and
+ * the GL shim allocate from.  On this console it was down to
+ *
+ *     heap: after Host_Init: in use 34430 KB, free 9 KB of 34439 KB in 1 chunks
+ *
+ * and the port has no way of telling an allocation that failed there from a
+ * fault: Q_malloc() prints "Not enough memory free; check disk space" through
+ * Con_Printf, and half the callers of malloc() in this engine do not check the
+ * answer at all -- they store through it, and the console switches off.
+ *
+ * So every malloc() goes through here instead (port/psp/Makefile:
+ * -Wl,--wrap=malloc).  ld rewrites the undefined references to `malloc` -- in
+ * the engine, in the shim, in the model loader -- to `__wrap_malloc`, which
+ * calls the real one and then, if the answer is NULL, writes one line to
+ * kabluk.log naming the size and the breadcrumb of the caller.
+ *
+ * Two things this deliberately does NOT do:
+ *
+ *   - it does not abort.  A failing malloc is an expected, handled event in
+ *     the picture arena: shim_arena_trim() gives memory back and the request is
+ *     retried (gl_shim.c), and Quake/image.c retries "outofmem" once.  Making
+ *     every NULL fatal would break those paths.
+ *   - it does not change what malloc() returns or how much it returns.  It is
+ *     accounting only, so a run with the hook and a run without it are the same
+ *     run.
+ *
+ * The count goes on the two-second heartbeat line next to the free bytes, so
+ * "the pool was empty" and "something asked for the impossible" can be told
+ * apart without reading the whole log. */
+void *__real_malloc (size_t size);
+
+static unsigned int heap_mallocs;
+static unsigned int heap_malloc_fails;
+
+void *__wrap_malloc (size_t size)
+{
+	void *p = __real_malloc(size);
+
+	heap_mallocs++;
+
+	if (!p)
+	{
+		heap_malloc_fails++;
+		psp_con_note_alloc_failure((unsigned int)size);
+	}
+
+	return p;
+}
+
+/* Calls that went through the hook.  Kept for the heartbeat line: a number
+ * that stops rising while the game still runs would mean the wrap stopped
+ * working (the linker quietly linked the plain symbol), which is exactly the
+ * kind of silent instrument this port has been bitten by before. */
+unsigned int psp_heap_mallocs (void)     { return heap_mallocs; }
+unsigned int psp_heap_malloc_fails (void) { return heap_malloc_fails; }
+
 /* One line in kabluk.log (and on the screen while the console still owns it).
  * Called from the two-second heartbeat, from Sys_Error() paths and whenever an
  * allocation fails, so it stays cheap: no formatting of its own. */

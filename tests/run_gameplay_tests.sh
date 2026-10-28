@@ -128,3 +128,49 @@ grep -q 'psp_heap_stack_free()' "$repo/port/psp/psp_console.c"
 grep -q 'psp_heap_note_main_thread' "$repo/port/psp/main_psp.c"
 echo "PASS: the heap accounting is linked in and the watchdog's status line"
 echo "PASS: reports the main thread's free stack every second."
+# The malloc pool was empty before the first menu was drawn:
+#
+#     heap: after Host_Init: in use 34430 KB, free 9 KB of 34439 KB in 1 chunks
+#
+# The reserve was subtracted from a GUESS of how much memory the console has
+# ("40 MB are available, keep 10"), not from what the heap actually got, so the
+# zone took 30 MB of a 34.4 MB heap and left 4.4 MB -- of which the interface
+# used 3.7.  The reserve has to be ALLOCATED and held while the zone is chosen,
+# which is the only way the allocator enforces it.  Reverting to
+# "want = size - PSP_MALLOC_RESERVE" puts the port back to nine kilobytes.
+if grep -qE 'want[[:space:]]*=[[:space:]]*psp_zone_sizes_mb\[i\][[:space:]]*\*[[:space:]]*1024[[:space:]]*\*[[:space:]]*1024[[:space:]]*-[[:space:]]*PSP_MALLOC_RESERVE' \
+        port/psp/main_psp.c; then
+    echo "FAIL: main_psp.c subtracts the malloc reserve from a guess again"
+    exit 1
+fi
+grep -q 'void \*reserve = malloc(PSP_MALLOC_RESERVE);' port/psp/main_psp.c
+grep -q 'free(reserve);' port/psp/main_psp.c
+echo "PASS: the malloc reserve is allocated and held while the zone is chosen,"
+echo "PASS: so the zone cannot take the memory the pictures live in."
+# A malloc() that returns NULL and is not checked is a write through address 0,
+# and this console reports that by switching itself off -- no log line, no
+# message.  --wrap=malloc is what turns that into "malloc: NULL for N bytes --
+# last <breadcrumb>" in kabluk.log.  Losing the flag, or the hook, silently
+# restores the blind spot, so both halves are asserted.
+grep -q -- '-Wl,--wrap=malloc' port/psp/Makefile
+grep -q 'void \*__wrap_malloc (size_t size)' port/psp/psp_heap.c
+grep -q 'void \*__real_malloc (size_t size);' port/psp/psp_heap.c
+grep -q 'psp_con_note_alloc_failure((unsigned int)size);' port/psp/psp_heap.c
+grep -q 'void psp_con_note_alloc_failure (unsigned int size)' port/psp/psp_console.c
+grep -q 'void psp_con_note_alloc_failure (unsigned int size);' port/psp/psp_console.h
+grep -q 'psp_heap_malloc_fails' port/psp/main_psp.c
+echo "PASS: a malloc that fails is logged with its size and breadcrumb instead"
+echo "PASS: of becoming a fault, and the count is on the heartbeat line."
+# Every picture-drawing entry point has to survive the two NULLs the picture
+# cache can hand it: a NULL qpic_t (a load that failed) and a pic->data that is
+# not a glpic_t (an upload that failed).  Draw_Pic() has checked both since
+# #democontrols; the others dereferenced them, and a fault there is the console
+# switching off with nothing in the log.  Counted, not merely present, because
+# the point is the set of functions and not one of them.
+if [ "$(grep -c '(uintptr_t)gl < 0x1000' Quake/gl_draw.c)" -lt 5 ]; then
+    echo "FAIL: a picture-drawing function lost its low-pointer guard in gl_draw.c"
+    exit 1
+fi
+grep -q 'if (!draw_backtile)' Quake/gl_draw.c
+grep -q 'if (!pic || (uintptr_t)pic->data < 0x1000)' Quake/gl_draw.c
+echo "PASS: no picture-drawing entry point dereferences a missing picture."

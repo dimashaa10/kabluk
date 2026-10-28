@@ -47,6 +47,11 @@ void psp_trace (const char *step);
  * the last mark when nothing has moved for eight seconds. */
 void psp_mark (const char *what);
 
+/* One line for a malloc() that returned NULL: the size and the breadcrumb of
+ * whoever asked.  Called from the allocator hook in psp_heap.c, before the
+ * caller can turn the NULL into a fault.  Never more than eight lines. */
+void psp_con_note_alloc_failure (unsigned int size);
+
 /* Called once the frame loop starts: stops writing marks to the card.  The
  * boot trail is what matters, and the drawing code emits a mark per picture.
  * The watchdog still reports the last mark, and the last dozen of them, when

@@ -22,7 +22,12 @@ extern unsigned int psp_heap_in_use (void);
 extern unsigned int psp_heap_sbrk (void);
 extern unsigned int psp_heap_sbrk_peak_bytes (void);
 extern unsigned int psp_heap_free (void);
+extern unsigned int psp_heap_arena (void);
 extern unsigned int psp_heap_chunks (void);
+/* How many malloc() calls came back NULL.  Counted by the --wrap=malloc hook
+ * in psp_heap.c, because a NULL nothing checks is a write through address 0,
+ * and on this console that is not a message: it is the power going off. */
+extern unsigned int psp_heap_malloc_fails (void);
 extern void         psp_heap_report (const char *where);
 /* The watchdog measures this thread's stack once a second; it has to be told
  * which thread that is, from the thread itself. */
@@ -40,6 +45,8 @@ extern size_t       psp_gl_shim_texture_bytes (void);
  *
  * So the size is discovered rather than assumed: try these from the top down
  * and take the first that malloc returns.  -mem <MB> overrides the list.
+ * The numbers are the ZONE sizes, i.e. what the engine gets, not what the
+ * console is guessed to have -- see the note about the reserve below.
  *
  * 40 MB is not greed, it is the size of the data this game has to hold once
  * the maps, models and sounds of a 42 MB set of packs are resident. */
@@ -64,8 +71,26 @@ static const int psp_zone_sizes_mb[] = { 40, 36, 32, 28, 24, 20, 16, 12, 8 };
  * a white rectangle.  10 MB leaves the zone at 30 MB -- still nearly four times
  * the original Quake zone -- and gives the pictures room to live.
  *
- * The block is therefore sized as "the biggest one that fits MINUS this", which
- * keeps a real reserve on top of the zone. */
+ * The reserve is not subtracted on paper any more: it is ALLOCATED first and
+ * held while the zone is chosen, then handed back to malloc.  Subtracting it
+ * from a guess is how the port ended up with almost none of it --
+ *
+ *     heap: after Host_Init: in use 34430 KB, free 9 KB of 34439 KB in 1 chunks
+ *     run: f 6 ... malloc 34686/1 KB in 1 chunks
+ *     run: f 604 ... malloc 35710/40 KB in 1 chunks
+ *
+ * The heap that newlib actually gets on this console is 34.4 MB, and the guess
+ * "40 MB are available, keep 10" therefore produced a 30 MB zone and a
+ * 4.4 MB pool -- of which the interface itself then used 3.7 MB.  Nine
+ * kilobytes of free heap, in one chunk, before the first menu was even drawn:
+ * every later allocation depended on a free() that happened to come first, and
+ * a malloc() that returns NULL where nothing checks it is a write through
+ * address 0, i.e. the console switching itself off with no line in the log.
+ *
+ * Holding the reserve for real turns "keep 10 MB" into a fact the allocator
+ * enforces: the zone can only take what is left, and the 10 MB goes back to
+ * the pool afterwards (allocated before the zone, so it is a hole below the
+ * top of the heap and newlib keeps it instead of handing it to the system). */
 #define PSP_MALLOC_RESERVE (10 * 1024 * 1024)
 
 static quakeparms_t	parms;
@@ -159,8 +184,11 @@ int main (int argc, char *argv[])
 	else
 	{
 		int i;
-		/* The reserve is taken off BEFORE the attempt, not after a successful
-		 * probe.
+		/* The reserve is HELD first, not subtracted on paper (see the note at
+		 * PSP_MALLOC_RESERVE).  While it is held, the largest block malloc()
+		 * can still return is exactly "what the heap has minus the reserve",
+		 * so the search below cannot take the reserve by accident, whatever
+		 * the console's real memory turns out to be.
 		 *
 		 * The first version asked malloc() for the full candidate, freed that
 		 * block, and then allocated candidate-minus-reserve.  It looked safe
@@ -168,13 +196,18 @@ int main (int argc, char *argv[])
 		 * to the system, and asking for it again afterwards failed -- 40 MB
 		 * probed fine, and then 37 MB came back NULL, which the error message
 		 * below reported as "even 8 MB failed" and sent us chasing ghosts.
-		 *
-		 * Trying the size we actually want, largest first, has no such step:
-		 * every attempt is a real allocation that either becomes the zone or
-		 * fails small. */
+		 * Holding the block while probing has no such step: it is allocated,
+		 * never freed before the probe, and freed only once the zone is ours. */
+		void *reserve = malloc(PSP_MALLOC_RESERVE);
+
+		Sys_Printf("malloc reserve: %d KB %s\n",
+		           PSP_MALLOC_RESERVE / 1024,
+		           reserve ? "held while the zone is chosen" :
+		                     "NOT held -- the zone may take it");
+
 		for (i = 0; i < PSP_NUM_ZONE_SIZES; i++)
 		{
-			int want = psp_zone_sizes_mb[i] * 1024 * 1024 - PSP_MALLOC_RESERVE;
+			int want = psp_zone_sizes_mb[i] * 1024 * 1024;
 
 			if (want < PSP_MIN_MEMORY)
 				want = PSP_MIN_MEMORY;
@@ -183,12 +216,25 @@ int main (int argc, char *argv[])
 			if (parms.membase)
 			{
 				parms.memsize = want;
-				Sys_Printf("Zone: %d MB (+%d MB kept for malloc)\n",
-				           want / (1024 * 1024), PSP_MALLOC_RESERVE / (1024 * 1024));
+				Sys_Printf("Zone: %d MB, chosen with the reserve held\n",
+				           want / (1024 * 1024));
 				break;
 			}
 
 			Sys_Printf("Zone: %d MB did not fit\n", want / (1024 * 1024));
+		}
+
+		/* Back to the pool: this is the block the pictures, the decoder and
+		 * the texture shim live in.  It sits below the zone in the heap, so
+		 * free() leaves it in the free list rather than returning it to the
+		 * system. */
+		if (reserve)
+		{
+			free(reserve);
+			Sys_Printf("malloc pool: %d KB free of %d KB in %d chunks\n",
+			           (int)(psp_heap_free() / 1024),
+			           (int)(psp_heap_arena() / 1024),
+			           (int)psp_heap_chunks());
 		}
 	}
 
@@ -258,13 +304,14 @@ int main (int argc, char *argv[])
 				 * for one large request. */
 				psp_tracef("run: f %d state %d, heap %d KB grown "
 				           "(peak %d KB), malloc %d/%d KB in %d chunks, "
-				           "tex %d KB",
+				           "NULL %d, tex %d KB",
 				           frame, (int)cls.state,
 				           (int)(psp_heap_sbrk() / 1024),
 				           (int)(psp_heap_sbrk_peak_bytes() / 1024),
 				           (int)(psp_heap_in_use() / 1024),
 				           (int)(psp_heap_free() / 1024),
 				           (int)psp_heap_chunks(),
+				           (int)psp_heap_malloc_fails(),
 				           (int)(psp_gl_shim_texture_bytes() / 1024));
 				nextbeat = newtime + 2.0;
 			}
