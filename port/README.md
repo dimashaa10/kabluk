@@ -937,6 +937,37 @@ port/
            выше общего потолка 5120 КБ) и пробует ещё раз. Память,
            освобождённая выгрузкой, остаётся в арене, а картинка остаётся в
            пуле: её видно, её можно выгрузить и её байты возвращаются;
+        3j. **картинка, которой подменили .lmp, растягивалась в два раза.**
+           В логе сборки 07:29 есть кадр, где меню справки рисует одну
+           картинку не как все остальные:
+           ```
+           huge: f 200 #386 quads tex 43 verts 4 box 22,0 892,652 uv 0,0 320,480
+           ```
+           Соседние, правильные страницы справки в том же кадре выглядят так:
+           `draw: f 180 #385 … box 22,0 457,272 uv 0,0 320,200` — то есть
+           320x200 единиц меню-канваса (22 + 320*1.36 = 457). А у этой
+           прямоугольник 640x480 единиц (22 + 640*1.36 = 892, 480*1.36 = 652),
+           хотя текстурные координаты обрываются на **320x480**: во столько
+           пикселей картинку реально загрузили. Значит рисовали её в коробке
+           **вдвое шире**, чем она сама, — на 480-пиксельной панели это
+           892 пикселя.
+           Откуда две разные ширины у одной картинки: `Draw_TryCachePic()`
+           для `.lmp` берёт размер из заголовка файла (`pic->pic.width =
+           dat->width`), а если рядом лежит файл с тем же именем (png/tga/
+           dds/pcx — `draw_load24bit`), то **текстуру** грузят из него, с его
+           собственным размером. Правило «файл вместо .lmp, но размеры из
+           .lmp» нужно для честной замены в большем разрешении (та же
+           картинка, больше пикселей — чтобы HUD не съехал). Но если у файла
+           **другая форма**, это уже другая картинка, и коробка от .lmp её
+           просто растягивает. Теперь форма сверяется:
+           `source_width * dat->height != dat->width * source_height` — и
+           такая замена рисуется в своих размерах, а в лог один раз на
+           картинку идёт строка
+           `pic: gfx/helpN.lmp asks for 640x480 but the file is 320x480: drawn
+           at the file's own size instead of stretched`. Так видно и то, какой
+           файл в паке надо поправить.
+           (Совпадение формы ничего не меняет: замена в 2x/4x по-прежнему
+           рисуется в коробке .lmp, как в QuakeSpasm.)
         4. в лог добавлены честные строки: `tex: no room for a WxH picture
            (… box = N KB); X KB of Y KB arena in use (N chunks), largest free
            Z KB in R runs, cap reached/not reached` (раньше там стояло
@@ -962,3 +993,27 @@ make tests                 # собрать все тестовые EBOOT
 make clean                 # удалить build/
 make -n tests              # посмотреть, что будет выполняться, ничего не запуская
 ```
+
+### Проверка общего кода под PSP без сборки EBOOT
+
+Заголовки SDL лежат в репозитории, а `-DPLATFORM_PSP` включает ветку порта, так
+что правку в `Quake/*.c` можно проверить одним вызовом компилятора (пути — из
+корня репозитория):
+
+```sh
+mkdir -p /tmp/sdlinc/SDL2
+for f in MacOSX/SDL2.framework/Versions/A/Headers/*.h; do
+    ln -sfn "$PWD/$f" "/tmp/sdlinc/SDL2/$(basename $f)"
+done
+ln -sfn "$PWD/MacOSX/SDL2.framework/Versions/A/Headers/SDL.h" /tmp/sdlinc/SDL.h
+ln -sfn "$PWD/MacOSX/SDL2.framework/Versions/A/Headers/SDL_opengl.h" /tmp/sdlinc/SDL_opengl.h
+ln -sfn "$PWD/MacOSX/SDL2.framework/Versions/A/Headers/SDL_opengl_glext.h" /tmp/sdlinc/SDL_opengl_glext.h
+ln -sfn "$PWD/Quake/cJSON.h" /tmp/sdlinc/cjson.h
+ln -sfn "$PWD/Quake/cJSON_Utils.h" /tmp/sdlinc/cjson_utils.h
+cc -std=gnu11 -Wall -DUSE_SDL2 -DUSE_ZLIB -DSDL_MAIN_HANDLED -DFEATURE_CURL=0 \
+   -DPLATFORM_PSP -I/tmp/sdlinc -I/tmp/chk2 -Iport/psp -IQuake \
+   -fsyntax-only Quake/gl_draw.c
+```
+
+(`/tmp/chk2` — минимальные заголовки PSP из `port/psp`, `SDL_config_minimal.h`
+там же. Достаточно, чтобы поймать синтаксис и опечатки в общем коде.)

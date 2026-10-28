@@ -202,6 +202,10 @@ cachepic_t	menu_cachepics[MAX_CACHED_PICS];
 int			menu_numcachepics;
 static qboolean draw_initialized;
 static qboolean draw_reloading_localized_pics;
+/* Once per picture: a file next to a .lmp that is not the same shape as the
+ * .lmp says.  A pak can hold a lot of these, and one line each is enough to
+ * name them -- see the note in Draw_TryCachePic(). */
+static int draw_pic_shape_logs;
 
 /* Which frame counter measures idleness -- and it has to be host_framecount,
  * not r_framecount.
@@ -997,6 +1001,45 @@ qpic_t	*Draw_TryCachePic (const char *path, unsigned int texflags)
 
 	if (gl.gltexture)
 	{
+		/* A file next to the .lmp replaced it.  Spike's rule -- and
+		 * QuakeSpasm's before him -- is "use the file, but keep the box the
+		 * .lmp asked for", so that a higher-resolution copy of a picture
+		 * lands exactly where the low-resolution one did.  That is only
+		 * sound when the copy is the SAME PICTURE: a 2x file has the same
+		 * shape, a file of a different shape is a different picture that
+		 * happens to sit in the same place, and drawing it in the .lmp's box
+		 * stretches it.
+		 *
+		 * The hardware log of the help screen is that quad, and the two
+		 * numbers that give it away are the box and the texture coordinates:
+		 *
+		 *     huge: f 200 quads tex 43 verts 4 box 22,0 892,652 uv 0,0 320,480
+		 *
+		 * The box is 640x480 menu units -- the size the .lmp header asked
+		 * for -- and the coordinates stop at 320x480, which is the size of
+		 * the picture that was actually uploaded.  So the help page was
+		 * drawn twice as wide as the file it came from, 892 pixels wide on a
+		 * 480-pixel panel.  A replacement of a different shape is now used
+		 * at its own size (the texture coordinates already follow the file,
+		 * see gl.sh/gl.th below), and the log names both files once, because
+		 * the other way to fix this is to fix the pak. */
+		if (gl.gltexture->source_width > 0 && gl.gltexture->source_height > 0 &&
+		    (long long)gl.gltexture->source_width * dat->height !=
+		    (long long)dat->width * gl.gltexture->source_height)
+		{
+			if (draw_pic_shape_logs < 8)
+			{
+				draw_pic_shape_logs++;
+				PSP_NOTE("pic: %s asks for %dx%d but the file is %dx%d: drawn "
+				         "at the file's own size instead of stretched",
+				         path, (int)dat->width, (int)dat->height,
+				         (int)gl.gltexture->source_width,
+				         (int)gl.gltexture->source_height);
+			}
+			pic->pic.width = gl.gltexture->source_width;
+			pic->pic.height = gl.gltexture->source_height;
+		}
+
 		gl.sl = 0;
 		gl.sh = (texflags&TEXPREF_PAD)?(float)gl.gltexture->source_width/(float)TexMgr_PadConditional(gl.gltexture->source_width):1;
 		gl.tl = 0;
