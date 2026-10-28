@@ -43,8 +43,57 @@ static char loadfilename[MAX_OSPATH]; //file scope so that error messages can us
  * two completely different decoders. */
 extern void psp_mark (const char *what);
 #define IMG_MARK(x)	psp_mark(x)
+
+/* A picture file this port will not even open.
+ *
+ * Starting a map ended a hardware session like this, and the line before the
+ * console switched itself off was
+ *
+ *     malloc: NULL for 17400000 bytes -- last pic: cached
+ *
+ * i.e. an image decoder asking for 17.4 megabytes on a console whose whole
+ * free heap at that moment was eight.  Whatever the file was, it was not going
+ * to be decoded: PNG (lodepng) reads the entire file into one malloc, and the
+ * RGBA a picture decodes to is w*h*4 on top of that.  The biggest texture the
+ * GE can sample here is 512x512, which decodes to one megabyte, so a file
+ * larger than a few megabytes is a file whose decode could only ever fail --
+ * after taking the console down with it.
+ *
+ * So it is refused by name, on one line, and the caller is told "no picture",
+ * which is the path every missing texture already takes.  Four megabytes is
+ * four times the largest decode this port can use; it is a limit on the FILE,
+ * not on the picture, so nothing that used to work stops working.
+ *
+ * (The comment on IMG_MARK above says image loading is the one place where a
+ * bad file takes the console down without a message.  This is the other half
+ * of that: a file too big to try is now a message too.) */
+#define PSP_IMAGE_FILE_LIMIT (4 * 1024 * 1024)
+
+static qboolean Image_RefuseHugeFile (const char *path)
+{
+	extern void psp_tracef (const char *fmt, ...);
+	static int said;
+
+	if (com_filesize >= 0 && com_filesize <= PSP_IMAGE_FILE_LIMIT)
+		return false;
+
+	if (said < 8)
+	{
+		said++;
+		psp_tracef ("img: %s is %d KB on the card -- more than this port will "
+		            "hold (%d KB); skipped, the picture will be missing",
+		            path, (int)(com_filesize / 1024),
+		            (int)(PSP_IMAGE_FILE_LIMIT / 1024));
+	}
+
+	return true;
+}
+
+#define IMG_REFUSE_IF_HUGE(path) \
+	do { if (Image_RefuseHugeFile (path)) { fclose (f); return NULL; } } while (0)
 #else
 #define IMG_MARK(x)	do { } while (0)
+#define IMG_REFUSE_IF_HUGE(path)	do { } while (0)
 #endif
 
 extern cvar_t gl_load24bit_skins; // woods #loadskins
@@ -1045,43 +1094,64 @@ byte *Image_LoadImage (const char *name, int *width, int *height, enum srcformat
 		IMG_MARK(loadfilename);
 		COM_FOpenFile (loadfilename, &f, NULL);
 		if (f)
+		{
+			IMG_REFUSE_IF_HUGE (loadfilename);
 			return Image_LoadDDS (f, width, height, fmt);
+		}
 
 		q_snprintf (loadfilename, sizeof(loadfilename), "%s%s.tga", prefixes[i], name);
 		IMG_MARK(loadfilename);
 		COM_FOpenFile (loadfilename, &f, NULL);
 		if (f)
+		{
+			IMG_REFUSE_IF_HUGE (loadfilename);
 			return Image_LoadTGA (f, width, height);
+		}
 
 		q_snprintf (loadfilename, sizeof(loadfilename), "%s%s.png", prefixes[i], name);
 		IMG_MARK(loadfilename);
 		COM_FOpenFile (loadfilename, &f, NULL);
 		if (f)
+		{
+			IMG_REFUSE_IF_HUGE (loadfilename);
 			return Image_LoadPNG (f, width, height, malloced);
+		}
 
 		q_snprintf (loadfilename, sizeof(loadfilename), "%s%s.bmp", prefixes[i], name);
 		IMG_MARK(loadfilename);
 		COM_FOpenFile (loadfilename, &f, NULL);
 		if (f)
+		{
+			IMG_REFUSE_IF_HUGE (loadfilename);
 			return Image_LoadBMP (f, width, height, malloced, !strncmp(origname, "gfx/", 4));
+		}
 
 		q_snprintf (loadfilename, sizeof(loadfilename), "%s%s.jpeg", prefixes[i], name);
 		IMG_MARK(loadfilename);
 		COM_FOpenFile (loadfilename, &f, NULL);
 		if (f)
+		{
+			IMG_REFUSE_IF_HUGE (loadfilename);
 			return Image_LoadSTBI (f, width, height);
+		}
 
 		q_snprintf (loadfilename, sizeof(loadfilename), "%s%s.jpg", prefixes[i], name);
 		IMG_MARK(loadfilename);
 		COM_FOpenFile (loadfilename, &f, NULL);
 		if (f)
+		{
+			IMG_REFUSE_IF_HUGE (loadfilename);
 			return Image_LoadSTBI (f, width, height);
+		}
 
 		q_snprintf (loadfilename, sizeof(loadfilename), "%s%s.pcx", prefixes[i], name);
 		IMG_MARK(loadfilename);
 		COM_FOpenFile (loadfilename, &f, NULL);
 		if (f)
+		{
+			IMG_REFUSE_IF_HUGE (loadfilename);
 			return Image_LoadPCX (f, width, height);
+		}
 	}
 
 	name = origname;

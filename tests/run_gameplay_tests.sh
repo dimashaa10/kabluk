@@ -740,3 +740,61 @@ grep -q 'r_clip.o' port/psp/Makefile || {
 }
 echo "PASS: the near-plane clipper is in the build, checked by numbers on the"
 echo "PASS: build machine, and only a perspective primitive goes through it."
+
+# ---- a picture too big to decode is refused, not attempted ----------------
+#
+# Starting a map ended a hardware session with the console switching itself off,
+# and the line before it was
+#
+#     malloc: NULL for 17400000 bytes -- last pic: cached
+#
+# An image decoder asking for 17.4 MB while eight were free.  Refusing the file
+# by name costs a missing texture; attempting it cost the session.
+grep -q 'PSP_IMAGE_FILE_LIMIT' Quake/image.c || {
+    echo "FAIL: the picture loader has no file-size limit again"
+    exit 1
+}
+# The limit has to be checked before EVERY decoder, or the one format that was
+# forgotten is the one that asks for the 17 MB.
+decoders=$(grep -c 'IMG_REFUSE_IF_HUGE (loadfilename)' Quake/image.c)
+if [ "${decoders:-0}" -lt 7 ]; then
+    echo "FAIL: only ${decoders:-0} of the 7 picture decoders check the file size"
+    exit 1
+fi
+awk '
+  /^static qboolean Image_RefuseHugeFile/ { inf = 1 }
+  inf && /PSP_IMAGE_FILE_LIMIT/ { limit = 1 }
+  inf && /^}/ { inf = 0 }
+  /^#define IMG_REFUSE_IF_HUGE/ { macro = 2 }
+  macro > 0 { if (/fclose *\(f\)/) close_ = 1; macro-- }
+  END {
+      if (!limit)  { printf "FAIL: the size check has no limit\n"; exit 1 }
+      if (!close_) { printf "FAIL: a refused file is left open\n"; exit 1 }
+  }
+' Quake/image.c || exit 1
+echo "PASS: a picture file larger than this port can decode is refused by name"
+echo "PASS: and skipped before any decoder allocates its buffer for it."
+
+# ---- a failed allocation names its caller --------------------------------
+#
+# "last pic: cached" says what the consequence was.  The six breadcrumbs
+# before it say which file was being loaded when the memory ran out, and they
+# have to reach the card before the next instruction can fault.
+awk '
+  /^static void con_steps_tail/ { inf = 1 }
+  inf && /con_steps\[/ { ring = 1 }
+  inf && /^}/ { inf = 0 }
+  /^void psp_con_note_alloc_failure/ { ina = 1 }
+  ina && /con_steps_tail *\(/ { called = 1 }
+  ina && /hist: / { named = 1 }
+  ina && /con_log_sync *\(\);/ { synced = 1 }
+  ina && /^}/ { ina = 0 }
+  END {
+      if (!ring)   { printf "FAIL: the breadcrumb tail does not read the ring\n"; exit 1 }
+      if (!called) { printf "FAIL: a failed allocation no longer names its caller\n"; exit 1 }
+      if (!named)  { printf "FAIL: the caller line is gone\n"; exit 1 }
+      if (!synced) { printf "FAIL: the failure line is not pushed to the card\n"; exit 1 }
+  }
+' port/psp/psp_console.c || exit 1
+echo "PASS: a failed allocation prints the trail that led to it -- which file was"
+echo "PASS: loading -- and writes it to the card before anything else runs."

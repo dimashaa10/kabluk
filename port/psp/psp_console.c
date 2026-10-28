@@ -1136,10 +1136,51 @@ static void con_log_direct (const char *text)
  * Capped at eight lines -- some failures are expected and recovered from (the
  * picture arena trims itself and retries), and a run with hundreds of them
  * must not turn the log into a list of them. */
+/* The last few breadcrumbs on one line.
+ *
+ * The watchdog builds the same thing when it reports a stall, but a failed
+ * allocation has to answer *now*: the next instruction may be the fault that
+ * takes the module with it.  Which is why the failure prints the ring and not
+ * just the last step -- "last pic: cached" names the consequence, while the six
+ * steps before it name the caller (the picture being loaded, the lump being
+ * marked, the texture being uploaded). */
+static void con_steps_tail (char *out, size_t outlen, int want)
+{
+	int i, count, start;
+	size_t len = 0;
+
+	if (!out || outlen < 2)
+		return;
+
+	out[0] = '\0';
+
+	count = con_steps_full ? CON_STEPS : con_steps_next;
+	if (count > want)
+		count = want;
+	if (count <= 0)
+		return;
+
+	start = con_steps_next - count;
+	if (start < 0)
+		start += CON_STEPS;
+
+	for (i = 0; i < count; i++)
+	{
+		int n = snprintf(out + len, outlen - len, "%s%s", i ? " <- " : "",
+		                 con_steps[(start + i) % CON_STEPS]);
+
+		if (n <= 0 || (size_t)len + (size_t)n >= outlen - 1)
+			break;
+
+		len += (size_t)n;
+	}
+}
+
 void psp_con_note_alloc_failure (const char *what, unsigned int size)
 {
 	static int noted;
 	char line[CON_LINE_MAX + 2];
+	char tail[160];
 
 	if (noted >= 8)
 		return;
@@ -1153,6 +1194,17 @@ void psp_con_note_alloc_failure (const char *what, unsigned int size)
 	         what ? what : "alloc", size, con_last_step, con_phase);
 
 	con_log_direct(line);
+
+	/* ...and where it was: the trail of the seconds before it. */
+	tail[0] = '\0';
+	con_steps_tail(tail, sizeof(tail), 6);
+
+	if (tail[0])
+	{
+		snprintf(line, sizeof(line), "hist: %.150s", tail);
+		con_log_direct(line);
+	}
+
 	con_log_sync();
 }
 
