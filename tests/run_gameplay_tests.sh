@@ -392,6 +392,30 @@ fi
 echo "PASS: diagnostic lines are batched to the card, not synced one by one, and"
 echo "PASS: the full-frame draw dump covers one frame."
 
+# The reference card is gone.  It was a diagnostic: five squares and a black
+# backdrop in the top-left corner that said which step of the GL->GE
+# translation was wrong.  It has done its job (it is what named the texel
+# coordinate bug), and a player should not see diagnostic squares in a menu.
+# If a picture on the panel ever needs explaining again, it comes back as a
+# piece of code -- not as something that ships in the frame loop.
+if grep -q 'psp_gl_shim_test_card\|SHIM_CARD' port/psp/gl_shim.c port/psp/gl_shim.h port/psp/gu_psp.c; then
+    echo "FAIL: the reference card is back in the frame (see port/README.md)"
+    exit 1
+fi
+grep -q 'psp_gu_frame_end' port/psp/gu_psp.c
+# What the card used to do by accident, and must now be done on purpose: the
+# batch the shim is still holding has to reach the GE before sceGuFinish()
+# closes the list, or the last pictures of every frame are never drawn.
+awk '
+  /^void psp_gu_frame_end/ { inf = 1 }
+  inf && /psp_gl_shim_flush_batch *\(\);/ { flushed = NR }
+  inf && /sceGuFinish \(\)/ { if (!flushed) { printf "FAIL: psp_gu_frame_end closes the draw list with a batch unflushed\n"; exit 1 } done = 1 }
+  inf && /^}/ { inf = 0 }
+  END { if (!flushed) { printf "FAIL: psp_gu_frame_end never flushes the batch\n"; exit 1 } }
+' port/psp/gu_psp.c || exit 1
+echo "PASS: the diagnostic reference card is not part of a frame any more, and"
+echo "PASS: the last batch of a frame still reaches the GE before the list closes."
+
 # Seventeen frames a second in a menu that draws 393 quads and 2358 vertices is
 # not geometry, and the log named the places a frame can stop without ever
 # saying how long it stopped there.  Three numbers, taken with
