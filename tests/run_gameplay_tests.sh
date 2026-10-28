@@ -1557,3 +1557,52 @@ awk '
 ' port/psp/gl_shim.c || exit 1
 echo "PASS: the GE's viewport is clamped to the panel, so a 2D canvas cannot"
 echo "PASS: leave the world mapped into a rectangle that hangs off it."
+
+# ---- the particle arrays are a budget, and never NULL -------------------
+#
+# The round-73 log's single malloc failure is the particle system's:
+#
+#   malloc: NULL for 6029312 bytes at 0x08821dec -- last gfx/conback2.lmp
+#   psp-addr2line -f -e kabluk.elf 0x08821dec -> r_part_fte.c:3607
+#
+# and 6029312 is 65536 * sizeof(particle_t) 92, i.e. r_part_maxparticles at its
+# PC default.  In that file Z_Malloc is malloc, nothing checked the NULL, and
+# the first thing a level does is walk the free list PScript_ClearParticles()
+# builds from it -- a write to address 4, and on this port no exception handler
+# to say so.  Three things must stay true:
+grep -q '#define PSP_MAX_PARTICLES' Quake/r_part_fte.c || {
+    echo "FAIL: the particle counts are still the PC defaults (5.75 MB of a"
+    echo "FAIL: 10 MB heap for particles alone)"
+    exit 1
+}
+grep -q 'if (newmaxp > PSP_MAX_PARTICLES)' Quake/r_part_fte.c || {
+    echo "FAIL: PSP_MAX_PARTICLES is defined but never applied"
+    exit 1
+}
+grep -q 'while (!particles && r_numparticles > PSP_PARTICLES_FLOOR)' Quake/r_part_fte.c || {
+    echo "FAIL: a failed particle allocation still leaves the array NULL"
+    exit 1
+}
+grep -q 'if (!particles)' Quake/r_part_fte.c || {
+    echo "FAIL: there is no check that the particle array exists"
+    exit 1
+}
+grep -q 'if (!beams || !decals || !trailstates)' Quake/r_part_fte.c || {
+    echo "FAIL: the decal/beam/trail arrays may be NULL and are walked the same way"
+    exit 1
+}
+# The budgets have to stay small enough to be worth having: particles and
+# decals together must fit far inside the 10 MB heap the map also uses.
+awk '
+  /#define PSP_MAX_PARTICLES/ { p = $3 + 0 }
+  /#define PSP_MAX_DECALS/    { d = $3 + 0 }
+  END {
+    if (!p || !d) { printf "FAIL: the PSP particle budgets are gone\n"; exit 1 }
+    if (p * 92 + d * 104 > 1024 * 1024) {
+      printf "FAIL: particles + decals take %d KB of the 10 MB heap\n", (p * 92 + d * 104) / 1024
+      exit 1
+    }
+  }
+' Quake/r_part_fte.c || exit 1
+echo "PASS: particles and decals are sized for the console (under 1 MB, not"
+echo "PASS: 6.5 MB), retried at half size, and never left NULL."

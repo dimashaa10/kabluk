@@ -1774,6 +1774,90 @@ port/
            строку `3d: first perspective primitive: ...` (это и есть первый
            нарисованный мир — до сих пор её не было ни разу) и новый `hunk:`
            отчёт, если нехватка всё-таки осталась.
+        3au. **причина немого конца найдена: массив частиц, 5.75 МБ, и запись по NULL.**
+           Лог сборки `05:51` ответил на всё сразу, потому что в нём уже были
+           строки из 3at:
+           ```
+           signon: all 33 models precached, the sounds are next
+           signon: all 82 sounds precached, R_NewMap is next
+           signon: R_NewMap: building 36 surfaces of PSP
+           ```
+           и дальше **ничего** — ни `r_newmap: 36 surfaces, lightmaps first`, ни
+           `FATAL ERROR`, ни строки сторожа. То есть процесс погиб внутри
+           `R_NewMap()` до `GL_BuildLightmaps()`, а там всего четыре шага:
+           обнуление `efrags` у листьев, `R_ClearParticles()`,
+           `PScript_ClearParticles()` и сам вызов сборки лайтмапов.
+           Ключ был в строке, которая была в логе ещё с прошлого раунда:
+           ```
+           malloc: NULL for 6029312 bytes at 0x08821dec -- last gfx/conback2.lmp
+           ```
+           Вы дали `psp-addr2line` — **r_part_fte.c:3607**. Это
+           ```
+           particles = (particle_t *)Z_Malloc (r_numparticles * sizeof(particle_t));
+           ```
+           и в этом файле Z_Malloc — это malloc (`#define Z_Malloc malloc`,
+           строка 115). 6029312 = 65536 × 92, то есть `r_part_maxparticles`
+           со значением по умолчанию для ПК (`65536`) на структуру частицы в
+           92 байта. 5.75 МБ из 10-мегабайтной кучи — **в момент загрузки
+           карты**, когда в куче уже лежит всё, что не влезло в пул картинок.
+           malloc возвращает NULL, а проверки на NULL в `PScript_Startup()` не
+           было **ни одной**:
+           ```c
+           r_numparticles = newmaxp;                     // 65536, как просили
+           particles = Z_Malloc (...);                   // NULL
+           ...
+           ```
+           И первое, что делает уровень, — строит из этого массива список
+           свободных частиц (`PScript_ClearParticles()`):
+           ```c
+           free_particles = &particles[0];               // NULL
+           for (i = 0; i < r_numparticles; i++)
+               particles[i].next = &particles[i+1];      // запись по 0x00000004
+           ```
+           На PSP это аппаратное исключение, обработчика нет (psp_console.c
+           объясняет, почему его нельзя поставить в user-mode EBOOT), поэтому
+           консоль просто замолкает — ровно то, что вы видели как
+           «выключается».
+           **Что исправлено** (`Quake/r_part_fte.c`):
+           1. **Бюджет вместо желания.** `PSP_MAX_PARTICLES 8192` (736 КБ вместо
+              5.75 МБ) и `PSP_MAX_DECALS 1024` (104 КБ вместо 851968 байт — это,
+              кстати, тот самый `malloc: NULL for 851968` из более ранних
+              логов). На экране 480×272 частица — это несколько пикселей;
+              8192 одновременно горящих частиц на такой панели не бывает.
+           2. **Повтор с половиной.** Если куча всё равно отказала (фрагментация,
+              карта уже заняла своё), счётчик делится пополам и malloc
+              повторяется — до 128. Каждая попытка пишет строку
+              `particles: the heap refused, retrying with N (M KB)`.
+           3. **NULL невозможен.** Если не влезло даже 128 частиц — `Sys_Error`
+              с числом и размером: это хотя бы строка `FATAL ERROR` в логе и 30
+              секунд на экране, а не молчание. То же самое для `beams`,
+              `decals`, `trailstates` — их обходят те же списки.
+           В логе теперь будет одна строка бюджета:
+           ```
+           particles: budget 8192 of 65536 particles, 1024 of 8192 decals (736 KB + 104 KB of the heap)
+           ```
+           **Тесты:** 141 PASS. Новые проверки требуют, чтобы бюджеты были
+           определены и применены, чтобы повтор с половиной и проверки на NULL
+           остались на месте, и чтобы частицы с декалями вместе занимали меньше
+           1 МБ (иначе бюджет бессмыслен).
+           **Что сделать на консоли** (правка в `r_part_fte.c` — нужна полная
+           пересборка):
+           ```
+           cd C:\Users\dimas\Desktop\dimashaa10\kabluk\port\psp
+           make clean
+           make game
+           ```
+           удалить `ms0:/PSP/GAME/kabluk/kabluk.log`, скопировать `EBOOT.PBP`
+           **и** `PARAM.SFO`, запустить **New Game**.
+           В логе искать: `particles: budget ...`, затем
+           `r_newmap: 36 surfaces, lightmaps first`, `r_newmap: lightmaps done`,
+           `r_newmap: done`, `signon: R_NewMap done, the first world frame is
+           next` и — то, ради чего всё это, — `3d: first world primitive on the
+           GE: ... viewport 0,0 480x248`.
+           Отдельно: `36 surfaces` у карты PSP — это очень мало для 17-МБ BSP,
+           так что если мир отрисуется чёрным, следующий шаг смотреть
+           `cl.worldmodel->numsurfaces` и что именно загрузилось как модель 1.
+
         3at. **карта загрузилась; лог обрывается на signon — теперь он назовёт шаг.**
            Лог сборки `05:06` — первый, где исправление 3as сработало целиком:
            ```
