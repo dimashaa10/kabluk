@@ -1141,6 +1141,61 @@ echo "PASS: the texture pool is 6 MB because the map's miptex live in it, what"
 echo "PASS: spills over may borrow at most 2 MB of the engine's heap, and"
 echo "PASS: IPLog's two megabytes are back for the engine."
 
+# ---- single player could not connect to itself ---------------------------
+#
+# Starting a map is a listen server plus a client that connects to it:
+#
+#     map X -> SV_SpawnServer() -> Cmd_ExecuteString ("connect local")
+#           -> CL_EstablishConnection ("local") -> NET_Connect ("local")
+#
+# port/psp/net_psp.c registered NO network driver, because a PSP-E1008 has no
+# wireless.  That is true of the Internet and false of the game: NET_Connect
+# walked an empty driver list, returned NULL, and CL_EstablishConnection
+# answered Host_Error("connect failed") -- after the whole map had been loaded
+# and precached:
+#
+#     mark: model maps/PSP.bsp
+#     edicts: 3401 of 1160 bytes = 3852 KB
+#     connecting to local:26000
+#     Host_Error: connect failed
+#
+# So the level loaded and the player was thrown back to the menu, every time.
+# net_loop.c is the driver that needs no network -- two qsockets in this
+# process with a memcpy between them -- and it is already compiled into this
+# build; it only has to be registered.
+grep -q 'include "net_loop.h"' port/psp/net_psp.c || {
+    echo "FAIL: the PSP build does not use the loopback driver"
+    exit 1
+}
+grep -q 'Loop_Connect,' port/psp/net_psp.c || {
+    echo "FAIL: the loopback driver is not registered, so no map can start"
+    exit 1
+}
+grep -q 'const int	net_numdrivers = (int)(sizeof(net_drivers) / sizeof(net_drivers\[0\]))' port/psp/net_psp.c || {
+    echo "FAIL: net_numdrivers does not count the registered driver"
+    exit 1
+}
+if grep -q 'net_numdrivers = 0' port/psp/net_psp.c; then
+    echo "FAIL: the driver list is empty again"
+    exit 1
+fi
+# The loopback must be driver 0: net_defs.h keys the 'not in the Internet
+# browser' checks on IS_LOOP_DRIVER(p) == (p == 0).
+awk '
+  /^net_driver_t net_drivers\[\]/ { inf = 1; n = 0 }
+  inf && /^\t\{/ { n++ }
+  inf && /^};/ { inf = 0 }
+  END { if (n != 1) { printf "FAIL: %d PSP network drivers, expected only the loopback\n", n; exit 1 } }
+' port/psp/net_psp.c || exit 1
+# And the message that used to be lost is now on the card before the longjmp.
+grep -q 'psp_trace_syncf ("Host_Error: %s", string)' Quake/host.c || {
+    echo "FAIL: Host_Error is back to a buffered line only"
+    exit 1
+}
+echo "PASS: single player connects to its own listen server over the loopback"
+echo "PASS: driver, so starting a map enters the game instead of ending in"
+echo "PASS: Host_Error: connect failed -- and that error is on the card now."
+
 # ---- a failed allocation names the line that asked for it ----------------
 #
 # Round 65 read `last pic: cached` and concluded "a picture decoder".  Round 66

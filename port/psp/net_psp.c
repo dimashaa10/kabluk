@@ -34,9 +34,63 @@ cvar_t	net_masters[] =
 	{NULL}
 };
 
-/* --- no drivers --- */
-net_driver_t	net_drivers[1];
-const int	net_numdrivers = 0;
+/* --- one driver: the loopback ---
+ *
+ * This file used to register no driver at all, on the argument that a console
+ * without wireless has nothing to talk to.  That is true of the Internet and
+ * false of the game: Quake's single player is a listen server plus a client
+ * that connects to it, and starting a map is
+ *
+ *     map e1m1 -> SV_SpawnServer() -> Cmd_ExecuteString ("connect local")
+ *              -> CL_EstablishConnection ("local") -> NET_Connect ("local")
+ *
+ * NET_Connect() walks the driver list, finds none, returns NULL, and
+ * CL_EstablishConnection() answers with Host_Error("connect failed") -- after
+ * the map has already been loaded and precached.  That is exactly what the
+ * hardware log showed:
+ *
+ *     mark: model maps/PSP.bsp
+ *     edicts: 3401 of 1160 bytes = 3852 KB
+ *     ...
+ *     connecting to local:26000
+ *     syntax: connect server:port (port is optional)
+ *     Host_Error: connect failed
+ *
+ * -- the level loads, and then the client is thrown back to the menu because
+ * there is no network to connect over.  No map could ever be played.
+ *
+ * net_loop.c is the driver that needs no network: two qsockets in this process
+ * with a memcpy between them (QuakeSpasm's, unchanged, already compiled into
+ * this build).  Registering it is the whole fix: `connect local` connects, the
+ * server's messages arrive, and the port plays the game the way the desktop
+ * plays it.  It is also the driver the engine assumes is number 0
+ * (net_defs.h: IS_LOOP_DRIVER(p) == (p == 0)), so the "don't show the loopback
+ * in the Internet browser" checks keep working.
+ */
+#include "net_loop.h"
+
+net_driver_t net_drivers[] =
+{
+	{	"Loopback",
+		false,
+		Loop_Init,
+		Loop_Listen,
+		Loop_QueryAddresses,
+		Loop_SearchForHosts,
+		Loop_Connect,
+		Loop_CheckNewConnections,
+		Loop_GetAnyMessage,
+		Loop_GetMessage,
+		Loop_SendMessage,
+		Loop_SendUnreliableMessage,
+		Loop_CanSendMessage,
+		Loop_CanSendUnreliableMessage,
+		Loop_Close,
+		Loop_Shutdown
+	}
+};
+
+const int	net_numdrivers = (int)(sizeof(net_drivers) / sizeof(net_drivers[0]));
 
 void ResetHostlist (void)
 {

@@ -231,6 +231,19 @@ void Host_Error (const char *error, ...)
 	va_end (argptr);
 	Con_Printf ("Host_Error: %s\n",string);
 
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	/* Con_Printf() writes into the engine's console buffer and paints the
+	 * panel -- neither of which is kabluk.log until the next log sync, and
+	 * this function is followed by a longjmp, a server shutdown and a client
+	 * disconnect.  The hardware log of round 70 ended before the
+	 * "Host_Error: connect failed" the player saw on screen, because the
+	 * module died in that shutdown.  One durable line costs one card write
+	 * and is the difference between "the console switched off" and a
+	 * message. */
+	extern void psp_trace_syncf (const char *fmt, ...);
+	psp_trace_syncf ("Host_Error: %s", string);
+#endif
+
 	Con_Redirect(NULL);
 
 	if (sv.active)
