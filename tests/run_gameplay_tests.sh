@@ -324,7 +324,12 @@ if [ -z "$tracef_body" ]; then
     echo "FAIL: psp_tracef is gone from psp_console.c"
     exit 1
 fi
-if echo "$tracef_body" | grep -q 'con_log_sync'; then
+# The exception is the menu, where the console dies without a word (see the
+# psp_con_trace_sync test below): there the flag is on and a line is synced on
+# purpose.  Any other sync -- one that is not behind that flag -- turns the
+# diagnostic back into the stall it used to be.
+if echo "$tracef_body" | grep -q 'con_log_sync' && \
+   ! echo "$tracef_body" | grep -q 'if (con_trace_sync)'; then
     echo "FAIL: psp_tracef syncs the card per line again -- a 30-line window in"
     echo "FAIL: one frame becomes 30 memory-stick round trips (see psp_console.c)"
     exit 1
@@ -429,3 +434,39 @@ awk '
 echo "PASS: the console text is not drawn when the menu is about to paint the"
 echo "PASS: same background over it -- 382 invisible glyph draws per frame."
 
+
+# The log has to survive the crash, not just describe it afterwards.
+#
+# Both hardware logs end on an image load from the single-player menu and then
+# simply stop.  That is not proof the crash is there: psp_tracef() batches its
+# lines and the watchdog drains them once a second (README 3w), so a fast death
+# takes up to a second of lines with it and the log ends wherever the last
+# flush happened to be.  The one thing the menu needs is a line on the card
+# before the next instruction runs.
+grep -q 'void psp_con_trace_sync (int on)' port/psp/psp_console.c || exit 1
+grep -q 'void psp_con_trace_sync (int on)' port/psp/psp_console.h || exit 1
+grep -q 'psp_con_trace_sync(in_menu)' port/psp/main_psp.c || exit 1
+grep -q 'int in_menu = (key_dest == key_menu);' port/psp/main_psp.c || exit 1
+# It has to be evaluated per frame, inside the loop, not once at startup.
+awk '
+  /while \(1\)/ { inloop = 1 }
+  inloop && /psp_con_trace_sync/ { seen = 1 }
+  inloop && /Host_Frame/ { if (!seen) { printf "FAIL: psp_con_trace_sync is not set before Host_Frame\n"; exit 1 } after = 1 }
+  END { if (!after) { printf "FAIL: the frame loop does not set psp_con_trace_sync\n"; exit 1 } }
+' port/psp/main_psp.c || exit 1
+# And a synced line must actually reach the card: the flag has to be read in
+# both the tracing and the mark paths.
+awk '
+  /^void psp_tracef/ { inf = 1 }
+  inf && /con_trace_sync/ { t = 1 }
+  inf && /^}/ { inf = 0 }
+  /^void psp_mark/ { inm = 1 }
+  inm && /con_trace_sync/ { m = 1 }
+  inm && /^}/ { inm = 0 }
+  END {
+      if (!t) { printf "FAIL: psp_tracef never consults con_trace_sync\n"; exit 1 }
+      if (!m) { printf "FAIL: psp_mark never consults con_trace_sync\n"; exit 1 }
+  }
+' port/psp/psp_console.c || exit 1
+echo "PASS: inside the menu every traced line and mark goes to the card"
+echo "PASS: immediately, so the next log ends at the fault and not at a flush."

@@ -763,6 +763,30 @@ void psp_trace (const char *step)
  * "LAST: d 120 37 Q t18 512x512 ..." would overwrite the one line on the screen
  * that says where the module died.
  */
+/* ---- the crash in the menu needs the last line, not the last second ------
+ *
+ * Outside the menu the diagnostics are batched: a line goes into the log buffer
+ * and the watchdog drains it once a second.  That granularity is fine for a
+ * picture that loads slowly; it is useless for a fault, because the fault does
+ * not leave anything behind -- the console switches off and whatever was still
+ * in RAM never reaches the card.
+ *
+ * Both hardware logs of this port end the same way -- the last line is an
+ * image load from the single-player menu, and there is nothing after it.  The
+ * crash is somewhere in that menu, and one second of lines is exactly the
+ * second we need.
+ *
+ * So while the engine's key destination is the menu (main_psp.c sets this
+ * before every frame), every line is written to the card as it is produced.
+ * The menu is a few hundred lines a second at worst and a couple after it
+ * settles, so the cost is worth it; outside the menu nothing changes. */
+static int con_trace_sync;
+
+void psp_con_trace_sync (int on)
+{
+	con_trace_sync = on ? 1 : 0;
+}
+
 void psp_tracef (const char *fmt, ...)
 {
 	/* Long enough for the frame diagnostics, which carry a dozen numbers
@@ -779,6 +803,11 @@ void psp_tracef (const char *fmt, ...)
 
 	con_write(buf);
 	con_putc('\n');
+
+	/* Hunting the menu crash: get the line onto the card before the next
+	 * instruction can take the module down.  See the note above. */
+	if (con_trace_sync)
+		con_log_sync();
 }
 
 /*
@@ -880,11 +909,13 @@ void psp_mark (const char *what)
 	 * fast death leaves nothing behind.  One small write per changed step
 	 * costs a few milliseconds per picture and turns the log into an exact
 	 * trail. */
-	if (con_marks_live)
+	/* A boot mark is the trail a crash needs, and so is a mark inside the
+	 * menu while that is where the crash is (con_trace_sync, above). */
+	if (con_marks_live || con_trace_sync)
 	{
 		snprintf(line, sizeof(line), "mark: %s", step);
 		con_log_line(line);
-		con_log_sync();	/* a boot mark is the trail a crash needs */
+		con_log_sync();
 	}
 }
 

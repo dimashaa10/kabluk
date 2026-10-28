@@ -74,6 +74,12 @@ void psp_con_screen_off (void);
  * psp_console.c).  For anything that can fire many times inside one frame. */
 void psp_tracef (const char *fmt, ...);
 
+/* While this is on, every traced line and every mark goes to the card
+ * immediately instead of waiting for the watchdog's once-a-second drain.  For
+ * the one place the console dies without a message: see the note in
+ * psp_console.c.  main_psp.c turns it on while key_dest is the menu. */
+void psp_con_trace_sync (int on);
+
 /* Force the log out of the memory stick's cache.  Called after every line
  * already; here so a fatal path can do it explicitly. */
 void psp_con_logsync (void);
