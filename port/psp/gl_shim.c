@@ -772,7 +772,9 @@ static void shim_arena_trim (void)
  *
  * A texture costs 16 bits per pixel out of the arena, but a picture under
  * construction is w*h*4 bytes of RGBA from plain malloc(), and both pools are
- * fed from the same ten megabytes.  The hardware log of build 08:12 ends with
+ * fed from the same heap -- the part of it the engine's zone does not take
+ * (main_psp.c measures it; PSP_MALLOC_FLOOR is what the zone may not touch).
+ * The hardware log of build 08:12 ends with
  *
  *     img: gfx/a_sgl/asgl3.bmp FAILED: outofmem (14166 bytes,
  *          sig 42 4D 56 37 00 00 00 00)

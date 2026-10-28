@@ -175,6 +175,25 @@ void *__real_malloc (size_t size);
 static unsigned int heap_mallocs;
 static unsigned int heap_malloc_fails;
 
+/* Set while the PORT ITSELF is asking for a block it expects may not fit.
+ *
+ * The zone size in main_psp.c is found by trying: "does 34 MB fit?" is a
+ * question, not a failure, and the first hardware log with this hook spent one
+ * of its eight lines on it:
+ *
+ *     malloc: NULL for 41943040 bytes -- last (startup), phase (none)
+ *
+ * A NULL that means "the probe found the ceiling" must not look like a crash in
+ * the log, or the next real NULL hides among the probes.  Everything else is
+ * still reported -- and still counted, because the count is what says whether
+ * the pool is being starved. */
+static int heap_quiet;
+
+void psp_heap_expect_failure (int on)
+{
+	heap_quiet = on ? 1 : 0;
+}
+
 void *__wrap_malloc (size_t size)
 {
 	void *p = __real_malloc(size);
@@ -184,7 +203,9 @@ void *__wrap_malloc (size_t size)
 	if (!p)
 	{
 		heap_malloc_fails++;
-		psp_con_note_alloc_failure((unsigned int)size);
+
+		if (!heap_quiet)
+			psp_con_note_alloc_failure((unsigned int)size);
 	}
 
 	return p;

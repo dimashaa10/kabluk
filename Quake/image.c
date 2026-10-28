@@ -154,18 +154,20 @@ static byte *Image_STBIDone (byte *heap, int width, int height)
 }
 
 /* Files larger than this are streamed instead of read into memory: the decode
- * needs its own w*h*4 buffer on top of the file, and the port only keeps about
- * ten megabytes of malloc() for pictures.  Every menu picture in this game is a
- * few kilobytes, so the two-megabyte path handles the real work and the stream
- * path stays as a safety net for something huge in a pak. */
+ * needs its own w*h*4 buffer on top of the file, and the port keeps a measured
+ * amount of malloc() for pictures (main_psp.c: PSP_MALLOC_FLOOR, 12 MB).  Every
+ * menu picture in this game is a few kilobytes, so the two-megabyte path
+ * handles the real work and the stream path stays as a safety net for something
+ * huge in a pak. */
 #define IMG_STBI_READ_LIMIT (2u * 1024u * 1024u)
 
 #if defined(PLATFORM_PSP) || defined(__psp__)
 /* ---- what a picture decode does when the heap says no --------------------
  *
  * A decoded picture is w*h*4 bytes of RGBA from malloc(), and that buffer
- * competes with the picture arena's chunks for the same ten megabytes.  The
- * hardware log of build 08:12 has both numbers on it:
+ * competes with the picture arena's chunks for the same pool -- the part of the
+ * heap the zone does not take (main_psp.c).  The hardware log of build 08:12
+ * has both numbers on it:
  *
  *     tex: 84 pictures, 2488 KB in use of ...
  *     ... tex 4022 KB at run: f 347

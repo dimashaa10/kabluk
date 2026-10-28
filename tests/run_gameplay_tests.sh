@@ -132,21 +132,32 @@ echo "PASS: reports the main thread's free stack every second."
 #
 #     heap: after Host_Init: in use 34430 KB, free 9 KB of 34439 KB in 1 chunks
 #
-# The reserve was subtracted from a GUESS of how much memory the console has
-# ("40 MB are available, keep 10"), not from what the heap actually got, so the
-# zone took 30 MB of a 34.4 MB heap and left 4.4 MB -- of which the interface
-# used 3.7.  The reserve has to be ALLOCATED and held while the zone is chosen,
-# which is the only way the allocator enforces it.  Reverting to
-# "want = size - PSP_MALLOC_RESERVE" puts the port back to nine kilobytes.
-if grep -qE 'want[[:space:]]*=[[:space:]]*psp_zone_sizes_mb\[i\][[:space:]]*\*[[:space:]]*1024[[:space:]]*\*[[:space:]]*1024[[:space:]]*-[[:space:]]*PSP_MALLOC_RESERVE' \
-        port/psp/main_psp.c; then
-    echo "FAIL: main_psp.c subtracts the malloc reserve from a guess again"
+# and the first attempt at reserving memory for it did not fix that, it made it
+# worse: the reserve was allocated, the zone was chosen, the reserve was freed,
+# and the next allocation failed with
+#
+#     malloc pool: 5 KB free of 36870 KB in 1 chunks
+#
+# because on this platform the newlib heap is ONE partition block (pspsdk
+# libcglue/glue.c, _sbrk()) and free() of a big block hands the top of it back to
+# the system through malloc_trim() and MORECORE(-n) for good.  So the rule the
+# engine itself uses (Quake/zone.c: one Hunk_Alloc block) is the rule here too:
+# measure the pool, take ONE block for the zone, never free anything big.
+if grep -q 'PSP_MALLOC_RESERVE' port/psp/main_psp.c; then
+    echo "FAIL: main_psp.c holds a malloc reserve again -- free() of a big block"
+    echo "FAIL: gives the top of the heap away on this platform and never gets it back"
     exit 1
 fi
-grep -q 'void \*reserve = malloc(PSP_MALLOC_RESERVE);' port/psp/main_psp.c
-grep -q 'free(reserve);' port/psp/main_psp.c
-echo "PASS: the malloc reserve is allocated and held while the zone is chosen,"
-echo "PASS: so the zone cannot take the memory the pictures live in."
+if grep -qE 'want[[:space:]]*=[[:space:]]*psp_zone_sizes_mb' port/psp/main_psp.c; then
+    echo "FAIL: the zone size is a table of guesses again, not a measurement"
+    exit 1
+fi
+grep -q 'mem_max_free = sceKernelMaxFreeMemSize();' port/psp/main_psp.c
+grep -q 'ceiling - PSP_MALLOC_FLOOR' port/psp/main_psp.c
+grep -q 'psp_heap_expect_failure(1);' port/psp/main_psp.c
+grep -q 'void psp_heap_expect_failure (int on)' port/psp/psp_heap.c
+echo "PASS: the zone size is measured from sceKernelMaxFreeMemSize() before"
+echo "PASS: anything allocates, and the pool keeps a floor of 12 MB."
 # A malloc() that returns NULL and is not checked is a write through address 0,
 # and this console reports that by switching itself off -- no log line, no
 # message.  --wrap=malloc is what turns that into "malloc: NULL for N bytes --
