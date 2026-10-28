@@ -558,21 +558,54 @@ awk '
 awk '
   /^static void con_log_sync_throttled/ { inf = 1 }
   inf && /CON_TRACE_SYNC_MIN_US/ { bound = 1 }
-  inf && /con_log_sync\(\)/ { call = 1 }
+  inf && /con_log_sync_at_most/ { call = 1 }
   inf && /^}/ { inf = 0 }
   END {
       if (!bound) { printf "FAIL: the throttled sync has no time bound\n"; exit 1 }
-      if (!call) { printf "FAIL: the throttled sync never writes to the card\n"; exit 1 }
+      if (!call) { printf "FAIL: the throttled sync never asks for a timed write\n"; exit 1 }
   }
 ' port/psp/psp_console.c || exit 1
-# Boot marks stay on the per-line path: they are one per picture load, tens of
-# milliseconds apart, and a fault in an initialiser has nothing else.
+# ...and the timed write itself is the one that writes, or the bound means
+# nothing and nobody ever reaches the card.
+awk '
+  /^static void con_log_sync_at_most/ { inf = 1 }
+  inf && /since < min_us/ { cmp = 1 }
+  inf && /con_log_sync\(\);/ { call = 1 }
+  inf && /^}/ { inf = 0 }
+  END {
+      if (!cmp) { printf "FAIL: con_log_sync_at_most does not compare against its window\n"; exit 1 }
+      if (!call) { printf "FAIL: con_log_sync_at_most never writes to the card\n"; exit 1 }
+  }
+' port/psp/psp_console.c || exit 1
+# Boot marks are timed too, and the window is coarse enough to matter.
+# Per-mark round trips were measured on the hardware at 18 ms each: the first
+# heartbeat of the round-63 log reads "card 1345 writes 24749 ms", i.e. 24.7
+# seconds of start-up spent writing a log nobody reads unless the module dies
+# in one of its lines.
 awk '
   /^void psp_mark/ { inm = 1 }
   inm && /if \(con_marks_live\)/ { boot = 1 }
-  inm && boot && /con_log_sync\(\);/ { synced = 1 }
+  inm && boot && /con_log_sync_at_most *\(CON_BOOT_SYNC_MIN_US\)/ { bounded = 1 }
+  inm && boot && /con_log_sync *\(\);/ { direct = 1 }
   inm && /^}/ { inm = 0 }
-  END { if (!synced) { printf "FAIL: boot marks no longer reach the card per line\n"; exit 1 } }
+  END {
+      if (direct) { printf "FAIL: a boot mark still pays a card round trip per line\n"; exit 1 }
+      if (!bounded) { printf "FAIL: boot marks do not reach the card at all\n"; exit 1 }
+  }
+' port/psp/psp_console.c || exit 1
+boot_us=$(sed -n 's/^#define CON_BOOT_SYNC_MIN_US \([0-9]*\).*/\1/p' port/psp/psp_console.c)
+if [ -z "$boot_us" ] || [ "$boot_us" -lt 250000 ]; then
+    echo "FAIL: the boot window is ${boot_us:-missing} us -- 18 ms a write means"
+    echo "FAIL: anything finer still spends seconds of the boot on the card"
+    exit 1
+fi
+# What start-up printed is complete when the frame loop starts: boot_done()
+# flushes, because after it the marks stop syncing on their own.
+awk '
+  /^void psp_con_boot_done/ { inf = 1 }
+  inf && /con_log_sync *\(\);/ { call = 1 }
+  inf && /^}/ { inf = 0 }
+  END { if (!call) { printf "FAIL: boot_done leaves the tail of the boot trail in RAM\n"; exit 1 } }
 ' port/psp/psp_console.c || exit 1
 # The window has to be coarser than a FRAME, not finer.  Fifteen milliseconds
 # was tried on the hardware and changed nothing (292 -> 257 ms is noise),
@@ -603,6 +636,9 @@ awk '
 ' port/psp/psp_console.c || exit 1
 echo "PASS: on the save/load screen the trail goes to the card in order, at most"
 echo "PASS: ten times a second, and the heartbeat reports what those writes cost."
+echo "PASS: start-up marks are timed the same way (a quarter of a second, not a"
+echo "PASS: round trip per line), and boot_done hands the tail of the boot trail"
+echo "PASS: to the card before the frame loop starts."
 
 # The load/save screen asked for a picture whose name is no name at all.
 #

@@ -124,6 +124,7 @@ static void con_log_lock (void);
 static void con_log_unlock (void);
 static void con_log_drain_locked (void);
 static void con_log_sync (void);
+static void con_log_sync_at_most (unsigned int min_us);
 static void con_log_sync_throttled (void);
 
 /* One card write: open (append) -- write -- close, all of it in one place.
@@ -334,16 +335,27 @@ static void con_log_sync (void)
 
 static unsigned int con_sync_last_us;
 
-static void con_log_sync_throttled (void)
+/* The same bound, with the window passed in: the boot trail and the menu trail
+ * want different ones (see CON_BOOT_SYNC_MIN_US below).
+ *
+ * One timestamp is shared on purpose.  Both callers are asking the same
+ * question -- "when did the card last hear from us" -- and a crash loses the
+ * lines written since that moment whichever trail they belong to. */
+static void con_log_sync_at_most (unsigned int min_us)
 {
 	unsigned int now = (unsigned int)(sceKernelGetSystemTimeWide() & 0xffffffffu);
 	unsigned int since = now - con_sync_last_us;	/* wraps cleanly */
 
-	if (con_sync_last_us && since < CON_TRACE_SYNC_MIN_US)
+	if (con_sync_last_us && since < min_us)
 		return;
 
 	con_sync_last_us = now;
 	con_log_sync();
+}
+
+static void con_log_sync_throttled (void)
+{
+	con_log_sync_at_most(CON_TRACE_SYNC_MIN_US);
 }
 
 /* ---- what the log costs, measured ---------------------------------------
@@ -913,6 +925,35 @@ void psp_tracef (const char *fmt, ...)
  * still names the last step it saw.*/
 static int con_marks_live = 1;
 
+/* How often a boot mark may reach the card: four times a second.
+ *
+ * The rule used to be "every mark, every time", on the argument that a mark is
+ * one per picture load -- tens of milliseconds apart -- so a round trip per
+ * mark costs a few milliseconds and buys an exact trail.  The hardware says
+ * otherwise, and the heartbeat is where it says it:
+ *
+ *     run: f 6 ..., card 1345 writes 24749 ms
+ *
+ * That is start-up: 1345 open/write/close round trips, 24.7 seconds of the
+ * boot, for 1345 lines nobody reads unless the module dies in one of them.
+ * The round trip measured here is 18 ms, not the 5 ms the argument assumed
+ * (the file is growing, so every append touches the FAT as well), and start-up
+ * marks a picture per lump: a texture, a sprite, a scrap entry, every one of
+ * them paid.
+ *
+ * So the boot trail keeps its content and loses only its resolution: a quarter
+ * of a second of marks can be in RAM when the module dies, and everything
+ * before that is on the card.  What that costs in diagnosis is small next to
+ * what it costs in boot time, and the two lines that must be exact are still
+ * exact -- psp_trace() syncs on every call (they are the `> X_Init` steps, one
+ * per subsystem, and the crash is named by the last one), and the crash paths
+ * and the watchdog write on their own, without this buffer.
+ *
+ * 100 ms was the other candidate; at 18 ms per write it is still a write every
+ * six marks, and start-up would pay ~4.5 s of card time.  250 ms is the point
+ * where the boot becomes loading again instead of logging. */
+#define CON_BOOT_SYNC_MIN_US 250000
+
 void psp_con_boot_done (void)
 {
 	char line[96];
@@ -923,6 +964,13 @@ void psp_con_boot_done (void)
 	snprintf(line, sizeof(line),
 	         "mark: boot done -- breadcrumbs to the card are off");
 	con_log_line(line);
+
+	/* Everything the boot trail left in RAM goes out now.  From here on the
+	 * marks no longer sync on their own (a menu marks a picture per draw
+	 * call), so this is the last chance to hand over a complete start-up
+	 * trail; after it the watchdog's once-a-second drain owns the buffer. */
+	con_log_sync();
+
 	con_marks_live = 0;
 }
 
@@ -1006,7 +1054,7 @@ void psp_mark (const char *what)
 	{
 		snprintf(line, sizeof(line), "mark: %s", step);
 		con_log_line(line);
-		con_log_sync();
+		con_log_sync_at_most(CON_BOOT_SYNC_MIN_US);
 	}
 	else if (con_trace_sync)
 	{
