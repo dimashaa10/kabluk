@@ -29,8 +29,15 @@
  *	              99% free in 4000 small pieces cannot satisfy one big malloc,
  *	              and that looks identical to a leak in every other number
  *
- * mallinfo() is referenced weakly on purpose: an SDK whose libc does not carry
- * it still links, and the numbers simply come out as zero.
+ * These numbers were dead for the whole life of the port so far: the symbols
+ * were referenced weakly, a weak undefined reference does not pull an object
+ * out of libc.a, and every log line therefore read "in use 0 KB, free 0 KB of
+ * 0 KB in 0 chunks".  See the note at the declaration below.
+ *
+ * The same file also reports the main thread's stack, because the other thing
+ * that kills a PSP with no message at all is a stack that ran out: the engine
+ * is recursive in places (the menu, the console, the entity chain) and the
+ * thread gets a fixed 512 KB (psp_boot.c).
  */
 
 #include <stddef.h>
@@ -43,28 +50,30 @@
 
 #include "psp_console.h"
 
-/* newlib exports the allocator's accounting under two names: mallinfo() when
- * the library was built for a single thread, and `_mallinfo_r(_REENT)` when it
- * was built reentrant -- which is what pspdev's newlib is.  The first build of
- * this file only asked for mallinfo(), the symbol was not there, and the
- * console printed "in use 0 KB, free 0 KB of 0 KB in 0 chunks" for the whole
- * run.  Both are referenced weakly so that neither the reentrant nor the
- * single-threaded libc can break the link. */
-extern struct mallinfo mallinfo (void) __attribute__((weak));
-extern struct mallinfo _mallinfo_r (struct _reent *) __attribute__((weak));
+/* newlib exports the allocator's accounting as `_mallinfo_r(_REENT)` in a
+ * reentrant build (newlib/libc/stdlib/mallinfor.c: `#define DEFINE_MALLINFO`
+ * plus _mallocr.c), and declares it in <malloc.h>.  pspdev's newlib is built
+ * reentrant (psptoolchain-allegrex: --enable-newlib-retargetable-locking
+ * --enable-newlib-multithread, and no --enable-newlib-nano-malloc, so the
+ * full allocator is the one that is linked).
+ *
+ * This used to be a WEAK reference, and that is why every line of every
+ * hardware log said "in use 0 KB, free 0 KB of 0 KB in 0 chunks" and "heap 0
+ * KB grown", i.e. why the port was blind to the pool the pictures live in.
+ * A weak UNDEFINED reference is not a reason for the linker to pull an object
+ * out of an archive, and with -ffunction-sections/--gc-sections a section
+ * nothing strongly references is thrown away as well -- so both weak symbols
+ * resolved to 0 for the whole run and every reader of them reported zeros.
+ * The reference is now strong, which is what keeps newlib's accounting in the
+ * program.
+ *
+ * `sbrk` stays weak: it is only the floor under the numbers, and a libc that
+ * answers through mallinfo does not need it at all. */
+extern struct mallinfo _mallinfo_r (struct _reent *);
 
 static unsigned int heap_read (int field)
 {
-	struct mallinfo mi;
-
-	memset(&mi, 0, sizeof(mi));
-
-	if (mallinfo)
-		mi = mallinfo();
-	else if (_mallinfo_r)
-		mi = _mallinfo_r(_REENT);
-	else
-		return 0;
+	struct mallinfo mi = _mallinfo_r(_REENT);
 
 	switch (field)
 	{
@@ -78,11 +87,9 @@ static unsigned int heap_read (int field)
 
 /* ---- the floor under mallinfo ------------------------------------------
  *
- * pspdev's newlib carries no mallinfo, and without it every number above is a
- * zero -- which is what the first hardware run printed for its whole length
- * ("malloc 0 KB in use + 0 KB free in 0 chunks"), leaving a hard stop in the
- * middle of the menu with nothing to blame.  The allocator still asks the
- * system for memory through sbrk(), and that answer is always there:
+ * The allocator asks the system for memory through sbrk(), and that answer is
+ * a number nobody can silence.  It is kept as a second opinion on `arena`
+ * above: the two disagreeing means the accounting is not the one being read.
  *
  *      sbrk(0)   -> the current top of the heap, a plain address
  *
@@ -137,19 +144,6 @@ unsigned int psp_heap_chunks (void)  { return heap_read(3); }
  * allocation fails, so it stays cheap: no formatting of its own. */
 void psp_heap_report (const char *where)
 {
-	if (!mallinfo && !_mallinfo_r)
-	{
-		/* Neither name exists: say so instead of printing four zeros that
-		 * look like an empty heap, and give the one number that is always
-		 * available -- how far the heap has grown since the first read. */
-		psp_tracef("heap: %s: no mallinfo in this libc, heap grown %d KB "
-		           "since start [system free %d KB]",
-		           where ? where : "?",
-		           (int)(psp_heap_sbrk_peak_bytes() / 1024),
-		           sceKernelTotalFreeMemSize() / 1024);
-		return;
-	}
-
 	psp_tracef("heap: %s: in use %d KB, free %d KB of %d KB in %d chunks [system free %d KB]",
 	           where ? where : "?",
 	           (int)(psp_heap_in_use() / 1024),
@@ -157,4 +151,52 @@ void psp_heap_report (const char *where)
 	           (int)(psp_heap_arena() / 1024),
 	           (int)psp_heap_chunks(),
 	           sceKernelTotalFreeMemSize() / 1024);
+}
+
+/* ---- the other thing that runs out: the main thread's stack ------------
+ *
+ * A thread stack on the PSP is a fixed block (psp_boot.c asks for
+ * PSP_MAIN_THREAD_STACK_SIZE_KB(512)), there is no guard page the firmware
+ * reports through, and a fault from writing past the end is a plain address
+ * error: the CPU stops, no user-mode code runs, nothing reaches kabluk.log.
+ * For a crash that happens "anywhere, not always in the same place", the
+ * question "how much stack was left" is worth as much as the memory numbers
+ * above -- and pspsdk exposes it (src/user/pspthreadman.h):
+ *
+ *     sceKernelGetThreadStackFreeSize(thid)
+ *
+ * which returns the smallest amount of stack the thread has had left, i.e.
+ * a high-water mark and not a snapshot.  Measured from the watchdog thread
+ * once a second, about the main thread, which is the one that draws the
+ * menu. */
+#include <pspthreadman.h>
+
+static SceUID heap_main_thread = -1;	/* -1: not known yet, or no API */
+static int    heap_stack_free = -1;	/* last answer, bytes */
+
+/* Called once, from the main thread, before the frame loop starts: the thread
+ * whose stack the report is about is the one that runs the engine. */
+void psp_heap_note_main_thread (void)
+{
+	if (heap_main_thread < 0)
+		heap_main_thread = sceKernelGetThreadId();
+}
+
+/* Free stack of the main thread in bytes, or -1 when the firmware will not
+ * say.  Safe to call from any thread. */
+int psp_heap_stack_free (void)
+{
+	int free_bytes;
+
+	if (heap_main_thread < 0)
+		return heap_stack_free;
+
+	free_bytes = sceKernelGetThreadStackFreeSize(heap_main_thread);
+
+	/* A negative answer is an error from the kernel, not a small stack:
+	 * keep whatever was measured last instead of reporting -1 KB. */
+	if (free_bytes >= 0)
+		heap_stack_free = free_bytes;
+
+	return heap_stack_free;
 }

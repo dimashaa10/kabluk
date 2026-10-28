@@ -107,3 +107,24 @@ grep -q '^int psp_gl_shim_reclaim_pictures (void)$' "$repo/port/psp/gl_shim.c"
 grep -q 'psp_gl_shim_reclaim_pictures (void)' "$repo/Quake/image.c"
 echo "PASS: the decoder's reclaim path is declared, defined and used, and IMG_ALLOC"
 echo "PASS: is defined before the allocations that use it."
+# The port's memory numbers were zeros for the whole life of the port because
+# newlib's accounting was referenced WEAKLY: a weak undefined reference does
+# not pull an object out of libc.a, so mallinfo resolved to 0 and every log
+# line read "in use 0 KB, free 0 KB of 0 KB".  The reference has to stay
+# strong, and the watchdog's once-a-second status line has to stay wired to
+# the stack measurement, or the crash hunt is blind again.
+if grep -q '_mallinfo_r (struct _reent \*) __attribute__((weak))' \
+        "$repo/port/psp/psp_heap.c"; then
+    echo "FAIL: psp_heap.c makes _mallinfo_r weak again -- every heap number is zero"
+    exit 1
+fi
+grep -q 'extern struct mallinfo _mallinfo_r (struct _reent \*);' "$repo/port/psp/psp_heap.c"
+grep -q 'mi = _mallinfo_r(_REENT);' "$repo/port/psp/psp_heap.c"
+grep -q 'int psp_heap_stack_free (void)' "$repo/port/psp/psp_heap.c"
+grep -q 'void psp_heap_note_main_thread (void)' "$repo/port/psp/psp_heap.c"
+grep -q 'sceKernelGetThreadStackFreeSize' "$repo/port/psp/psp_heap.c"
+grep -q 'status: phase %.47s' "$repo/port/psp/psp_console.c"
+grep -q 'psp_heap_stack_free()' "$repo/port/psp/psp_console.c"
+grep -q 'psp_heap_note_main_thread' "$repo/port/psp/main_psp.c"
+echo "PASS: the heap accounting is linked in and the watchdog's status line"
+echo "PASS: reports the main thread's free stack every second."

@@ -17,13 +17,16 @@
 #include "quakedef.h"
 #include "psp_console.h"
 
-/* port/psp/psp_heap.c -- newlib's own malloc accounting (weak mallinfo()). */
+/* port/psp/psp_heap.c -- newlib's own malloc accounting (_mallinfo_r). */
 extern unsigned int psp_heap_in_use (void);
 extern unsigned int psp_heap_sbrk (void);
 extern unsigned int psp_heap_sbrk_peak_bytes (void);
 extern unsigned int psp_heap_free (void);
 extern unsigned int psp_heap_chunks (void);
 extern void         psp_heap_report (const char *where);
+/* The watchdog measures this thread's stack once a second; it has to be told
+ * which thread that is, from the thread itself. */
+extern void         psp_heap_note_main_thread (void);
 
 /* port/psp/gl_shim.c -- how much memory the 16-bit copies of the pictures
  * take.  They come out of the same pool as everything above. */
@@ -88,6 +91,10 @@ int main (int argc, char *argv[])
 	 * the watchdog names the step we are stuck in, on the screen and in the
 	 * log.  A hang used to look exactly like a healthy console. */
 	psp_con_watchdog();
+
+	/* Tell psp_heap.c which thread's stack the status line is about.  Done
+	 * here, on the main thread, before anything else can ask. */
+	psp_heap_note_main_thread ();
 
 	/* We replaced SDL's main() (SDL_MAIN_HANDLED), so SDL has to be told that
 	 * the application is ready before any SDL_Init call. */

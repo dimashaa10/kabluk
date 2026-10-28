@@ -33,6 +33,9 @@
  * screen wraps it into as many 68-character rows as it needs. */
 #define CON_LINE_MAX 320
 
+/* Free stack of the main thread, for the watchdog's once-a-second status
+ * line; psp_heap.c owns the measurement. */
+extern int psp_heap_stack_free (void);
 static int   con_ready;
 static int   con_row;
 static const char *con_log_path;	/* kabluk.log, once we know it can live there */
@@ -988,6 +991,40 @@ static int con_watchdog_thread (SceSize args, void *argp)
 
 			snprintf(line, sizeof(line), "mark: %s", logged);
 			con_log_direct(line);
+		}
+
+		/* Once a second, one line that survives the engine: the frame step
+		 * it was in, how much stack the main thread has left and what the
+		 * picture pool holds.  A crash takes the screen and the log ends in
+		 * the middle of a frame, so the last second before it is the only
+		 * evidence there is -- and on a console with no exception handler
+		 * the fault address is not available at all.  Whatever this line
+		 * says is what the engine was doing when it stopped:
+		 *
+		 *   status: phase <phase>, last <breadcrumb>, stack free N KB
+		 *
+		 * `stack free` is a high-water mark (sceKernelGetThreadStackFreeSize
+		 * reports the least the thread has ever had left), so it never rises
+		 * again: a number that keeps falling across a session is the engine
+		 * going deeper and deeper, and a number near zero is a crash waiting
+		 * for one more call. */
+		{
+			char status[CON_LINE_MAX + 2];
+			int stack_free = psp_heap_stack_free();
+
+			/* The two strings are written by the engine, without a
+			 * lock; the precision caps what a torn copy can make this
+			 * line read, exactly as con_watchdog_history() does. */
+			if (stack_free >= 0)
+				snprintf(status, sizeof(status),
+				         "status: phase %.47s, last %.63s, stack free %d KB",
+				         con_phase, con_last_step, stack_free / 1024);
+			else
+				snprintf(status, sizeof(status),
+				         "status: phase %.47s, last %.63s",
+				         con_phase, con_last_step);
+
+			con_log_direct(status);
 		}
 
 		/* Once a second, whatever the engine traced goes to the card.  The
