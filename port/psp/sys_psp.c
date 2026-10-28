@@ -253,5 +253,25 @@ void Sys_Sleep (unsigned long msecs)
 
 void Sys_SendKeyEvents (void)
 {
-	/* Input is polled once per frame in in_psp.c. */
+	/* The engine runs a few loops of its own that are not Host_Frame, and
+	 * every one of them waits for a KEY EVENT to get out:
+	 *
+	 *     SCR_ModalMessage()   "Are you sure you want to start a new game?"
+	 *                          "Are you sure you want to reset your
+	 *                           configuration?"          (timeout 0 = for ever)
+	 *     Key_BeginInputGrab()  the "press a key" state in Controls -> Keys
+	 *
+	 * SCR_ModalMessage blocks in a do/while that calls Sys_SendKeyEvents()
+	 * and Sys_Sleep() and nothing else, so on this port -- where the pad was
+	 * polled only from IN_Commands(), which Host_Frame calls -- those
+	 * dialogs could never see a button and never ended: the console sat on
+	 * a yes/no question until it was switched off.  That is the freeze in
+	 * the single-player and load/save menus.
+	 *
+	 * The desktop backends hand the controller in here for exactly this
+	 * reason (Quake/sys_sdl_win.c, Sys_SendKeyEvents -> IN_Commands), and
+	 * this is the same call.  It is safe to call it twice in one frame:
+	 * IN_Commands() only reports button edges, so the second call of a frame
+	 * has nothing to report. */
+	IN_Commands ();
 }

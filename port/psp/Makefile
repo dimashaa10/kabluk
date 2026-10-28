@@ -294,7 +294,8 @@ $(CORE_DIR)/%.o: $(ENGINE)/%.c
 #   test_wad3          -- needs a .wad on the memstick
 #   test_bind_defaults -- scans the repo on the build host (REPO_DIR)
 TESTS_ALL := cigarette_impulse cigarette_smoke skate_server crouch_server \
-             pmove_crouch pmove_physents speed_info use_button tex_arena
+             pmove_crouch pmove_physents speed_info use_button tex_arena \
+             pad_map
 
 # Engine objects each test links in (same sets as tests/run_gameplay_tests.sh).
 TEST_DEPS_cigarette_impulse := sv_user mathlib
@@ -307,6 +308,8 @@ TEST_DEPS_speed_info        := sv_user mathlib
 TEST_DEPS_use_button        := sv_user mathlib
 # The picture allocator: no engine objects at all, just port/psp/tex_arena.c.
 TEST_DEPS_tex_arena         :=
+# The pad's button map: also no engine objects, just port/psp/pad_map.c.
+TEST_DEPS_pad_map           := pad_map
 
 TEST_EBOOTS :=
 
@@ -359,9 +362,9 @@ tests: $(TEST_EBOOTS)
 # psp_boot.o carries PSP_MODULE_INFO and psp_console.o the on-screen console;
 # without them the module has no header and psp_con_* stay undefined.
 PSP_BACKEND := psp_boot.o psp_console.o psp_heap.o psp_mem.o \
-               main_psp.o sys_psp.o pl_psp.o in_psp.o snd_psp.o cd_psp.o \
-               vid_psp.o gu_psp.o gl_shim.o tex_arena.o gl_stub.o sdl_stub.o \
-               net_psp.o
+               main_psp.o sys_psp.o pl_psp.o in_psp.o pad_map.o snd_psp.o \
+               cd_psp.o vid_psp.o gu_psp.o gl_shim.o tex_arena.o gl_stub.o \
+               sdl_stub.o net_psp.o
 
 GAME_ENGINE_OBJS := $(filter-out $(DESKTOP_ONLY) $(PSP_UNSUPPORTED),$(OBJS))
 GAME_DIR    := $(BUILD)/game

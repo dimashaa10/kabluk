@@ -4877,6 +4877,11 @@ const char *quakebindnames[][2] = // woods use iw quake bind names
 	{"impulse 9",		"Cigarette"},
 	{"impulse 225",		"Laser Cannon"},
 	{"impulse 226",		"Mjolnir"},
+	/* Every key can be bound from this screen, and on the PSP the pad's
+	 * buttons are keys -- but the console itself was only reachable through
+	 * the ` key, which this list did not offer.  That made the console the
+	 * one thing a pad-only player could not put on a button. */
+	{"toggleconsole",	"Console"},
 };
 #define	NUMQUAKECOMMANDS	(sizeof(quakebindnames)/sizeof(quakebindnames[0]))
 
@@ -15988,11 +15993,13 @@ void M_Casino_Key(int key)
 {
 	switch (key) {
 	case K_ESCAPE:
+	case K_BBUTTON:		/* the pad's "back", as in every other menu */
 		M_Menu_Main_f();
 		break;
 
 	case K_SPACE:
 	case K_ENTER:
+	case K_ABUTTON:		/* the pad's "confirm", as in every other menu */
 		if (!casino_state.spinning) {
 			Casino_StartSpin();
 			S_LocalSound("misc/menu2.wav");
