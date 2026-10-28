@@ -3943,6 +3943,12 @@ void SV_SpawnServer (const char *server)
 	sv.models[1] = qcvm->worldmodel;
 	qcvm->GetModel = SV_ModelForIndex;
 
+	/* What the map itself cost the hunk, before the models and sounds are
+	 * precached on top of it.  The console has one zone for all of it, and
+	 * "Cache_TryAlloc: 3536192 is greater then free hunk" (round 68) does not
+	 * say whether the map or the models hold it. */
+	Hunk_Report ("after the map loaded");
+
 	if (sv_mapcrc.value) // woods #mapcrc
 	{
 		Con_DPrintf("sv_mapcrc: Starting two-stage map CRC calculation for %s\n", sv.modelname);

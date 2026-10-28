@@ -60,6 +60,8 @@ static volatile int con_last_step_is_mark;
  * waiting for the GE (sceGuSync) and a hang while loading a picture look
  * exactly the same from the log otherwise, and they have nothing in common. */
 static char  con_phase[48] = "(none)";
+/* See the note at its use in psp_con_panic(). */
+static volatile int con_panicking;
 
 /* The last few breadcrumbs, oldest first.  A single "last step" says where the
  * engine stopped; it does not say how it got there, and a fault that happens
@@ -742,6 +744,7 @@ FUNC_NORETURN void psp_con_panic (const char *what, const char *file, int line,
 	 * before the message reached the memory stick.  A test report that ends
 	 * one line too early is a round lost, and the one line that is missing is
 	 * always the interesting one. */
+	con_panicking = 1;
 	con_ensure();
 
 	con_write("*** ");
@@ -940,6 +943,7 @@ void psp_tracef (const char *fmt, ...)
  * (psp_con_boot_done()).  The marks themselves keep working: the watchdog
  * still names the last step it saw.*/
 static int con_marks_live = 1;
+
 
 /*
  * A line that must survive the call it is written in.
@@ -1409,7 +1413,8 @@ static int con_watchdog_thread (SceSize args, void *argp)
 				         "status: phase %.47s, last %.63s",
 				         con_phase, con_last_step);
 
-			con_log_direct(status);
+			if (!con_panicking)
+				con_log_direct(status);
 		}
 
 		/* Once a second, whatever the engine traced goes to the card.  The

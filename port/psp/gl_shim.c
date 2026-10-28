@@ -662,7 +662,7 @@ static void shim_edge_extend (shim_texture_t *t)
  * port takes one block of that size at start-up and hands it to the arena
  * (psp_gl_shim_set_pool), so the cap and the block are the same number and the
  * arena can never need a chunk the block does not have. */
-#define SHIM_ARENA_LIMIT       (6u * 1024u * 1024u)
+#define SHIM_ARENA_LIMIT       (4u * 1024u * 1024u)
 
 static tex_arena_t  shim_arena;
 static int          shim_arena_ready;

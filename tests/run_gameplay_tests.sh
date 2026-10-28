@@ -1044,6 +1044,60 @@ echo "PASS: the entity array is 15000 x 1160 = 17.4 MB, which is the number in"
 echo "PASS: the log; it is now sized to the heap the console has, reported on"
 echo "PASS: the card before the memset, and fails as an error instead of a NULL."
 
+# ---- "the hunk is full" now says what holds it ---------------------------
+#
+# Round 68 got past the entity array (15000 * 1160 = 17.4 MB) and the map
+# loaded -- and then stopped on
+#
+#     Cache_TryAlloc: 3536192 is greater then free hunk
+#
+# progs/player.mdl, 3.5 MB, into a zone that the world map is already holding.
+# The message named neither the size of the hunk, nor what was free, nor what
+# the rest of it was: on a 64 MB console with a 17.4 MB map, that is the only
+# number that decides anything.  So the two failure paths report the hunk by
+# name before they stop, and SV_SpawnServer reports it once the world is loaded
+# (so a good log has it too).
+grep -q 'void Hunk_Report (const char \*why)' Quake/zone.c || {
+    echo "FAIL: the hunk has no report"
+    exit 1
+}
+grep -q 'Hunk_Report (va ("Cache_Alloc' Quake/zone.c || {
+    echo "FAIL: a failed cache allocation no longer says what holds the hunk"
+    exit 1
+}
+grep -q 'Hunk_Report (va ("Hunk_Alloc' Quake/zone.c || {
+    echo "FAIL: a failed hunk allocation no longer says what holds the hunk"
+    exit 1
+}
+grep -q 'Hunk_Report ("after the map loaded")' Quake/sv_main.c || {
+    echo "FAIL: the map's own cost is not reported"
+    exit 1
+}
+# The report walks the hunk on a path that is already failing: a diagnosis that
+# crashes is worse than none, so it must not Sys_Error on a block it cannot read.
+awk '
+  /^void Hunk_Report/ { inf = 1 }
+  inf && /Sys_Error/ { printf "FAIL: the hunk report can die itself\n"; exit 1 }
+  inf && /^}/ { inf = 0 }
+' Quake/zone.c || exit 1
+# And the picture pool gave the zone two megabytes: 4 MB, matching the arena cap.
+grep -q 'define PSP_PICTURE_POOL	(4u \* 1024u \* 1024u)' port/psp/psp_mem.c || {
+    echo "FAIL: the picture pool and the zone are back out of balance"
+    exit 1
+}
+grep -q 'define SHIM_ARENA_LIMIT       (4u \* 1024u \* 1024u)' port/psp/gl_shim.c || {
+    echo "FAIL: the arena cap no longer matches the block it is given"
+    exit 1
+}
+# A fatal error is the end of the log, not the start of a thousand status lines.
+grep -q 'static volatile int con_panicking;' port/psp/psp_console.c || {
+    echo "FAIL: the status line is back after a fatal error"
+    exit 1
+}
+echo "PASS: the hunk reports its size, its free bytes and the six biggest"
+echo "PASS: allocations by name before it says it is full, the picture pool is"
+echo "PASS: 4 MB so the zone gets the rest, and a fatal error ends the log."
+
 # ---- a failed allocation names the line that asked for it ----------------
 #
 # Round 65 read `last pic: cached` and concluded "a picture decoder".  Round 66

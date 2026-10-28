@@ -43,7 +43,7 @@
  * it neither fragments newlib's heap nor depends on where the allocator's top
  * chunk happens to be.  Three blocks, taken once, in this order:
  *
- *      pictures   PSP_PICTURE_POOL (6 MB)  -- the picture arena's one chunk
+ *      pictures   PSP_PICTURE_POOL (4 MB)  -- the picture arena's one chunk
  *      zone       whatever is left, minus slack -- the engine's hunk
  *      (newlib)   PSP_HEAP_SIZE_KB, see psp_boot.c -- malloc() proper
  *
@@ -92,8 +92,22 @@ extern unsigned int psp_heap_block_bytes (void);
 extern unsigned int psp_heap_block_left (void);
 
 /* Pictures: the arena's cap (gl_shim.c keeps SHIM_ARENA_LIMIT in step with
- * this) plus the room one big picture needs on top of it. */
-#define PSP_PICTURE_POOL	(6u * 1024u * 1024u)
+ * this) plus the room one big picture needs on top of it.
+ *
+ * It was 6 MB, sized from "2488 KB of pictures for the whole menu system, so
+ * 6 MB is the cap with headroom".  The hardware then measured the menu at
+ * 1679 KB in use of 6144 KB -- and the console died loading a map because the
+ * engine's hunk (the zone, "everything that is left") could not hold the world
+ * plus one player model:
+ *
+ *     Cache_TryAlloc: 3536192 is greater then free hunk
+ *
+ * Two megabytes of a picture pool that is not half used are worth more to the
+ * hunk than to a menu, so the pool is 4 MB now and the zone gets the rest.
+ * The arena still has room for every picture the interface actually asks for
+ * (1.7 MB measured), and it is still the biggest single block, so a picture
+ * bigger than the menu's entire stack still fits. */
+#define PSP_PICTURE_POOL	(4u * 1024u * 1024u)
 
 /* Left to the firmware and the SDK.  See the note above. */
 #define PSP_PARTITION_SLACK	(1u * 1024u * 1024u)
