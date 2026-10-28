@@ -2612,6 +2612,33 @@ qboolean CL_CheckDownloads(void)
 		cl.model_download++;
 	}
 
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	/* ---- the three steps between "signon" and the first world frame ------
+	 *
+	 * The round-72 log ends on "signon: downloads stage 3 of 5 (1 models of
+	 * 33, 0 sounds of 82)" and nothing after it: no FATAL ERROR (a Sys_Error
+	 * prints one and then holds the screen for 30 s), no watchdog line (a
+	 * stall prints one after 5 s), no memory line.  The client stopped
+	 * there, and the log cannot say WHICH of the three steps between that
+	 * line and the first world frame it stopped in:
+	 *
+	 *   1. precaching the models (33 of them, the world among them),
+	 *   2. precaching the sounds (82 of them, each decoded into the zone),
+	 *   3. R_NewMap(): the world's surfaces, lightmaps and textures -- the
+	 *      step where the picture arena is already full (6123 KB of
+	 *      6144 KB, 112 pictures) and the map's own textures have to fit.
+	 *
+	 * These four lines are the answer to "where", and they cost nothing: a
+	 * level load writes them once, and each is one sceIo write that is
+	 * already in the log by the time the console does anything with it. */
+	{
+		extern void psp_tracef (const char *fmt, ...);
+
+		psp_tracef ("signon: all %d models precached, the sounds are next",
+		            cl.model_download);
+	}
+#endif
+
 	for (; cl.sound_download < cl.sound_count; )
 	{
 		if (*cl.sound_name[cl.sound_download])
@@ -2622,6 +2649,17 @@ qboolean CL_CheckDownloads(void)
 		}
 		cl.sound_download++;
 	}
+
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	/* Step 2 done; R_NewMap() is the last one before the world is drawn (see
+	 * the note above the model loop for why each of these steps is named). */
+	{
+		extern void psp_tracef (const char *fmt, ...);
+
+		psp_tracef ("signon: all %d sounds precached, R_NewMap is next",
+		            cl.sound_download);
+	}
+#endif
 
 	if (!cl.worldmodel && cl.model_count >= 2)
 	{
@@ -2637,7 +2675,22 @@ qboolean CL_CheckDownloads(void)
 
 		//fixme: deal with skybox somehow
 
+#if defined(PLATFORM_PSP) || defined(__psp__)
+		{
+			extern void psp_tracef (const char *fmt, ...);
+
+			psp_tracef ("signon: R_NewMap: building %d surfaces of %s",
+			            cl.worldmodel->numsurfaces, cl.mapname);
+		}
+#endif
 		R_NewMap ();
+#if defined(PLATFORM_PSP) || defined(__psp__)
+		{
+			extern void psp_tracef (const char *fmt, ...);
+
+			psp_tracef ("signon: R_NewMap done, the first world frame is next");
+		}
+#endif
 
 #ifdef PSET_SCRIPT
 		//the protocol changing depending upon files found on the client's computer is of course a really shit way to design things

@@ -1494,10 +1494,66 @@ echo "PASS: the hardware cull cannot swallow a wall the player is standing at."
 # status bar, not the whole 480x272 panel.  For the 2D path that call was only
 # a note (the shim maps vertices itself); with world vertices the GE does the
 # mapping, so a viewport left at the panel would stretch the world ten percent.
-grep -q 'shim_guViewport(cx, cy, shim_vp_w, shim_vp_h);' port/psp/gl_shim.c || {
+grep -q 'shim_guViewport(cx, cy, vw, vh);' port/psp/gl_shim.c || {
     echo "FAIL: glViewport does not reach sceGuViewport, so the world is drawn"
     echo "FAIL: into the panel's rectangle instead of the engine's"
     exit 1
 }
 echo "PASS: the GE's viewport follows glViewport, so a status bar does not"
 echo "PASS: stretch the world."
+
+# ---- a run that stops at signon names the step it stopped in ------------
+#
+# Round 72's log ends on "signon: downloads stage 3 of 5 (1 models of 33, 0
+# sounds of 82)" and nothing after it -- no FATAL ERROR, no watchdog line, no
+# memory line -- so the log could not say whether the run died precaching the
+# models, precaching the sounds, or building the world in R_NewMap().  There is
+# no exception handler on this port (psp_console.c says why), so the last line
+# in kabluk.log IS the crash report, and every step between that line and the
+# first world frame has to have one.
+for want in \
+    'signon: all %d models precached' \
+    'signon: all %d sounds precached' \
+    'signon: R_NewMap: building %d surfaces' \
+    'signon: R_NewMap done'
+do
+    grep -qF "$want" Quake/cl_main.c || {
+        echo "FAIL: a run that stops before the world renders cannot say which"
+        echo "FAIL: step it stopped in (missing \"$want\")"
+        exit 1
+    }
+done
+for want in \
+    'r_newmap: %d surfaces, lightmaps first' \
+    'r_newmap: lightmaps done' \
+    'r_newmap: done'
+do
+    grep -qF "$want" Quake/gl_rmisc.c || {
+        echo "FAIL: R_NewMap has no breadcrumbs (missing \"$want\")"
+        exit 1
+    }
+done
+echo "PASS: every step between the last precache and the first world frame"
+echo "PASS: writes a line, so a silent stop names the step it stopped in."
+
+# ---- the GE viewport is clamped to the panel ---------------------------
+#
+# The engine calls glViewport() for the 2D canvases too, with rectangles taken
+# from the console's font metrics: the round-72 log has
+# "viewport 22,0 870x272" -- 870 pixels wide on a 480-pixel panel.  A 2D draw
+# ignores the viewport, so it never showed; the world does not, and the
+# viewport is GE state that the next world draw inherits, so it is clamped like
+# the scissor already is.
+awk '
+  /^void glViewport/ { ing = 1 }
+  ing && /if \(vw > PSP_SCREEN_WIDTH\)/ { c1 = 1 }
+  ing && /if \(vh > PSP_SCREEN_HEIGHT\)/ { c2 = 1 }
+  ing && /sceGuViewport|shim_guViewport\(cx, cy, vw, vh\)/ { sent = 1 }
+  ing && /^}/ { ing = 0 }
+  END {
+    if (!c1 || !c2) { printf "FAIL: glViewport hands the GE a rectangle wider than the panel\n"; exit 1 }
+    if (!sent)      { printf "FAIL: the clamped rectangle never reaches the GE\n"; exit 1 }
+  }
+' port/psp/gl_shim.c || exit 1
+echo "PASS: the GE's viewport is clamped to the panel, so a 2D canvas cannot"
+echo "PASS: leave the world mapped into a rectangle that hangs off it."

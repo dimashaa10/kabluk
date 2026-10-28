@@ -2535,11 +2535,37 @@ void glViewport (GLint x, GLint y, GLsizei width, GLsizei height)
 	 * value gu_psp.c already uses -- so nothing changes for the 2D case. */
 	if (shim_frame_active)
 	{
-		int top = PSP_SCREEN_HEIGHT - y - shim_vp_h;
-		int cx = (2048 - PSP_SCREEN_WIDTH / 2) + x + shim_vp_w / 2;
-		int cy = (2048 - PSP_SCREEN_HEIGHT / 2) + top + shim_vp_h / 2;
+		int vx = x, vy = y, vw = shim_vp_w, vh = shim_vp_h;
+		int top, cx, cy;
 
-		shim_guViewport(cx, cy, shim_vp_w, shim_vp_h);
+		/* Clamped to the panel, like the scissor (shim_scissor_flush).
+		 *
+		 * The engine does not only call this for the world: a 2D canvas
+		 * asks for its own rectangle, and the round-72 log has
+		 * `viewport 22,0 870x272` in it -- a viewport 870 pixels wide on a
+		 * 480-pixel panel, because the console's width comes from the
+		 * font, not from the screen.  For a 2D draw the GE ignores the
+		 * viewport altogether (GU_TRANSFORM_2D writes integer pixels and
+		 * is bounded by the scissor), which is why it was never visible.
+		 * But the viewport is GE state, and whatever the last 2D draw left
+		 * there is what the next world draw would be mapped into: the GE
+		 * turns centre +- (w/2, h/2) into its 4096-wide coordinate space,
+		 * and a rectangle that hangs off the panel puts part of that space
+		 * outside the frame buffer.  So the same clamp the scissor gets. */
+		if (vw > PSP_SCREEN_WIDTH)  vw = PSP_SCREEN_WIDTH;
+		if (vh > PSP_SCREEN_HEIGHT) vh = PSP_SCREEN_HEIGHT;
+		if (vx < 0) { vw += vx; vx = 0; }
+		if (vy < 0) { vh += vy; vy = 0; }
+		if (vx + vw > PSP_SCREEN_WIDTH)  vw = PSP_SCREEN_WIDTH - vx;
+		if (vy + vh > PSP_SCREEN_HEIGHT) vh = PSP_SCREEN_HEIGHT - vy;
+		if (vw < 1) vw = 1;
+		if (vh < 1) vh = 1;
+
+		top = PSP_SCREEN_HEIGHT - vy - vh;
+		cx = (2048 - PSP_SCREEN_WIDTH / 2) + vx + vw / 2;
+		cy = (2048 - PSP_SCREEN_HEIGHT / 2) + top + vh / 2;
+
+		shim_guViewport(cx, cy, vw, vh);
 	}
 }
 

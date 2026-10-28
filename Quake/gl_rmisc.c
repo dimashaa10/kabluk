@@ -535,7 +535,35 @@ void R_NewMap (void)
 	PScript_ClearParticles();
 #endif
 
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	/* ---- which part of R_NewMap ----------------------------------------
+	 *
+	 * R_NewMap() is the last thing between the client's precache and the
+	 * first world frame, and it is the one step of a level load that has no
+	 * line of its own: the round-72 log ends just after "signon: downloads
+	 * stage 3 of 5", and nothing in it says whether the run got as far as
+	 * building the lightmaps, the world's textures or nothing at all.  A
+	 * silent stop is a crash (there is no exception handler on this port,
+	 * psp_console.c says why), so the last of these lines in the next log
+	 * IS the answer.
+	 *
+	 * Three lines per level load: lightmaps, textures, and the map's own
+	 * game-side data.  Each goes through psp_tracef, i.e. straight to
+	 * kabluk.log on the card, not to a buffer. */
+	{
+		extern void psp_tracef (const char *fmt, ...);
+
+		psp_tracef ("r_newmap: %d surfaces, lightmaps first", cl.worldmodel->numsurfaces);
+	}
+#endif
 	GL_BuildLightmaps ();
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	{
+		extern void psp_tracef (const char *fmt, ...);
+
+		psp_tracef ("r_newmap: lightmaps done, textures and sky next");
+	}
+#endif
 	GL_BuildBModelVertexBuffer ();
 	//ericw -- no longer load alias models into a VBO here, it's done in Mod_LoadAliasModel
 
@@ -550,6 +578,14 @@ void R_NewMap (void)
 	LOC_LoadLocations ();//ProQuake   rook / woods #pqteam
 
 	load_subdivide_size = gl_subdivide_size.value; //johnfitz -- is this the right place to set this?
+
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	{
+		extern void psp_tracef (const char *fmt, ...);
+
+		psp_tracef ("r_newmap: done");
+	}
+#endif
 }
 
 /*
