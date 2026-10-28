@@ -1114,8 +1114,21 @@ static void con_log_direct (const char *text)
 		con_log_try_open();
 	}
 
+	/* Twice, for the same reason con_log_drain_locked() does it: this path
+	 * exists for the lines that must survive, and a single failed open (the
+	 * card busy with the FAT flush the previous write triggered) loses
+	 * exactly the line that was written to explain something.  A hardware log
+	 * of a failed allocation showed its breadcrumb tail and not the line with
+	 * the size in it -- that is this write failing quietly, not the line being
+	 * skipped. */
 	if (con_log_path)
-		con_log_try(buf);
+	{
+		int tries;
+
+		for (tries = 0; tries < 2; tries++)
+			if (con_log_try(buf))
+				break;
+	}
 }
 
 /* psp_con_note_alloc_failure -- one line for a malloc() that came back NULL.

@@ -798,3 +798,58 @@ awk '
 ' port/psp/psp_console.c || exit 1
 echo "PASS: a failed allocation prints the trail that led to it -- which file was"
 echo "PASS: loading -- and writes it to the card before anything else runs."
+
+# ---- a picture that DECODES to more than the console holds ---------------
+#
+# Round 64's log proved the file-size limit was not the whole story: the crash
+# still happened, and this time the breadcrumb trail showed it inside a picture
+# load (pic 256x128 -> pic: copy -> pic: cached).  A small PNG can declare
+# 2048x2048, and lodepng allocates w*h*4 = 16 MB for it on a console whose whole
+# newlib heap block is 10 MB.  The header is in hand before any decoder
+# allocates, so the size is asked for first.
+grep -q 'PSP_IMAGE_PIXEL_LIMIT' Quake/image.c || {
+    echo "FAIL: the picture loaders have no limit on decoded size"
+    exit 1
+}
+pixelguards=$(grep -c 'IMG_REFUSE_IF_HUGE_PIXELS (' Quake/image.c)
+if [ "${pixelguards:-0}" -lt 6 ]; then
+    echo "FAIL: only ${pixelguards:-0} of 6 decoders check the decoded size"
+    exit 1
+fi
+# Each decoder that can be handed a lying header has to be one of them: PNG
+# (lodepng allocates internally), JPEG/BMP via stb, TGA, PCX, BMP and DDS.
+for fn in Image_LoadPNG Image_LoadSTBI Image_LoadTGA Image_LoadPCX Image_LoadBMP Image_LoadDDS; do
+    awk -v fn="$fn" '
+      $0 ~ (fn " *\\(FILE") { inf = 1 }
+      inf && /IMG_REFUSE_IF_HUGE_PIXELS/ { found = 1 }
+      inf && /^}/ { if (!found) { printf "FAIL: %s does not check the decoded size\n", fn; exit 1 } inf = 0 }
+    ' Quake/image.c || exit 1
+done
+# The limit is a limit, not a comment, and it is above everything that works
+# today (the biggest picture the GE can sample is 512x512).
+awk '
+  /^#define PSP_IMAGE_PIXEL_LIMIT/ { print }
+' Quake/image.c | grep -q '1024u \* 1024u' || {
+    echo "FAIL: the decoded-size limit is missing or below the 512x512 a GE texture can be"
+    exit 1
+}
+echo "PASS: every picture decoder asks the header how big the picture claims to be"
+echo "PASS: and refuses it by name before allocating -- 512x512 is the largest the"
+echo "PASS: GE can sample, so a million pixels is already four times too much."
+
+# ---- the line that explains a failure is not allowed to be lost ----------
+#
+# The failure log of round 64 has the breadcrumb tail and NOT the line above it
+# with the size in it: the card was busy and con_log_direct() did not retry.
+awk '
+  /^static void con_log_direct/ { inf = 1 }
+  inf && /tries < 2/ { retry = 1 }
+  inf && /con_log_try *\(buf\)/ { call = 1 }
+  inf && /^}/ { inf = 0 }
+  END {
+      if (!retry) { printf "FAIL: a crash-path line is written once, and can be lost\n"; exit 1 }
+      if (!call)  { printf "FAIL: con_log_direct no longer writes at all\n"; exit 1 }
+  }
+' port/psp/psp_console.c || exit 1
+echo "PASS: a line written on the crash path is retried, so a busy card cannot"
+echo "PASS: swallow the one line that says what failed."

@@ -91,9 +91,62 @@ static qboolean Image_RefuseHugeFile (const char *path)
 
 #define IMG_REFUSE_IF_HUGE(path) \
 	do { if (Image_RefuseHugeFile (path)) { fclose (f); return NULL; } } while (0)
+
+/* A picture that DECODES to more than this port can hold.
+ *
+ * The file limit above catches a big file; it does not catch a small one that
+ * describes a huge picture.  A PNG of a few hundred kilobytes can declare
+ * 2048x2048, and lodepng will dutifully try to allocate 16 MB of RGBA for it --
+ * on a console whose entire newlib heap block is 10 MB.  That is exactly the
+ * shape of the line that ended a hardware session:
+ *
+ *     malloc: NULL for 17400000 bytes -- last pic: cached
+ *
+ * A 17.4 MB buffer for one picture, from a heap that had 8 MB free.
+ *
+ * The limit itself is not a guess.  sceGuTexImage() takes the LOGARITHM of the
+ * width and height and pspsdk asserts 1..512 (src/gu/sceGuTexImage.c), which is
+ * why the shim's SHIM_TEX_MAX is 512: every picture the GE can sample here is
+ * at most 512x512, and the shim downsamples anything bigger on upload.  So a
+ * picture with more than a million pixels (1024x1024, four megabytes of RGBA)
+ * is already four times the largest one this port can use, and the biggest
+ * picture that works today is 512x512.
+ *
+ * Refused by name, with both dimensions and the size it wanted, so the log says
+ * which file it was -- and the caller gets "no picture", the path a missing
+ * texture has always taken. */
+#define PSP_IMAGE_PIXEL_LIMIT (1024u * 1024u)
+
+static qboolean Image_RefuseHugePixels (const char *path, long w, long h)
+{
+	extern void psp_tracef (const char *fmt, ...);
+	static int said;
+
+	if (w <= 0 || h <= 0)
+		return false;		/* the decoder will say what is wrong with it */
+
+	if ((double)w * (double)h <= (double)PSP_IMAGE_PIXEL_LIMIT)
+		return false;
+
+	if (said < 8)
+	{
+		said++;
+		psp_tracef ("img: %.60s is %dx%d = %d KB of pixels -- more than this "
+		            "console can hold (%d KB); skipped, the picture will be "
+		            "missing",
+		            path, (int)w, (int)h, (int)((w * h * 4) / 1024),
+		            (int)((PSP_IMAGE_PIXEL_LIMIT * 4) / 1024));
+	}
+
+	return true;
+}
+
+#define IMG_REFUSE_IF_HUGE_PIXELS(path, w, h, stream) \
+	do { if (Image_RefuseHugePixels ((path), (long)(w), (long)(h))) { fclose (stream); return NULL; } } while (0)
 #else
 #define IMG_MARK(x)	do { } while (0)
 #define IMG_REFUSE_IF_HUGE(path)	do { } while (0)
+#define IMG_REFUSE_IF_HUGE_PIXELS(path, w, h)	do { } while (0)
 #endif
 
 extern cvar_t gl_load24bit_skins; // woods #loadskins
@@ -385,6 +438,17 @@ static byte *Image_LoadSTBI(FILE *f, int *width, int *height)
 		return NULL;
 	}
 
+	/* stb allocates w*h*4 bytes of its own before it returns anything, and a
+	 * failed allocation there is a picture that is simply missing.  The size
+	 * is in the header, so it is asked for first: see
+	 * PSP_IMAGE_PIXEL_LIMIT for why 17 MB is not a size this console has. */
+	{
+		int iw = 0, ih = 0, ic = 0;
+
+		if (stbi_info_from_memory (in, (int)got, &iw, &ih, &ic))
+			IMG_REFUSE_IF_HUGE_PIXELS (loadfilename, iw, ih, f);
+	}
+
 	heap = stbi_load_from_memory(in, (int)got, width, height, &bytesPerPixel, 4);
 
 #if defined(PLATFORM_PSP) || defined(__psp__)
@@ -512,6 +576,8 @@ static byte *Image_LoadBMP(FILE *f, int *width, int *height, qboolean *malloced,
 		palette[i][3] = 255;
 	}
 
+	IMG_REFUSE_IF_HUGE_PIXELS (loadfilename, bmp_width, bmp_height, f);
+
 	row = (byte *)IMG_ALLOC(loadfilename, row_stride);
 	rgba = (byte *)IMG_ALLOC(loadfilename, output_size);
 	if (!row || !rgba)
@@ -577,6 +643,21 @@ byte *Image_LoadPNG(FILE *f, int *width, int *height, qboolean *malloced)
 	}
 	if (com_filesize == fread(in, 1, com_filesize, f))
 	{
+		/* The IHDR is right there in the bytes we just read, and it is
+		 * what lodepng is about to size its 4-bytes-per-pixel output
+		 * from.  Asking it first is the difference between a missing
+		 * picture and a NULL for seventeen megabytes (see
+		 * PSP_IMAGE_PIXEL_LIMIT). */
+		if (insize > 29 && !memcmp(in + 12, "IHDR", 4))
+		{
+			unsigned pw = ((unsigned)in[16] << 24) | ((unsigned)in[17] << 16) |
+			              ((unsigned)in[18] << 8) | (unsigned)in[19];
+			unsigned ph = ((unsigned)in[20] << 24) | ((unsigned)in[21] << 16) |
+			              ((unsigned)in[22] << 8) | (unsigned)in[23];
+
+			IMG_REFUSE_IF_HUGE_PIXELS (loadfilename, (long)pw, (long)ph, f);
+		}
+
 		err = lodepng_decode32(&out, &w, &h, in, insize);
 		if (err || !out)
 		{
@@ -1003,6 +1084,12 @@ static byte *Image_LoadDDS(FILE *f, int *width, int *height, enum srcformat *fmt
 		goto fail;
 	}
 
+	/* A .dds declares its size in its header and its payload is read whole
+	 * into the zone -- so a header claiming 4096x4096 costs 64 MB of zone
+	 * before anything is drawn.  Same rule as every other decoder here. */
+	IMG_REFUSE_IF_HUGE_PIXELS (fname, (long)fmtheader.dwWidth,
+	                           (long)fmtheader.dwHeight, f);
+
 	datasize = TexMgr_ImageSize(fmtheader.dwWidth, fmtheader.dwHeight, encoding);
 	if (!datasize)
 		goto fail;	//werid/unsupported
@@ -1295,6 +1382,8 @@ byte *Image_LoadTGA (FILE *fin, int *width, int *height)
 
 	columns = targa_header.width;
 	rows = targa_header.height;
+	IMG_REFUSE_IF_HUGE_PIXELS (loadfilename, columns, rows, fin);
+
 	numPixels = columns * rows;
 	upside_down = !(targa_header.attributes & 0x20); //johnfitz -- fix for upside-down targas
 
@@ -1541,6 +1630,8 @@ byte *Image_LoadPCX (FILE *f, int *width, int *height)
 
 	if (w <= 0 || h <= 0 || w > 8192 || h > 8192)
 		Sys_Error ("'%s' has bad dimensions %ix%i", loadfilename, w, h);
+
+	IMG_REFUSE_IF_HUGE_PIXELS (loadfilename, w, h, f);
 
 	IMG_MARK("pcx: allocating");
 	data = (byte *) Hunk_Alloc((w*h+1)*4); //+1 to allow reading padding byte on last line
