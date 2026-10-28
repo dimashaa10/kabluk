@@ -67,6 +67,48 @@ compile -DREPO_DIR=\"$repo\" "$repo/tests/test_bind_defaults.c" \
 compile -I"$repo/port/psp" "$repo/tests/test_tex_arena.c" "$repo/port/psp/tex_arena.c" \
     ${LDFLAGS:-} -Wl,--gc-sections -o "$work/tex_arena"
 "$work/tex_arena"
+# The PSP pad (port/psp/pad_map.c): every button is an engine key, so the
+# engine's own Controls -> Keys screen can rebind it, and holding a direction
+# repeats it the way Quake/in_sdl.c repeats a controller's.  This is plain C
+# precisely so it can be tested without a console.
+compile -I"$repo/port/psp" "$repo/tests/test_pad_map.c" "$repo/port/psp/pad_map.c" \
+    ${LDFLAGS:-} -Wl,--gc-sections -lm -o "$work/pad_map"
+"$work/pad_map"
+# The pad is polled from IN_Commands(), which only Host_Frame calls -- and
+# SCR_ModalMessage()'s yes/no dialog and the "press a key" state run their own
+# loops, outside Host_Frame, waiting for a key event that nothing would ever
+# send.  On the hardware that was a freeze in the single-player and load/save
+# menus (power off to recover).  Sys_SendKeyEvents() is the hook the desktop
+# backends use for exactly this, and it has to stay wired to the pad.
+grep -q 'IN_Commands ();' port/psp/sys_psp.c
+grep -q 'void Sys_SendKeyEvents (void)' port/psp/sys_psp.c
+grep -q 'pad_map.o' port/psp/Makefile
+grep -q 'Key_Event (k->key, true);' port/psp/in_psp.c
+# A pad button must not send a keyboard key of its own (Cross was K_ENTER and
+# Circle was K_ESCAPE): those are not rebindable as controller buttons and the
+# engine's menus do not treat them as confirm/back.  The only keyboard names
+# allowed in the input layer are the ones the table gives the directions.
+if grep -qE 'Key_Event \((K_ENTER|K_ESCAPE|K_SPACE|K_TAB)' port/psp/in_psp.c; then
+    echo "FAIL: in_psp.c sends a keyboard key directly again -- the button must"
+    echo "FAIL: go through the pad table so Controls -> Keys can rebind it"
+    exit 1
+fi
+grep -q '_Static_assert(PAD_BTN_CROSS    == PSP_CTRL_CROSS' port/psp/in_psp.c
+# The pad's defaults must be applied AFTER the config has been read, and only
+# to keys that are still unbound.  `exec default.cfg` finds the pak's own copy
+# first, and that file starts with `unbindall` -- so a default compiled into
+# Quake/default_cfg.h would be undone a line later, and a default applied
+# unconditionally would overwrite the player's own choice on every boot.
+grep -q 'IN_ApplyPadDefaults();' port/psp/main_psp.c
+grep -q 'if (keybindings\[0\]\[key\] || keybindings\[1\]\[key\])' port/psp/in_psp.c
+if grep -q 'ABUTTON' Quake/default_cfg.h; then
+    echo "FAIL: a pad button is bound in default_cfg.h again -- the pak's"
+    echo "FAIL: default.cfg says 'unbindall' and would undo it immediately"
+    exit 1
+fi
+echo "PASS: the pad's buttons are engine keys checked against <pspctrl.h>, the"
+echo "PASS: menus' confirm/back are the keys they expect, and the pad is polled"
+echo "PASS: from Sys_SendKeyEvents() so the engine's modal dialogs can end."
 compile -c "$repo/Quake/wad.c" -o "$work/wad.o"
 compile "$repo/tests/test_wad3.c" "$work/wad.o" \
     ${LDFLAGS:-} -Wl,--gc-sections -o "$work/wad3"

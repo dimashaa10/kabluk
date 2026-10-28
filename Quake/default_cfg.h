@@ -84,6 +84,14 @@ static char default_cfg[] =
 "bind LTRIGGER +jump\n"
 "bind RTRIGGER +attack\n"
 
+/* The PSP's face buttons are NOT given their actions here.  `exec default.cfg`
+ * first tries the file inside the game's pak, and QuakeSpasm's default.cfg
+ * starts with `unbindall`: anything this port put below would be wiped out by
+ * it on the very next line of the startup script.  So the pad's buttons get
+ * their defaults after the config is loaded, from IN_ApplyPadDefaults()
+ * (port/psp/in_psp.c), and only for keys the config left unbound.
+ */
+
 "gamma 1.0\n"
 "volume 0.7\n"
 "sensitivity 3\n"

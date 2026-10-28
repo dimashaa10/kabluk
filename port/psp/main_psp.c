@@ -38,6 +38,12 @@ extern void         psp_heap_note_main_thread (void);
 
 /* port/psp/gl_shim.c -- the picture arena: how much memory the 16-bit copies
  * of the pictures take, and the one block it owns (see psp_mem.c). */
+/* in_psp.c: gives the pad's face buttons their defaults once the config file
+ * has been read.  Declared here for the same reason gu_psp.c declares
+ * Draw_EvictCachePics(): one prototype is cheaper than pulling the engine's
+ * input header into a file whose job is the frame loop. */
+extern void         IN_ApplyPadDefaults (void);
+
 extern size_t       psp_gl_shim_texture_bytes (void);
 extern void         psp_gl_shim_set_pool (void *base, size_t bytes);
 
@@ -298,9 +304,16 @@ int main (int argc, char *argv[])
 			}
 
 			/* Five frames drawn: the startup screens are behind us and the
-			 * card can stop being written to on every change. */
+			 * card can stop being written to on every change.  By now the
+			 * startup script (kabluk.rc -> default.cfg -> config.cfg) has
+			 * been executed, which is why the pad's default bindings are
+			 * applied here and not at Host_Init: the config has to be in
+			 * first or `unbindall` in it would undo them. */
 			if (frame == 5)
+			{
 				psp_con_boot_done();
+				IN_ApplyPadDefaults();
+			}
 
 			if (time < sys_ticrate.value)
 				sceKernelDelayThread(1000);	/* 1 ms: let the system breathe */
