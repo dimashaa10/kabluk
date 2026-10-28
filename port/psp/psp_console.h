@@ -80,6 +80,11 @@ void psp_tracef (const char *fmt, ...);
  * psp_console.c.  main_psp.c turns it on while key_dest is the menu. */
 void psp_con_trace_sync (int on);
 
+/* How much the log has cost the card since the last call: writes, and the
+ * milliseconds those writes took.  Reads and clears, so one heartbeat covers
+ * the frames since the one before it. */
+void psp_con_card_take_stats (unsigned int *writes, unsigned int *us);
+
 /* Force the log out of the memory stick's cache.  Called after every line
  * already; here so a fatal path can do it explicitly. */
 void psp_con_logsync (void);

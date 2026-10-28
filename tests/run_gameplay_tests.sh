@@ -550,8 +550,35 @@ awk '
   inm && /^}/ { inm = 0 }
   END { if (!synced) { printf "FAIL: boot marks no longer reach the card per line\n"; exit 1 } }
 ' port/psp/psp_console.c || exit 1
-echo "PASS: on the save/load screen the trail goes to the card in order and no more"
-echo "PASS: often than every 15 ms, so the screen renders instead of crawling."
+# The window has to be coarser than a FRAME, not finer.  Fifteen milliseconds
+# was tried on the hardware and changed nothing (292 -> 257 ms is noise),
+# because sixteen lines a frame write sixteen times a frame whatever the window
+# says.  Ten writes a second is what actually removes the cost.
+min_us=$(sed -n 's/^#define CON_TRACE_SYNC_MIN_US \([0-9]*\).*/\1/p' port/psp/psp_console.c)
+if [ -z "$min_us" ] || [ "$min_us" -lt 50000 ]; then
+    echo "FAIL: the trace window is ${min_us:-missing} us -- finer than a frame,"
+    echo "FAIL: which is the setting that was measured as making no difference"
+    exit 1
+fi
+# And the cost must be counted, not assumed: the card write is timed, and the
+# heartbeat prints the total.  That is what turns the next log into an answer
+# instead of another opinion.
+grep -q 'void psp_con_card_take_stats (unsigned int \*writes, unsigned int \*us)' port/psp/psp_console.c
+grep -q 'void psp_con_card_take_stats (unsigned int \*writes, unsigned int \*us);' port/psp/psp_console.h
+grep -q 'psp_con_card_take_stats (&card_writes, &card_us);' port/psp/main_psp.c
+grep -q 'card %u writes %u ms' port/psp/main_psp.c
+awk '
+  /^static int con_log_try/ { inf = 1 }
+  inf && /sceKernelGetSystemTimeWide/ { timed = 1 }
+  inf && /con_card_us \+=/ { acc = 1 }
+  inf && /^}/ { inf = 0 }
+  END {
+      if (!timed) { printf "FAIL: the card write is not timed\n"; exit 1 }
+      if (!acc) { printf "FAIL: the card write time is not accumulated\n"; exit 1 }
+  }
+' port/psp/psp_console.c || exit 1
+echo "PASS: on the save/load screen the trail goes to the card in order, at most"
+echo "PASS: ten times a second, and the heartbeat reports what those writes cost."
 
 # The load/save screen asked for a picture whose name is no name at all.
 #

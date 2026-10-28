@@ -44,6 +44,11 @@ extern void         psp_heap_note_main_thread (void);
  * input header into a file whose job is the frame loop. */
 extern void         IN_ApplyPadDefaults (void);
 
+/* in psp_console.c: what the log has cost the memory card since the last
+ * heartbeat. */
+extern void         psp_con_card_take_stats (unsigned int *writes,
+                                             unsigned int *us);
+
 extern size_t       psp_gl_shim_texture_bytes (void);
 extern void         psp_gl_shim_set_pool (void *base, size_t bytes);
 
@@ -249,7 +254,7 @@ int main (int argc, char *argv[])
 				{
 					traced_saves = on_saves;
 					psp_tracef("trace: the card is written %s",
-					           on_saves ? "about sixty times a second on the save/load screen"
+					           on_saves ? "about ten times a second on the save/load screen"
 					                    : "once a second again");
 				}
 
@@ -274,6 +279,7 @@ int main (int argc, char *argv[])
 				 * for one large request. */
 				double t_cpu, t_ge, t_vb, t_all;
 				int    t_frames;
+				unsigned int card_writes, card_us;
 
 				/* The four times on the same line as the rest:
 				 *  cpu     engine drawing, frame_begin -> sceGuFinish
@@ -287,17 +293,25 @@ int main (int argc, char *argv[])
 				 * drawing code entirely and the search moves there. */
 				t_frames = psp_gu_timing_take (&t_cpu, &t_ge, &t_vb, &t_all);
 
+				/* And what the log cost the memory card over the same
+				 * frames.  This is the number that settles the argument
+				 * instead of settling it by opinion: a frame of 250 ms
+				 * with 240 ms of "card" is the diagnostic, a frame of
+				 * 250 ms with 5 ms of "card" is the menu. */
+				psp_con_card_take_stats (&card_writes, &card_us);
+
 				if (t_frames > 0)
 					psp_tracef("run: f %d state %d, malloc %d KB used, %d KB "
 					           "left in the heap block, NULL %d, tex %d KB, "
 					           "%.1f ms/frame over %d (cpu %.1f, ge %.1f, "
-					           "vblank %.1f)",
+					           "vblank %.1f), card %u writes %u ms",
 					           frame, (int)cls.state,
 					           (int)(psp_heap_in_use() / 1024),
 					           (int)(psp_heap_block_left() / 1024),
 					           (int)psp_heap_malloc_fails(),
 					           (int)(psp_gl_shim_texture_bytes() / 1024),
-					           t_all, t_frames, t_cpu, t_ge, t_vb);
+					           t_all, t_frames, t_cpu, t_ge, t_vb,
+					           card_writes, card_us / 1000);
 				else
 					psp_tracef("run: f %d state %d, malloc %d KB used, %d KB "
 					           "left in the heap block, NULL %d, tex %d KB, "

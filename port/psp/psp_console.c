@@ -114,6 +114,12 @@ static void con_putc (int c);
 
 static int con_log_tries;
 
+/* Card write accounting, filled in by con_log_try() and read once per
+ * heartbeat by psp_con_card_take_stats().  Declared here because the writer
+ * comes before the reader in this file. */
+static unsigned int con_card_writes;
+static unsigned int con_card_us;
+
 static void con_log_lock (void);
 static void con_log_unlock (void);
 static void con_log_drain_locked (void);
@@ -130,23 +136,33 @@ static int con_log_try (const char *buf)
 {
 	SceUID fd;
 
-	fd = sceIoOpen(con_log_path,
-	               PSP_O_WRONLY | PSP_O_CREAT | PSP_O_APPEND, 0777);
-	if (fd < 0)
 	{
-		con_log_err = (int)fd;
-		return 0;
-	}
+		/* Timed as a whole: open, write and close are three syscalls and
+		 * it is the round trip that costs, not the bytes.  See
+		 * psp_con_card_take_stats(). */
+		unsigned int t0 = (unsigned int)sceKernelGetSystemTimeWide();
+		int ok = 1;
 
-	if (sceIoWrite(fd, buf, (unsigned int)strlen(buf)) < 0)
-	{
-		con_log_err = -1;
-		sceIoClose(fd);
-		return 0;
-	}
+		fd = sceIoOpen(con_log_path,
+		               PSP_O_WRONLY | PSP_O_CREAT | PSP_O_APPEND, 0777);
+		if (fd < 0)
+		{
+			con_log_err = (int)fd;
+			ok = 0;
+		}
+		else if (sceIoWrite(fd, buf, (unsigned int)strlen(buf)) < 0)
+		{
+			con_log_err = -1;
+			sceIoClose(fd);
+			ok = 0;
+		}
+		else
+			sceIoClose(fd);
 
-	sceIoClose(fd);
-	return 1;
+		con_card_writes++;
+		con_card_us += (unsigned int)sceKernelGetSystemTimeWide() - t0;
+		return ok;
+	}
 }
 
 /*
@@ -294,21 +310,27 @@ static void con_log_sync (void)
  *
  * Per-line sync is the only way to guarantee that the line which killed the
  * module is itself on the card.  It is also, measured on the hardware, about
- * 5 ms per line: open-write-close on the Memory Stick is a round trip, and the
- * save/load screen issues sixty lines per frame (the drawing code marks a
- * picture per draw, and that screen's motif redraws every frame).  Sixty round
- * trips per frame is ~290 ms per frame -- the screen rendered, but at three
- * frames a second, which is how this diagnostic turns into the bug it is
+ * 15 ms per line -- open-write-close on the Memory Stick is a round trip, and
+ * the file is growing, so each append also touches the FAT.  The save/load
+ * screen writes sixteen lines per frame (fourteen marks for the status bar and
+ * the motif, plus the drawing dump), and sixteen times fifteen is the ~250 ms
+ * a frame that screen took.  That is the diagnostic turning into the bug it is
  * supposed to find.
  *
  * So the trail keeps its order and its buffer, and reaches the card at most
  * once every CON_TRACE_SYNC_MIN_US.  Nothing is dropped: con_log_append()
  * already drains when the 4 KB buffer fills, so the card always holds every
  * line older than that window.  What a hard fault can take with it is the last
- * fraction of a frame of lines -- against one card write per frame instead of
- * sixty.
+ * fraction of that window -- ten writes a second instead of sixteen per frame.
+ *
+ * The window was 15 ms first, which changed nothing at all (292 -> 257 ms is
+ * noise): at sixteen lines a frame both settings write sixteen times a frame,
+ * so the throttle has to be coarser than a frame, not finer.  psp_con_card_
+ * take_stats() now counts the writes and the milliseconds they cost, and the
+ * heartbeat prints them, so the next log says outright whether the card is
+ * this cost or whether the menu is.
  */
-#define CON_TRACE_SYNC_MIN_US 15000
+#define CON_TRACE_SYNC_MIN_US 100000
 
 static unsigned int con_sync_last_us;
 
@@ -322,6 +344,32 @@ static void con_log_sync_throttled (void)
 
 	con_sync_last_us = now;
 	con_log_sync();
+}
+
+/* ---- what the log costs, measured ---------------------------------------
+ *
+ * The throttle above is a guess about a number nobody had measured: how long
+ * one open-write-close round trip on the Memory Stick actually takes here.
+ * The frame times leave room for the guess to be wrong -- sixteen marks in a
+ * frame at 250 ms is 15 ms per write, which is far more than the 5 ms the
+ * comment assumed -- so the number is counted instead of assumed, and the
+ * heartbeat prints it:
+ *
+ *     run: f 296 ... , card 4 writes 61 ms
+ *
+ * If that figure is most of the frame, the trail is the cost.  If it is near
+ * zero, the cost is the menu itself and the trail may stay switched on.
+ * psp_con_card_take_stats() reads and clears, so each heartbeat covers the
+ * frames since the previous one, like the frame average beside it. */
+void psp_con_card_take_stats (unsigned int *writes, unsigned int *us)
+{
+	if (writes)
+		*writes = con_card_writes;
+	if (us)
+		*us = con_card_us;
+
+	con_card_writes = 0;
+	con_card_us = 0;
 }
 
 static void con_log_line (const char *text)
