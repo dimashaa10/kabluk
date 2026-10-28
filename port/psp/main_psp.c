@@ -218,27 +218,29 @@ int main (int argc, char *argv[])
 			 * GPU half of it. */
 			psp_phase("host frame: input/commands/client/screen");
 
-			/* The menu is where this port dies: both hardware logs stop
-			 * at an image load from the single-player screen, and the
-			 * console takes the reason with it.  Outside the menu the
-			 * diagnostics are batched and the watchdog writes them once
-			 * a second, which loses the one second that matters.  So
-			 * while the key destination is the menu, every line goes to
-			 * the card as it is made -- see psp_con_trace_sync().  The
-			 * menu draws a handful of lines per frame, so this is cheap
-			 * there and costs nothing anywhere else. */
+			/* One screen gets a line-per-line trail on the card: the
+			 * save/load screen, which is where the port dies.  Every
+			 * other screen keeps the batched log.
+			 *
+			 * "Every menu" was too much: a menu frame draws twenty
+			 * pictures, so it wrote twenty times to the memory stick,
+			 * and the frame went from 20 ms to 350 ms -- the game felt
+			 * broken, and the diagnostic was the thing that broke it.
+			 * The save/load screen draws two pictures and is the one
+			 * being investigated, so it pays and nothing else does. */
 			{
-				static int traced_menu = -1;
-				int in_menu = (key_dest == key_menu);
+				static int traced_saves = -1;
+				int on_saves = (key_dest == key_menu && M_IsSaveMenu());
 
-				if (in_menu != traced_menu)
+				if (on_saves != traced_saves)
 				{
-					traced_menu = in_menu;
-					psp_tracef("trace: every line goes to the card %s",
-					           in_menu ? "while the menu is up" : "once a second again");
+					traced_saves = on_saves;
+					psp_tracef("trace: the card is written per line %s",
+					           on_saves ? "on the save/load screen"
+					                    : "once a second again");
 				}
 
-				psp_con_trace_sync(in_menu);
+				psp_con_trace_sync(on_saves);
 			}
 
 			Host_Frame(time);

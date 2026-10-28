@@ -445,8 +445,13 @@ echo "PASS: same background over it -- 382 invisible glyph draws per frame."
 # before the next instruction runs.
 grep -q 'void psp_con_trace_sync (int on)' port/psp/psp_console.c || exit 1
 grep -q 'void psp_con_trace_sync (int on)' port/psp/psp_console.h || exit 1
-grep -q 'psp_con_trace_sync(in_menu)' port/psp/main_psp.c || exit 1
-grep -q 'int in_menu = (key_dest == key_menu);' port/psp/main_psp.c || exit 1
+grep -q 'psp_con_trace_sync(on_saves)' port/psp/main_psp.c || exit 1
+grep -q 'int on_saves = (key_dest == key_menu && M_IsSaveMenu());' port/psp/main_psp.c || exit 1
+# ...and ONLY the save/load screen may pay for it.  "every menu" was tried and
+# cost twenty memory-stick round trips per frame: the menu went from 20 ms a
+# frame to 350 ms, which is a broken game, not a diagnostic.
+grep -q 'qboolean M_IsSaveMenu (void)' Quake/menu.c || exit 1
+grep -q 'M_IsSaveMenu' Quake/menu.h || exit 1
 # It has to be evaluated per frame, inside the loop, not once at startup.
 awk '
   /while \(1\)/ { inloop = 1 }
@@ -468,5 +473,42 @@ awk '
       if (!m) { printf "FAIL: psp_mark never consults con_trace_sync\n"; exit 1 }
   }
 ' port/psp/psp_console.c || exit 1
-echo "PASS: inside the menu every traced line and mark goes to the card"
+echo "PASS: on the save/load screen every traced line and mark goes to the card"
 echo "PASS: immediately, so the next log ends at the fault and not at a flush."
+
+# The load/save screen asked for a picture whose name is no name at all.
+#
+# The hardware log of that screen ends here, and the screen is exactly where the
+# console has been dying since round 28:
+#
+#     mark: tex
+#     img: asked for "", which names no file -- not looking
+#     mark: pic 0x0
+#
+# M_DrawSaveSlots() was called with an empty title, the empty title went down
+# Draw_CachePic() to TexMgr_LoadImage(), and the texture manager answered with a
+# texture of size zero -- a cached 0x0 picture, drawn as a quad with 0/0 texture
+# coordinates.
+#
+# Two rules now: Draw_CachePic() refuses a name that names nothing, and the
+# save/load screen draws no title picture when it has no title.
+awk '
+  /^qpic_t\t\*Draw_TryCachePic / { inf = 1 }
+  inf && /if \(!path \|\| !path\[0\]\)/ { guard = 1 }
+  inf && /Draw_MissingPic *\(/ { missing = 1 }
+  inf && /DRAW_MARK\(path\)/ { if (!guard) { printf "FAIL: Draw_TryCachePic marks the path before refusing an empty one\n"; exit 1 } }
+  inf && /^}/ { inf = 0 }
+  END {
+      if (!guard) { printf "FAIL: Draw_TryCachePic accepts a picture with an empty name again\n"; exit 1 }
+      if (!missing) { printf "FAIL: an empty name must return the 1x1 stand-in, not NULL\n"; exit 1 }
+  }
+' Quake/gl_draw.c || exit 1
+awk '
+  /^static void M_DrawSaveSlots / { inf = 1 }
+  inf && /title_pic\[0\]/ { guarded = 1 }
+  inf && /Draw_CachePic\(title_pic\)/ { if (!guarded) { printf "FAIL: M_DrawSaveSlots asks for a title picture without checking the name\n"; exit 1 } }
+  inf && /^}/ { inf = 0 }
+  END { if (!guarded) { printf "FAIL: M_DrawSaveSlots does not skip an empty title\n"; exit 1 } }
+' Quake/menu.c || exit 1
+echo "PASS: a picture whose name is empty is not loaded, not cached and not"
+echo "PASS: drawn -- the save/load screen asks for no title picture at all."

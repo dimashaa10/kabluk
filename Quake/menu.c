@@ -2463,10 +2463,28 @@ void M_Menu_Save_f (void)
 }
 
 
+/* The load and save screens used to call this with an empty title, and the
+ * empty title went all the way down into the texture loader: the hardware log
+ * of that screen ends on
+ *
+ *     mark: tex
+ *     img: asked for "", which names no file -- not looking
+ *     mark: pic 0x0
+ *
+ * -- a picture with no name, and a texture of no size, drawn as a quad whose
+ * texture coordinates are 0/0.  A screen with no title is the same screen
+ * without a title picture, so the empty case draws nothing at all. */
 static void M_DrawSaveSlots (const char* title_pic)
 {
-	qpic_t* p = Draw_CachePic(title_pic);
-	M_DrawPic((320 - p->width) / 2, 4, p);
+	if (title_pic && title_pic[0])
+	{
+		qpic_t* p = Draw_CachePic(title_pic);
+
+		/* Draw_CachePic() answers a picture that cannot be loaded with
+		 * a 1x1 stand-in; anything without a size draws nothing. */
+		if (p && p->width > 0 && p->height > 0)
+			M_DrawPic((320 - p->width) / 2, 4, p);
+	}
 
 	for (int i = 0; i < MAX_SAVEGAMES - 1; i++)
 	{
@@ -2489,6 +2507,17 @@ static void M_DrawSaveSlots (const char* title_pic)
 		M_DrawCharacter(8, 32 + load_cursor * 8, 12 + ((int)(realtime * 4) & 1));
 }
 
+/* Is the save/load screen the one on the panel?
+ *
+ * main_psp.c asks this to decide how often its diagnostics go to the memory
+ * card: this is the screen the port has repeatedly died on, and it is also the
+ * only screen where a line-per-line write is affordable.  Everything else in
+ * the menu pays the speed the per-line writes cost, and must not. */
+qboolean M_IsSaveMenu (void)
+{
+	return (m_state == m_load || m_state == m_save);
+}
+
 void M_Load_Draw (void)
 {
 	M_DrawSaveSlots ("");
@@ -2496,7 +2525,8 @@ void M_Load_Draw (void)
 	qpic_t* p;
 
 	p = Draw_CachePic(va("gfx/a_load/load%i.png", (int)(realtime * 2) % 3 + 1));
-	M_DrawPic((320 - p->width) / 2, 4, p);
+	if (p && p->width > 0 && p->height > 0)
+		M_DrawPic((320 - p->width) / 2, 4, p);
 
 }
 
@@ -2507,7 +2537,8 @@ void M_Save_Draw (void)
 	qpic_t* p;
 
 	p = Draw_CachePic(va("gfx/a_save/save%i.png", (int)(realtime * 2) % 4 + 1));
-	M_DrawPic((320 - p->width) / 2, 4, p);
+	if (p && p->width > 0 && p->height > 0)
+		M_DrawPic((320 - p->width) / 2, 4, p);
 
 	for (i = 0; i < MAX_SAVEGAMES; i++)
 		M_Print(16, 32 + 8 * i, m_filenames[i]);

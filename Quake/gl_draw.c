@@ -863,9 +863,12 @@ static qboolean Draw_GetLocalizedPicPath(const char *path, char *localized_path,
 Draw_CachePic
 ================
 */
+/* Defined below; the empty-name guard at the top of Draw_TryCachePic() needs
+ * it before the definition. */
+static qpic_t *Draw_MissingPic (void);
+
 qpic_t	*Draw_TryCachePic (const char *path, unsigned int texflags)
 {
-	DRAW_MARK(path);
 	cachepic_t	*pic;
 	int			i;
 	qpic_t		*dat;
@@ -876,6 +879,36 @@ qpic_t	*Draw_TryCachePic (const char *path, unsigned int texflags)
 	qboolean has_localized_path;
 	qboolean localized_file_exists = false;
 	qboolean evicted_slot = false;
+
+	/* A path that names no file is not a picture, and must not become one.
+	 *
+	 * The load/save screen asks for its title with an empty name.  That name
+	 * went down the "not an .lmp" path to TexMgr_LoadImage(), the image
+	 * loader correctly refused it, and the texture manager answered with a
+	 * texture of SIZE ZERO -- so the engine cached a 0x0 picture whose
+	 * texture coordinates are 0/0.  The hardware log of that screen ends
+	 * exactly on that picture.  An empty name is refused here now, and the
+	 * caller gets the same 1x1 transparent stand-in it gets for a picture
+	 * that cannot be read, so nothing that draws a picture has to care.
+	 *
+	 * The name last round (Image_LoadImage) stopped the file system from
+	 * looking for a file called ""; this stops a texture from being built out
+	 * of the answer. */
+	if (!path || !path[0])
+	{
+		static int empty_path_logs;
+
+		if (empty_path_logs < 4)
+		{
+			empty_path_logs++;
+			Con_SafePrintf("Draw_TryCachePic: a picture with an empty name is "
+			               "drawn as nothing\n");
+		}
+
+		return Draw_MissingPic();
+	}
+
+	DRAW_MARK(path);
 
 	texflags |= (premul_hud?TEXPREF_PREMULTIPLY:0);
 	if (draw_reloading_localized_pics)
