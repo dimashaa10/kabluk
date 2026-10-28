@@ -274,6 +274,7 @@ static int            shim_batch_3d;
 
 static void shim_batch_flush (void);
 static void shim_ge3d_matrices (void);
+static void shim_clip_planes_update (void);
 
 /* ------------------------------------------------------------------ */
 /* the gate                                                           */
@@ -298,6 +299,8 @@ static void shim_guDepthFunc (int f)              { shim_batch_flush(); if (shim
 static void shim_guDepthMask (int m)              { shim_batch_flush(); if (shim_frame_active) sceGuDepthMask(m); }
 static void shim_guScissor (int x, int y, int w, int h)
                                                   { shim_batch_flush(); if (shim_frame_active) sceGuScissor(x, y, w, h); }
+static void shim_guViewport (int cx, int cy, int w, int h)
+                                                  { shim_batch_flush(); if (shim_frame_active) sceGuViewport(cx, cy, w, h); }
 static void shim_guShadeModel (int m)             { shim_batch_flush(); if (shim_frame_active) sceGuShadeModel(m); }
 static void shim_guTexFilter (int min, int mag)   { shim_batch_flush(); if (shim_frame_active) sceGuTexFilter(min, mag); }
 static void shim_guTexFlush (void)                { shim_batch_flush(); if (shim_frame_active) sceGuTexFlush(); }
@@ -1984,33 +1987,117 @@ static void shim_emit_world (shim_vertex_t *out, const r_clip_vertex_t *cv)
 	out->z = cv->z;
 }
 
-/* One triangle, clipped at the near plane and handed to the GE.
+/* The five planes every world triangle is tested against, in WORLD space,
+ * derived once per matrix change from the projection and the view (r_clip.h
+ * spells out the extraction).  Four sides of the view and the near plane.
  *
- * The result of clipping a triangle is a triangle or a quad, and a quad is
- * drawn as a fan of two -- which is why the loop below starts at 2, not 3. */
+ * WHY THE SIDES ARE CLIPPED AT ALL, on hardware that clips: the GE has no
+ * per-pixel clip of its own beyond the scissor.  What it does have is a
+ * hardware CULL: if any vertex of a primitive lands outside the 4096x4096
+ * coordinate space (Interstice's source/psp/clipping.cpp calls it the VCS),
+ * the whole primitive is thrown away.  Our viewport maps ndc +-1 onto
+ * 2048 +- 240 pixels, so a vertex is safe while |ndc_x| < 8.5 and
+ * |ndc_y| < 15 -- i.e. a vertex may be several screens off-axis before the
+ * primitive dies.  A wall the player is standing against, or the floor under
+ * their feet, has vertices dozens of screens off-axis, and would disappear
+ * whole.  Cutting the polygon to the view rectangle keeps every vertex at
+ * |ndc| <= 1 (and the near plane keeps w > 0, without which the divide puts
+ * the vertex on the wrong side of the screen).
+ *
+ * The cost is only paid by polygons that actually cross the boundary: the BSP
+ * walk has already rejected everything outside the view, so most arrive with
+ * all three vertices inside and one pass over 5 planes says so
+ * (r_clip_inside_all) without touching the geometry. */
+#define SHIM_CLIP_PLANES 5
+
+static r_clip_plane_t shim_clip_planes[SHIM_CLIP_PLANES];
+
+/* Rebuild the planes from the matrices now in force.  Called from glBegin()
+ * for every perspective primitive -- GL forbids a matrix change inside a
+ * glBegin/glEnd pair, so once per primitive is once per matrix. */
+static void shim_clip_planes_update (void)
+{
+	shim_matrix_t mvp;
+	float *m;
+
+	mvp = shim_modelview;
+	shim_multiply(&mvp, &shim_projection, &shim_modelview);
+	m = mvp.m;
+
+	/* left: w + x >= 0, right: w - x >= 0, bottom: w + y, top: w - y.
+	 * Column-major, so the row whose elements are used for the x coordinate
+	 * of the result is (m[0], m[4], m[8], m[12]) -- that is r0 = 0; the y row
+	 * is r0 = 1; the w row is r3 = 3. */
+#define SHIM_PLANE(p, r0, s)                                        \
+	do {                                                            \
+		shim_clip_planes[p].a = m[3] + (s) * m[r0];                  \
+		shim_clip_planes[p].b = m[7] + (s) * m[r0 + 4];              \
+		shim_clip_planes[p].c = m[11] + (s) * m[r0 + 8];             \
+		shim_clip_planes[p].d = m[15] + (s) * m[r0 + 12];            \
+	} while (0)
+
+	SHIM_PLANE(0, 0, +1.0f);      /* left   */
+	SHIM_PLANE(1, 0, -1.0f);      /* right  */
+	SHIM_PLANE(2, 1, +1.0f);      /* bottom */
+	SHIM_PLANE(3, 1, -1.0f);      /* top    */
+#undef SHIM_PLANE
+
+	/* near: w >= SHIM_NEAR_W, i.e. row3 - SHIM_NEAR_W */
+	shim_clip_planes[4].a = m[3];
+	shim_clip_planes[4].b = m[7];
+	shim_clip_planes[4].c = m[11];
+	shim_clip_planes[4].d = m[15] - SHIM_NEAR_W;
+}
+
+/* One triangle, clipped to the view and handed to the GE.
+ *
+ * The result of clipping a triangle is a triangle or a convex polygon, drawn
+ * as a fan around its first vertex -- which is why the loop below starts at 2,
+ * not 3. */
 static void shim_emit_3d_triangle (const r_clip_vertex_t *a,
                                    const r_clip_vertex_t *b,
                                    const r_clip_vertex_t *c)
 {
-	r_clip_vertex_t  tri[3];
-	r_clip_vertex_t  poly[R_CLIP_MAX];
-	int              m, i;
+	r_clip_vertex_t  buf[2][R_CLIP_MAX];
+	r_clip_vertex_t  *cur, *nxt;
+	int              m, i, p;
 
 	shim_3d_triangles++;
 
 	if (a->w < SHIM_NEAR_W && b->w < SHIM_NEAR_W && c->w < SHIM_NEAR_W)
 		return;                      /* wholly behind: nothing to draw */
 
-	if (a->w < SHIM_NEAR_W || b->w < SHIM_NEAR_W || c->w < SHIM_NEAR_W)
+	buf[0][0] = *a;
+	buf[0][1] = *b;
+	buf[0][2] = *c;
+	m = 3;
+	cur = buf[0];
+	nxt = buf[1];
+
+	if (!r_clip_inside_all (cur, m, shim_clip_planes, SHIM_CLIP_PLANES))
+	{
+		/* One pass per plane, ping-ponging between the two buffers: a
+		 * polygon clipped by five planes can gain five vertices, which
+		 * R_CLIP_MAX holds. */
 		shim_3d_clipped++;
 
-	tri[0] = *a;
-	tri[1] = *b;
-	tri[2] = *c;
+		for (p = 0; p < SHIM_CLIP_PLANES; p++)
+		{
+			int k = r_clip_halfspace (cur, m, nxt, R_CLIP_MAX,
+			                          &shim_clip_planes[p]);
 
-	m = r_clip_near(tri, 3, poly, R_CLIP_MAX, SHIM_NEAR_W);
-	if (m < 3)
-		return;
+			if (k < 3)
+				return;              /* the whole polygon is outside */
+
+			m = k;
+
+			{
+				r_clip_vertex_t *t = cur;
+				cur = nxt;
+				nxt = t;
+			}
+		}
+	}
 
 	for (i = 2; i < m; i++)
 	{
@@ -2019,9 +2106,9 @@ static void shim_emit_3d_triangle (const r_clip_vertex_t *a,
 		if (!v)
 			return;
 
-		shim_emit_world(&v[0], &poly[0]);
-		shim_emit_world(&v[1], &poly[i - 1]);
-		shim_emit_world(&v[2], &poly[i]);
+		shim_emit_world(&v[0], &cur[0]);
+		shim_emit_world(&v[1], &cur[i - 1]);
+		shim_emit_world(&v[2], &cur[i]);
 
 		/* Same primitive and texture as the previous triangle, so the
 		 * batch merges them into one sceGuDrawArray: a surface of
@@ -2145,6 +2232,15 @@ void glBegin (GLenum mode)
 	 * path: half a triangle mapped in 2D and half clipped is nothing anyone
 	 * wants. */
 	shim_clipping = shim_perspective();
+
+	/* The clipping planes are derived from the matrices, and a matrix can
+	 * change between two primitives (R_SetupGL loads both of them once a
+	 * frame, R_DrawViewModel multiplies the model-view per entity).  GL does
+	 * not allow a matrix change INSIDE a glBegin/glEnd pair, so rebuilding
+	 * them here -- once per primitive, not once per vertex -- is both
+	 * correct and cheap. */
+	if (shim_clipping)
+		shim_clip_planes_update();
 }
 
 void glEnd (void)
@@ -2413,6 +2509,38 @@ void glViewport (GLint x, GLint y, GLsizei width, GLsizei height)
 	shim_vp_y = y;
 	shim_vp_w = width > 0 ? width : 1;
 	shim_vp_h = height > 0 ? height : 1;
+
+	/* The GE gets the same rectangle, and it needs it for real.
+	 *
+	 * The 2D path maps vertices to pixels itself (shim_emit_vertex), so for a
+	 * menu this call was only a note.  The world is different: its vertices
+	 * are handed to the GE in world space and the GE's transform stage does
+	 * the divide and the viewport mapping with the numbers sceGuViewport()
+	 * last sent -- which gu_psp.c sets once, to the whole panel.  The engine
+	 * does NOT ask for the whole panel: R_SetupGL calls glViewport with
+	 * r_refdef.vrect, and with scr_viewsize 100 and a status bar that is
+	 * 480x248 at the top of the screen (gl_screen.c, R_SetVrect: sb_lines =
+	 * 24 * scale).  Drawing 480x248 of world into a 480x272 viewport would
+	 * stretch it ten percent vertically and push it down -- a small error
+	 * that looks exactly like a broken field of view, and one that no amount
+	 * of matrix arithmetic would explain.
+	 *
+	 * The mapping from GL's rectangle (origin bottom-left) to the GE's 4096
+	 * coordinate space (origin top-left, centred by sceGuOffset):
+	 *
+	 *     offset = (2048 - W/2, 2048 - H/2)        set once, gu_psp.c
+	 *     centre = offset + (x + w/2, H - y - h/2)
+	 *
+	 * which for a full-panel rectangle gives exactly (2048, 2048) -- the
+	 * value gu_psp.c already uses -- so nothing changes for the 2D case. */
+	if (shim_frame_active)
+	{
+		int top = PSP_SCREEN_HEIGHT - y - shim_vp_h;
+		int cx = (2048 - PSP_SCREEN_WIDTH / 2) + x + shim_vp_w / 2;
+		int cy = (2048 - PSP_SCREEN_HEIGHT / 2) + top + shim_vp_h / 2;
+
+		shim_guViewport(cx, cy, shim_vp_w, shim_vp_h);
+	}
 }
 
 /* Send the current rectangle to the GE, clamped to the panel.

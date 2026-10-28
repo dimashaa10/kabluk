@@ -206,6 +206,45 @@ void GLMesh_LoadVertexBuffer (qmodel_t *m, aliashdr_t *mainhdr)
 	if (!totalvbosize) return;
 	if (!numindexes) return;
 
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	/* ---- the per-pose mesh buffer is not built on this port -------------
+	 *
+	 * Everything below turns the model's own frames (trivertx_t, four bytes a
+	 * vertex) into a packed vertex array of numposes * numverts * 8 bytes,
+	 * plus an index array, and then either uploads them to a VBO or keeps
+	 * them in the heap for glVertexPointer()/glDrawElements() to read.
+	 *
+	 * This port has neither: GL_GenBuffersFunc/GL_BufferDataFunc are NULL
+	 * (port/psp/gl_stub.c) and glVertexPointer()/glDrawElements() are empty
+	 * stubs, so the arrays are never read by anything.  They are pure cost,
+	 * and for this game's player model that cost is
+	 *
+	 *     malloc: NULL for 6029312 bytes -- last gfx/conback2.lmp
+	 *
+	 * 5.75 MB of a 10 MB heap, requested at the exact moment the level is
+	 * loading and every other allocation has to succeed.  Round 71 grew the
+	 * heap to 14 MB to make room for it and that took the 4 MB out of the
+	 * hunk, where the map and the model cache live -- the next log died on
+	 * Cache_TryAlloc.  So the buffer is simply not built.
+	 *
+	 * What draws an alias model from here on is the GE path, and it does not
+	 * want this array: Interstice (source/psp/gu_main.cpp, GL_DrawAliasFrame)
+	 * feeds sceGuDrawArray() the frame's trivertx_t bytes directly with
+	 * GU_VERTEX_8BIT | GU_NORMAL_8BIT, i.e. the model's own data, transformed
+	 * by the GE.  The line below says how much that saves per model. */
+	{
+		extern void psp_tracef (const char *fmt, ...);
+
+		psp_tracef ("mesh: %s: %d KB of poses + %d KB of indexes not built "
+		            "(no VBO API here; the GE draws from the model's frames)",
+		            m->name, totalvbosize / 1024,
+		            (int)((numindexes * sizeof(unsigned short)) / 1024));
+		m->meshvboptr = NULL;
+		m->meshindexesvboptr = NULL;
+		return;
+	}
+#endif
+
 	//create an elements buffer
 	ebodata = (byte *) malloc(numindexes * sizeof(unsigned short));
 	if (!ebodata)

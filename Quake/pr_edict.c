@@ -1347,6 +1347,36 @@ qboolean PR_AllocEdicts (qcvm_t *vm)
 	why[0] = '\0';
 
 #if defined(PLATFORM_PSP) || defined(__psp__)
+	/* ---- the ceiling the round-71 build proved ---------------------------
+	 *
+	 * Until now the size came only from what the heap could hold, i.e. from
+	 * the heap's SIZE -- so a bigger heap bought a bigger entity array, and
+	 * the array is the largest single thing the client or the server ever
+	 * allocates.  The 03:12 build on the 14 MB heap made the whole budget
+	 * visible in one line:
+	 *
+	 *     edicts: 8582 of 1160 bytes = 9721 KB -- reduced from 15000
+	 *
+	 * 9.7 MB of a 10 MB heap for an array that a single-player map fills a
+	 * few hundred entries of.  That is not a number to compute, it is a
+	 * number to CHOOSE: the entity array must be small enough that the
+	 * transient allocations of a level load (the model loader's scratch, the
+	 * picture decoder, the alias meshes) still fit beside it.
+	 *
+	 * 2048 edicts is 2375 KB for this game's 1160-byte edict and is several
+	 * times what a single-player map needs (vanilla Quake rarely passes 700).
+	 * A map that does need more says so -- ED_Alloc's "no free edicts" -- and
+	 * this constant is where it is raised. */
+#define PSP_MAX_EDICTS 2048
+
+	if (want > PSP_MAX_EDICTS)
+	{
+		snprintf (why, sizeof(why),
+		          " -- held to %d: the heap has to hold a level load too",
+		          PSP_MAX_EDICTS);
+		want = PSP_MAX_EDICTS;
+	}
+
 	{
 		extern unsigned int psp_heap_block_left (void);
 		unsigned int room = psp_heap_block_left ();
@@ -1376,8 +1406,8 @@ qboolean PR_AllocEdicts (qcvm_t *vm)
 
 			if ((unsigned int)want > fit)
 			{
-				snprintf (why, sizeof(why),
-				          " -- reduced from %d, the heap cannot hold it", want);
+				snprintf (why + strlen(why), sizeof(why) - strlen(why),
+				          " -- reduced to %d, the heap cannot hold it", (int)fit);
 				want = (int)fit;
 			}
 		}

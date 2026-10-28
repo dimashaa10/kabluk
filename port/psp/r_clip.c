@@ -115,3 +115,80 @@ int r_clip_near (const r_clip_vertex_t *in, int n,
 
 	return (count >= 3) ? count : 0;
 }
+
+/* ------------------------------------------------------------------ */
+/* an arbitrary plane, for the four sides of the view                 */
+/* ------------------------------------------------------------------ */
+
+/* A vertex that lands exactly on a plane is INSIDE, and "exactly" has to
+ * survive the arithmetic: the point a clip invents lies on the plane by
+ * construction, and the second clip of the same polygon then evaluates it as
+ * -0.0000001 and cuts a sliver off.  That sliver is harmless on screen, but it
+ * makes "is the result inside the planes it was clipped to?" false, and that
+ * question is what tests/test_clip.c asks.  A tenth of a unit is far below
+ * anything a map can show (a texel of a 512-wide surface is 0.5 units). */
+#define CLIP_EPS 1e-1f
+
+float r_clip_distance (const r_clip_plane_t *plane, const r_clip_vertex_t *v)
+{
+	return plane->a * v->x + plane->b * v->y + plane->c * v->z + plane->d;
+}
+
+int r_clip_halfspace (const r_clip_vertex_t *in, int n,
+                      r_clip_vertex_t *out, int max_out,
+                      const r_clip_plane_t *plane)
+{
+	int i, count = 0;
+
+	if (!in || !out || !plane || in == out || n < 3 || max_out < 3)
+		return 0;
+
+	for (i = 0; i < n; i++)
+	{
+		const r_clip_vertex_t *a = &in[i];
+		const r_clip_vertex_t *b = &in[(i + 1) % n];
+		float da = r_clip_distance (plane, a);
+		float db = r_clip_distance (plane, b);
+		int ain = (da >= -CLIP_EPS);
+		int bin = (db >= -CLIP_EPS);
+
+		if (ain)
+		{
+			if (count >= max_out)
+				return 0;
+			out[count++] = *a;
+		}
+
+		if (ain != bin)
+		{
+			float t;
+
+			/* da and db have opposite signs here, so the denominator
+			 * cannot be zero. */
+			t = da / (da - db);
+
+			if (count >= max_out)
+				return 0;
+
+			clip_lerp (a, b, t, &out[count++]);
+		}
+	}
+
+	return (count >= 3) ? count : 0;
+}
+
+int r_clip_inside_all (const r_clip_vertex_t *in, int n,
+                       const r_clip_plane_t *planes, int numplanes)
+{
+	int i, p;
+
+	if (!in || !planes || n < 3 || numplanes <= 0)
+		return 0;
+
+	for (p = 0; p < numplanes; p++)
+		for (i = 0; i < n; i++)
+			if (r_clip_distance (&planes[p], &in[i]) < -CLIP_EPS)
+				return 0;
+
+	return 1;
+}

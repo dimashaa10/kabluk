@@ -213,9 +213,12 @@ for f in port/psp/psp_mem.c port/psp/psp_mem.h; do
 done
 grep -q 'sceKernelAllocPartitionMemory(PSP_MEMORY_PARTITION_USER' port/psp/psp_mem.c
 grep -q 'sceKernelGetBlockHeadAddr' port/psp/psp_mem.c
-# 14 MB since round 71: the round-71 log had the hunk 11 MB free while malloc()
-# returned NULL for 5.75 MB, i.e. the split was wrong rather than the total.
-grep -q 'PSP_HEAP_SIZE_KB(14 \* 1024)' port/psp/psp_boot.c
+# 10 MB, and that is a decision with a log behind it in both directions: at
+# 10 MB the heap could not serve the alias mesh buffer (5.75 MB), and at 14 MB
+# the zone could not serve the model cache (Cache_Alloc 3536192, 329 KB free).
+# The mesh buffer is gone (gl_mesh.c) and the entity array is capped
+# (PSP_MAX_EDICTS), so the heap needs 10 and the zone needs the other 4.
+grep -q 'PSP_HEAP_SIZE_KB(10 \* 1024)' port/psp/psp_boot.c
 if grep -q 'PSP_HEAP_SIZE_KB(-1)' port/psp/psp_boot.c; then
     echo "FAIL: the newlib heap takes the whole partition again (-1) -- nothing"
     echo "FAIL: else can then be sized from what is left"
@@ -696,7 +699,7 @@ if [ ! -f port/psp/r_clip.c ] || [ ! -f port/psp/r_clip.h ]; then
     exit 1
 fi
 if ! cc -std=gnu11 -Wall -Wextra -o "$work/test_clip" tests/test_clip.c \
-        port/psp/r_clip.c 2> "$work/test_clip.log"; then
+        port/psp/r_clip.c -lm 2> "$work/test_clip.log"; then
     echo "FAIL: the clipper does not build on its own:"
     sed -n 1,20p "$work/test_clip.log"
     exit 1
@@ -1390,15 +1393,55 @@ awk '
 ' Quake/r_world.c || exit 1
 echo "PASS: the PSP takes the classic immediate-mode world path, which the shim draws."
 
-# ---- the heap and the hunk are sized the right way round -----------------
+# ---- the 64 MB are one partition, so the split is the whole game --------
 #
-# The round-71 log had the hunk 11 MB free and malloc() returning NULL at the
-# same moment, so the split was wrong, not the total.
-grep -q 'PSP_HEAP_SIZE_KB(14 \* 1024);' port/psp/psp_boot.c || {
-    echo "FAIL: the newlib heap is back to a size the map cannot load in"
+#     pictures 6144 KB + heap 14336 KB + zone 15360 KB   -> Cache_TryAlloc
+#                                                          died, 329 KB free
+#     pictures 6144 KB + heap 10240 KB + zone 19456 KB   -> the zone holds
+#                                                          the model cache
+grep -q 'PSP_HEAP_SIZE_KB(10 \* 1024);' port/psp/psp_boot.c || {
+    echo "FAIL: the heap is not 10 MB again -- every MB here is an MB the map"
+    echo "FAIL: and the model cache do not get"
     exit 1
 }
-echo "PASS: the heap has room for the 5.75 MB load, the hunk keeps 7 MB spare."
+
+# ---- the entity array is a budget, not a computation --------------------
+#
+# The 14 MB heap build printed
+#
+#     edicts: 8582 of 1160 bytes = 9721 KB -- reduced from 15000
+#
+# i.e. it spent 9.7 MB of a 10 MB heap on an array a single-player map fills a
+# few hundred entries of, because the size was computed from whatever was left.
+grep -q '#define PSP_MAX_EDICTS 2048' Quake/pr_edict.c || {
+    echo "FAIL: the entity array is sized from the heap again, so it eats it"
+    exit 1
+}
+awk '
+  /qboolean PR_AllocEdicts/ { inf = 1 }
+  inf && /want > PSP_MAX_EDICTS/ { clamp = 1 }
+  inf && /^}/ { inf = 0 }
+  END { if (!clamp) { printf "FAIL: PSP_MAX_EDICTS is defined but never applied\n"; exit 1 } }
+' Quake/pr_edict.c || exit 1
+echo "PASS: the entity array is capped at 2048 (2375 KB), so the heap is left"
+echo "PASS: for the transient allocations a level load makes."
+
+# ---- and the alias mesh buffer for a GL API this port does not have -----
+#
+# The 5.75 MB in "malloc: NULL for 6029312 bytes" is
+# GLMesh_LoadVertexBuffer() packing every pose of the player model into a
+# vertex array for glVertexPointer()/glDrawElements() -- both empty stubs here.
+# Interstice draws alias models straight from the model's own frames with
+# sceGuDrawArray(GU_VERTEX_8BIT | GU_NORMAL_8BIT), so the array is built for
+# nobody and paid for out of a 10 MB heap.
+awk '
+  /^void GLMesh_LoadVertexBuffer/ { inf = 1 }
+  inf && /PLATFORM_PSP/ { psp = 1 }
+  inf && /return;/ { ret = 1 }
+  inf && /^}/ { inf = 0 }
+  END { if (!(psp && ret)) { printf "FAIL: the PSP still builds the per-pose mesh array\n"; exit 1 } }
+' Quake/gl_mesh.c || exit 1
+echo "PASS: no 5.75 MB vertex array is built for a GL API the port does not have."
 
 # ---- and the signon names its own stage ---------------------------------
 grep -q 'signon: downloads stage %d of 5' Quake/cl_main.c || {
@@ -1410,3 +1453,51 @@ grep -q 'signon: reply %d of %d' Quake/cl_main.c || {
     exit 1
 }
 echo "PASS: a log that ends during the connect says which stage never finished."
+
+# ---- the world is clipped to the view before the GE sees it -------------
+#
+# The GE does not clip per pixel: one vertex outside the 4096x4096 coordinate
+# space and the primitive is culled whole (Interstice source/psp/clipping.cpp).
+# A wall the player stands against has vertices dozens of screens off-axis, so
+# a near-plane clip alone would make walls disappear at arm's length.
+grep -q '#define SHIM_CLIP_PLANES 5' port/psp/gl_shim.c || {
+    echo "FAIL: the world is clipped by the near plane only, so the GE culls"
+    echo "FAIL: every wall the player stands next to"
+    exit 1
+}
+grep -q 'r_clip_halfspace (cur, m, nxt, R_CLIP_MAX' port/psp/gl_shim.c || {
+    echo "FAIL: the five planes are computed but never applied"
+    exit 1
+}
+grep -q 'r_clip_inside_all (cur, m, shim_clip_planes, SHIM_CLIP_PLANES)' port/psp/gl_shim.c || {
+    echo "FAIL: every triangle pays for the clip, even the ones already inside"
+    exit 1
+}
+# The planes are rebuilt per primitive, because a matrix change between two
+# glBegin/glEnd pairs (the view model wants its own) moves them.
+awk '
+  /^void glBegin/ { inb = 1 }
+  inb && /shim_clip_planes_update\(\)/ { upd = 1 }
+  inb && /^}/ { inb = 0 }
+  END { if (!upd) { printf "FAIL: glBegin does not refresh the clipping planes\n"; exit 1 } }
+' port/psp/gl_shim.c || exit 1
+# R_CLIP_MAX has to hold a triangle plus one vertex per plane.
+awk '
+  /#define R_CLIP_MAX/ { if ($3 + 0 < 8) { printf "FAIL: R_CLIP_MAX cannot hold a triangle clipped by five planes\n"; exit 1 } }
+' port/psp/r_clip.h || exit 1
+echo "PASS: the world is cut to the view (four sides + near) before the GE, so"
+echo "PASS: the hardware cull cannot swallow a wall the player is standing at."
+
+# ---- and the GE's viewport is the engine's viewport ---------------------
+#
+# R_SetupGL calls glViewport with r_refdef.vrect, which is 480x248 with a
+# status bar, not the whole 480x272 panel.  For the 2D path that call was only
+# a note (the shim maps vertices itself); with world vertices the GE does the
+# mapping, so a viewport left at the panel would stretch the world ten percent.
+grep -q 'shim_guViewport(cx, cy, shim_vp_w, shim_vp_h);' port/psp/gl_shim.c || {
+    echo "FAIL: glViewport does not reach sceGuViewport, so the world is drawn"
+    echo "FAIL: into the panel's rectangle instead of the engine's"
+    exit 1
+}
+echo "PASS: the GE's viewport follows glViewport, so a status bar does not"
+echo "PASS: stretch the world."

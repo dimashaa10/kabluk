@@ -31,11 +31,62 @@ typedef struct r_clip_vertex_s
 } r_clip_vertex_t;
 
 /* A convex polygon cut by ONE plane gains at most one vertex, so a triangle
- * (a quad after clipping) never needs more than four, and the largest
- * primitive the engine sends in immediate mode -- a GL_POLYGON from a BSP
- * surface, up to 32 vertices -- never more than 33.  8 covers triangles,
- * quads and the small polygons; ask for more if a caller needs it. */
-#define R_CLIP_MAX 8
+ * becomes a quad.  The shim clips a triangle against FIVE planes (the four
+ * sides of the view and the near plane), so it can grow to 3 + 5 = 8, and the
+ * buffer has to hold the input as well when a call site runs the planes in
+ * sequence.  16 is room for that with a margin -- and it used to be 8, which
+ * was also the reason a world polygon with eight or more vertices was dropped
+ * entirely: see r_clip_halfspace()'s note about max_out. */
+#define R_CLIP_MAX 16
+
+/* A plane the halfspace x on the KEEP side satisfies:
+ *
+ *     a*x + b*y + c*z + d >= 0
+ *
+ * The coefficients are the ones a GL projection gives you for free: with
+ * M = projection * view (column-major, 16 floats) the rows of M are
+ *
+ *     row0 = (m[0], m[4], m[8],  m[12])      x_clip
+ *     row1 = (m[1], m[5], m[9],  m[13])      y_clip
+ *     row3 = (m[3], m[7], m[11], m[15])      w_clip
+ *
+ * and the six clip-space conditions |x| <= w, |y| <= w, 0 < z + w, z <= w
+ * become, in WORLD coordinates,
+ *
+ *     left   row3 + row0      right  row3 - row0
+ *     bottom row3 + row1      top    row3 - row1
+ *     near   row3 (w >= eps)  far    row3 - row2
+ *
+ * which is the standard frustum-plane extraction.  It needs no matrix inverse
+ * and no per-vertex transform: the same four dot products the GE is about to
+ * do, done once per plane instead of once per vertex-per-draw. */
+typedef struct r_clip_plane_s
+{
+	float a, b, c, d;
+} r_clip_plane_t;
+
+/*
+ * Clip a convex polygon against one plane (keep the side where the signed
+ * distance is >= 0).
+ *
+ * Same contract as r_clip_near(): in and out may not be the same buffer,
+ * out needs room for n + 1 vertices, the result is convex and in the same
+ * order, and 0 means nothing survived (or out was too small -- nothing is
+ * written then, and the caller draws nothing, which is the safe answer).
+ */
+int r_clip_halfspace (const r_clip_vertex_t *in, int n,
+                      r_clip_vertex_t *out, int max_out,
+                      const r_clip_plane_t *plane);
+
+/* Signed distance of a vertex to a plane, for the "is any of it outside?"
+ * test a caller does before it pays for a clip. */
+float r_clip_distance (const r_clip_plane_t *plane, const r_clip_vertex_t *v);
+
+/* 1 when every vertex is on the keep side of every plane, i.e. the polygon
+ * needs no clipping at all.  The common case by far: the BSP walk has already
+ * rejected everything outside the view. */
+int r_clip_inside_all (const r_clip_vertex_t *in, int n,
+                       const r_clip_plane_t *planes, int numplanes);
 
 /*
  * Clip a convex polygon against the plane w >= near_w.

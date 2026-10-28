@@ -33,25 +33,35 @@ PSP_MAIN_THREAD_STACK_SIZE_KB(512);
  * is the whole point of having a memory layout: nothing else may grow into this
  * region, and this may not grow into anything else.
  *
- * The size is 14 MB, and the number below says why it is not the 10 MB this
- * started at.
+ * The size is 10 MB, and the two builds around it are what says so.
  *
- * The round-71 log ended with the heap full at the exact moment the map
- * started, and with three malloc()s returning NULL:
+ * The 14 MB build of round 71 removed the heap failures -- and the very next
+ * log refused to load the map:
  *
- *     run: f 565 state 2, malloc 10234 KB used, 4 KB left, NULL 5
- *     malloc: NULL for 6029312 / 57344 / 851968 bytes -- last gfx/conback2.lmp
+ *     mem: zone 15360 KB, pictures 6144 KB, newlib heap 0 KB used of 14336 KB
+ *     edicts: 8582 of 1160 bytes = 9721 KB
+ *     hunk: Cache_Alloc 3536192 bytes does not fit: 15360 KB total,
+ *           15030 KB used, 329 KB free
+ *     *** FATAL ERROR *** Cache_TryAlloc: 3536192 is greater then free hunk
  *
- * while the engine's own hunk was healthy (8280 KB used of 19456, 11 MB
- * free) -- so this was never a shortage of memory, it was the wrong split.
- * The 5.75 MB request is the size of one thing being loaded at map start
- * (a file image or a decoded picture); it cannot fit in what is left of a
- * 10 MB heap that already holds the .cfg/.rc files, progs.dat, the client's
- * picture decoder buffers and every scratch copy the texture manager makes.
+ * The console has ONE user partition, about 37 MB of it, and this block, the
+ * picture pool and the engine's zone are three slices of it:
  *
- * The four megabytes come out of the zone, which psp_mem.c sizes from what is
- * left after this block: it goes from 19 MB to 15 MB, and the hunk still had
- * 7 MB free after the whole map was loaded.  The picture pool (6 MB) is
- * untouched -- it is a separate block and shrinking it is what broke the
- * menus in earlier rounds. */
-PSP_HEAP_SIZE_KB(14 * 1024);
+ *     pictures 6144 KB + heap 14336 KB + zone 15360 KB = 35840 KB
+ *     pictures 6144 KB + heap 10240 KB + zone 19456 KB = 35840 KB
+ *
+ * Every megabyte given to malloc() is a megabyte the zone does not have, and
+ * the zone is where the MAP lives: loading the world takes 8280 KB of it, and
+ * an alias model needs its own size twice over (built in the low hunk, then
+ * copied into the cache -- Cache_Alloc(total), gl_model.c).  That is what the
+ * 3.5 MB request above is, and it needs a zone of at least 18.6 MB.  So the
+ * heap goes back to 10 MB and the 4 MB returns to the zone.
+ *
+ * The three failures the 14 MB heap was meant to paper over are fixed where
+ * they come from instead: the entity array was sized from the heap and took
+ * 9.7 MB of it (Quake/pr_edict.c, PSP_MAX_EDICTS), the alias mesh builder was
+ * building a vertex buffer for a GL API this port does not have (Quake/
+ * gl_mesh.c), and the picture decoder's retries are what the 832 KB and 56 KB
+ * requests were.  The picture pool (6 MB) is untouched: shrinking it is what
+ * broke the menus in earlier rounds. */
+PSP_HEAP_SIZE_KB(10 * 1024);

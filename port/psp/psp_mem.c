@@ -64,14 +64,15 @@
  *                     17:37 log was 2488 KB of pictures for the whole menu
  *                     system, so 6 MB is the cap with headroom, not a guess.
  *
- *   PSP_HEAP_SIZE_KB  14 MB for everything the engine malloc()s: gfx.wad
+ *   PSP_HEAP_SIZE_KB  10 MB for everything the engine malloc()s: gfx.wad
  *                     (~1 MB), the picture decoder's w*h*4 buffer (640x480
- *                     at 4 bytes = 1.2 MB), the hit-model and BSP scratch the
- *                     loaders malloc, and the .cfg/.rc files -- plus, from
- *                     round 71, one 5.75 MB request that the 10 MB this used
- *                     to be could not serve (see psp_boot.c).  The zone takes
- *                     what is left after this block, so growing this one
- *                     shrinks the hunk by the same amount.
+ *                     at 4 bytes = 1.2 MB), progs.dat (362 KB), the entity
+ *                     arrays (2 x 2375 KB at PSP_MAX_EDICTS) and the .cfg/.rc
+ *                     files.  It was 14 MB for one build; the log that build
+ *                     produced shows why it is not: every megabyte here is a
+ *                     megabyte the zone does not have, and the zone is where
+ *                     the map (8280 KB) and the model cache live -- see
+ *                     psp_boot.c.
  *
  *   slack (1 MB)      left unallocated: the firmware and the SDK take small
  *                     blocks during the run (threads, the GE list, io buffers),
