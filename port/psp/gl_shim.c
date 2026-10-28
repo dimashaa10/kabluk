@@ -37,6 +37,7 @@
 #include "gu_psp.h"
 #include "psp_console.h"
 #include "tex_arena.h"
+#include "r_clip.h"
 
 /* ------------------------------------------------------------------ */
 /* state                                                              */
@@ -143,6 +144,21 @@ static int            shim_vp_x, shim_vp_y, shim_vp_w = PSP_SCREEN_WIDTH,
 static int            shim_primitive;
 static int            shim_vertex_count;
 static shim_vertex_t  shim_vertices[SHIM_MAX_VERTICES] __attribute__((aligned(16)));
+/* Clip-space vertices, used instead of shim_vertices while a PERSPECTIVE
+ * projection is in force.
+ *
+ * With an orthogonal projection (every 2D canvas in the engine) w is 1 for
+ * every vertex and shim_emit_vertex() maps it straight onto the panel.  Under a
+ * perspective one the vertex cannot be mapped yet: a polygon that crosses the
+ * camera has a vertex with w <= 0, and dividing by it throws the polygon across
+ * the screen in the wrong direction.  So the vertex is parked here in clip
+ * space, and the primitive is clipped and projected together when glEnd()
+ * closes it (shim_flush_3d).  Only one of the two arrays is in use at a time;
+ * shim_vertex_count counts whichever it is. */
+static r_clip_vertex_t shim_clip_vertices[SHIM_MAX_VERTICES];
+/* Set in glBegin() from the projection in force, so a whole primitive goes
+ * through one path. */
+static int            shim_clipping;
 static shim_vertex_t  shim_ge_vertices[SHIM_GE_VERTICES] __attribute__((aligned(16)));
 static unsigned int   shim_ge_used;            /* vertices handed to the GE */
 static unsigned int   shim_ge_peak;            /* ... and the frame's high mark */
@@ -198,8 +214,7 @@ static unsigned int   shim_trace_early;
 static int shim_trace_menu;    /* ... and the same for the settled menu */
 static int shim_trace_text;    /* glyph-band lines for the current frame */
 static unsigned int shim_trace_dump;   /* lines of the one full frame dump */
-static unsigned int shim_3d_warned_frames;
-static unsigned int shim_3d_warned_frame = ~0u;
+
 
 /* ------------------------------------------------------------------ */
 /* batching                                                           */
@@ -1272,52 +1287,53 @@ static void shim_upload_bound_texture (void)
  *
  * GL: clip -> ndc, then viewport with the origin at the bottom-left.
  * GU: pixels from the top-left corner of the panel. */
+/* 1 while the projection in force is a perspective one.  The bottom row of the
+ * matrix is the honest test: an orthogonal projection (glOrtho, and every 2D
+ * canvas in the engine) leaves w == 1 for every vertex, which reads as
+ * m15 == 1 and m3 == 0. */
+static int shim_perspective (void)
+{
+	return shim_projection.m[15] != 1.0f || shim_projection.m[3] != 0.0f;
+}
+
 static void shim_emit_vertex (float x, float y, float z)
 {
 	shim_matrix_t mvp;
-	float cx, cy, sx, sy;
+	float cx, cy, cz, cw, sx, sy;
 
 	if (shim_vertex_count >= SHIM_MAX_VERTICES)
 		return;
-
-	/* The 3D pipeline is stage 3 and does not exist yet.  A perspective
-	 * projection therefore reaches this vertex stage with no clipping at
-	 * all: a vertex behind the camera comes out mirrored and enormously
-	 * far away, and the GE fills the panel with triangles nobody asked
-	 * for -- which is exactly the shape of the dark wedges that were
-	 * crossing the menu.  So the case is named once per frame instead of
-	 * being painted over: the next caller that draws in 3D shows up in the
-	 * log by name instead of as a symptom. */
-	if ((shim_projection.m[15] != 1.0f || shim_projection.m[3] != 0.0f) &&
-	    shim_3d_warned_frames < 8 &&
-	    shim_3d_warned_frame != shim_frames)
-	{
-		shim_3d_warned_frame = shim_frames;
-		shim_3d_warned_frames++;
-		psp_tracef("3d: f %d a vertex was drawn under a perspective projection "
-		           "(m15 %.3f m3 %.3f); there is no 3D clipper yet",
-		           (int)shim_frames, (double)shim_projection.m[15],
-		           (double)shim_projection.m[3]);
-	}
 
 	mvp = shim_modelview;
 	shim_multiply(&mvp, &shim_projection, &shim_modelview);
 
 	cx = mvp.m[0] * x + mvp.m[4] * y + mvp.m[8]  * z + mvp.m[12];
 	cy = mvp.m[1] * x + mvp.m[5] * y + mvp.m[9]  * z + mvp.m[13];
+	cz = mvp.m[2] * x + mvp.m[6] * y + mvp.m[10] * z + mvp.m[14];
+	cw = mvp.m[3] * x + mvp.m[7] * y + mvp.m[11] * z + mvp.m[15];
 
-	/* The 2D canvases use an orthogonal projection with w == 1, so the
-	 * perspective divide is a no-op; it is kept because the 3D shim (step 3)
-	 * will need it and the maths is the same. */
+	if (shim_clipping)
 	{
-		float cw = mvp.m[3] * x + mvp.m[7] * y + mvp.m[11] * z + mvp.m[15];
-		if (cw != 0.0f && cw != 1.0f)
-		{
-			cx /= cw;
-			cy /= cw;
-		}
+		/* Perspective: keep the vertex in clip space.  Dividing by w
+		 * here would be dividing by a number that can be zero or
+		 * negative, which is how a polygon that crossed the camera
+		 * ended up painted across the whole panel.  The primitive is
+		 * clipped and mapped in shim_flush_3d(), when glEnd() knows
+		 * what the polygon is. */
+		r_clip_vertex_t *cv = &shim_clip_vertices[shim_vertex_count++];
+
+		cv->x = cx;
+		cv->y = cy;
+		cv->z = cz;
+		cv->w = cw;
+		cv->u = shim_current_u;
+		cv->v = shim_current_v;
+		cv->color = shim_current_color;
+		return;
 	}
 
+	/* Orthogonal: w is 1, cz is not used (the 2D canvases draw everything at
+	 * the same depth and the GE compares what they give it). */
 	sx = (float)shim_vp_x + (cx * 0.5f + 0.5f) * (float)shim_vp_w;
 	sy = (float)PSP_SCREEN_HEIGHT -
 	     ((float)shim_vp_y + (cy * 0.5f + 0.5f) * (float)shim_vp_h);
@@ -1748,6 +1764,176 @@ static void shim_flush_quads (void)
 }
 
 /* ------------------------------------------------------------------ */
+/* the 3D path                                                        */
+/* ------------------------------------------------------------------ */
+
+/* How close to the eye a vertex may get.  Not zero: w lands in the denominator
+ * of the divide, and a vertex at w == 0.0000001 is a screen coordinate in the
+ * millions.  A thousandth of a unit in front of the eye is far inside anything
+ * a near plane of half a unit ever shows. */
+#define SHIM_NEAR_W 0.001f
+
+static unsigned int shim_3d_triangles;   /* since the shim started */
+static unsigned int shim_3d_clipped;
+static int          shim_3d_logged;
+
+/* Map one clipped vertex onto the panel: the perspective divide, the viewport,
+ * and the depth the GE compares.  This is the 2D mapping in shim_emit_vertex()
+ * with the divide actually performed, and it exists separately because a
+ * clipped polygon has vertices that never went through glVertex. */
+static void shim_project_clip (shim_vertex_t *out, const r_clip_vertex_t *cv)
+{
+	float iw = 1.0f / cv->w;
+	float nx = cv->x * iw;
+	float ny = cv->y * iw;
+	float nz = cv->z * iw;
+
+	out->u = cv->u * shim_u_scale;
+	out->v = cv->v * shim_v_scale;
+	out->color = cv->color;
+	out->x = (float)shim_vp_x + (nx * 0.5f + 0.5f) * (float)shim_vp_w;
+	out->y = (float)PSP_SCREEN_HEIGHT -
+	         ((float)shim_vp_y + (ny * 0.5f + 0.5f) * (float)shim_vp_h);
+	/* GL's normalised depth is -1..1, the GE's is 0..1.  gu_psp.c sets the
+	 * depth range to 65535..0, so this maps the near plane to the value the
+	 * GE treats as nearest. */
+	out->z = nz * 0.5f + 0.5f;
+}
+
+/* One triangle, clipped at the near plane and handed to the GE.
+ *
+ * The result of clipping a triangle is a triangle or a quad, and a quad is
+ * drawn as a fan of two -- which is why the loop below starts at 2, not 3. */
+static void shim_emit_3d_triangle (const r_clip_vertex_t *a,
+                                   const r_clip_vertex_t *b,
+                                   const r_clip_vertex_t *c)
+{
+	r_clip_vertex_t  tri[3];
+	r_clip_vertex_t  poly[R_CLIP_MAX];
+	int              m, i;
+
+	shim_3d_triangles++;
+
+	if (a->w < SHIM_NEAR_W && b->w < SHIM_NEAR_W && c->w < SHIM_NEAR_W)
+		return;                      /* wholly behind: nothing to draw */
+
+	if (a->w < SHIM_NEAR_W || b->w < SHIM_NEAR_W || c->w < SHIM_NEAR_W)
+		shim_3d_clipped++;
+
+	tri[0] = *a;
+	tri[1] = *b;
+	tri[2] = *c;
+
+	m = r_clip_near(tri, 3, poly, R_CLIP_MAX, SHIM_NEAR_W);
+	if (m < 3)
+		return;
+
+	for (i = 2; i < m; i++)
+	{
+		shim_vertex_t *v = shim_ge_alloc(3);
+
+		if (!v)
+			return;
+
+		shim_project_clip(&v[0], &poly[0]);
+		shim_project_clip(&v[1], &poly[i - 1]);
+		shim_project_clip(&v[2], &poly[i]);
+
+		/* Same primitive and texture as the previous triangle, so the
+		 * batch merges them into one sceGuDrawArray: a surface of
+		 * thirty polygons is still one command. */
+		shim_batch_add(GU_TRIANGLES, shim_texture_bound, v, 3);
+	}
+}
+
+/* Turn the primitive accumulated since glBegin() into clipped triangles.
+ *
+ * Everything becomes a triangle list here, including GL_QUADS and GL_POLYGON,
+ * because the clipper works on a polygon and a triangle is the only shape a
+ * clipped polygon can always be broken into without knowing more about it.  The
+ * engine's 3D path sends GL_POLYGON for a BSP surface and GL_TRIANGLES for
+ * models; both arrive here. */
+static void shim_flush_3d (void)
+{
+	int n = shim_vertex_count;
+	int i;
+
+	shim_frame_draws++;
+	shim_trace_draw(n, shim_prim_name(shim_primitive), 0);
+
+	if (!shim_3d_logged)
+	{
+		shim_3d_logged = 1;
+		psp_tracef("3d: first perspective primitive: %s of %d vertices, "
+		           "near plane w %.4f, proj m15 %.3f m3 %.3f",
+		           shim_prim_name(shim_primitive), n, (double)SHIM_NEAR_W,
+		           (double)shim_projection.m[15],
+		           (double)shim_projection.m[3]);
+	}
+
+	switch (shim_primitive)
+	{
+	case GL_QUADS:
+		/* v0 v1
+		 * v3 v2   -- the order the engine always uses (see
+		 * shim_flush_quads, which relies on the same one). */
+		for (i = 0; i + 3 < n; i += 4)
+		{
+			shim_emit_3d_triangle(&shim_clip_vertices[i + 0],
+			                      &shim_clip_vertices[i + 1],
+			                      &shim_clip_vertices[i + 2]);
+			shim_emit_3d_triangle(&shim_clip_vertices[i + 0],
+			                      &shim_clip_vertices[i + 2],
+			                      &shim_clip_vertices[i + 3]);
+		}
+		break;
+
+	case GL_TRIANGLES:
+		for (i = 0; i + 2 < n; i += 3)
+			shim_emit_3d_triangle(&shim_clip_vertices[i + 0],
+			                      &shim_clip_vertices[i + 1],
+			                      &shim_clip_vertices[i + 2]);
+		break;
+
+	case GL_TRIANGLE_STRIP:
+		for (i = 0; i + 2 < n; i++)
+		{
+			/* A strip alternates its winding; the clipper does not
+			 * care about winding, but a reader of this code does. */
+			if (i & 1)
+				shim_emit_3d_triangle(&shim_clip_vertices[i + 1],
+				                      &shim_clip_vertices[i + 0],
+				                      &shim_clip_vertices[i + 2]);
+			else
+				shim_emit_3d_triangle(&shim_clip_vertices[i + 0],
+				                      &shim_clip_vertices[i + 1],
+				                      &shim_clip_vertices[i + 2]);
+		}
+		break;
+
+	case GL_TRIANGLE_FAN:
+	case GL_POLYGON:      /* a convex polygon is a fan around its first vertex */
+		for (i = 1; i + 1 < n; i++)
+			shim_emit_3d_triangle(&shim_clip_vertices[0],
+			                      &shim_clip_vertices[i],
+			                      &shim_clip_vertices[i + 1]);
+		break;
+
+	default:
+		/* Points and lines: the engine draws none of them in the world,
+		 * and clipping a line is a different routine.  Named once in the
+		 * log rather than silently dropped. */
+		if (shim_3d_logged == 1)
+		{
+			shim_3d_logged = 2;
+			psp_tracef("3d: primitive %s is not drawn in 3D yet",
+			           shim_prim_name(shim_primitive));
+		}
+		break;
+	}
+}
+
+/* ------------------------------------------------------------------ */
 /* gl* entry points                                                   */
 /* ------------------------------------------------------------------ */
 
@@ -1755,6 +1941,10 @@ void glBegin (GLenum mode)
 {
 	shim_primitive = (int)mode;
 	shim_vertex_count = 0;
+	/* Decided once per primitive, so every vertex of it takes the same
+	 * path: half a triangle mapped in 2D and half clipped is nothing anyone
+	 * wants. */
+	shim_clipping = shim_perspective();
 }
 
 void glEnd (void)
@@ -1777,6 +1967,13 @@ void glEnd (void)
 	else
 	{
 		shim_guTexEnable(0);
+	}
+
+	if (shim_clipping)
+	{
+		shim_flush_3d();
+		shim_vertex_count = 0;
+		return;
 	}
 
 	if (shim_primitive == GL_QUADS)

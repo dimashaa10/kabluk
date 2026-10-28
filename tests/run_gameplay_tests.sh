@@ -676,3 +676,67 @@ awk '
 ' Quake/menu.c || exit 1
 echo "PASS: a picture whose name is empty is not loaded, not cached and not"
 echo "PASS: drawn -- the save/load screen asks for no title picture at all."
+
+# ---- the 3D pipeline starts with the near-plane clipper ------------------
+#
+# Stage M5 is the world, and the world cannot be drawn without clipping: a
+# polygon that crosses the camera has a vertex with w <= 0, and a perspective
+# divide by a number that is not positive puts the polygon on the wrong side of
+# the screen.  That is not a theory -- it is the shape of the wedges this port
+# has been chasing.
+#
+# The clipper lives in its own file with no GL, no GE and no PSP in it, so it
+# is checked here, on the build machine, with numbers: clipping is the one part
+# of the 3D pipeline that can be wrong in a way the panel shows only as "the
+# world is inside out".
+if [ ! -f port/psp/r_clip.c ] || [ ! -f port/psp/r_clip.h ]; then
+    echo "FAIL: the near-plane clipper is gone (port/psp/r_clip.c)"
+    exit 1
+fi
+if ! cc -std=gnu11 -Wall -Wextra -o "$work/test_clip" tests/test_clip.c \
+        port/psp/r_clip.c 2> "$work/test_clip.log"; then
+    echo "FAIL: the clipper does not build on its own:"
+    sed -n 1,20p "$work/test_clip.log"
+    exit 1
+fi
+if ! "$work/test_clip" > "$work/test_clip.out" 2>&1; then
+    cat "$work/test_clip.out"
+    exit 1
+fi
+# ...and it is actually in the frame path, and only where it belongs.  A
+# primitive is routed to the clipper in glBegin() from the projection in force,
+# and glEnd() has to hand it over; the 2D canvases keep the old path.
+awk '
+  /^void glBegin/ { inb = 1 }
+  inb && /shim_clipping = shim_perspective *\(\);/ { set = 1 }
+  inb && /^}/ { inb = 0 }
+  /^void glEnd/ { ine = 1 }
+  ine && /if \(shim_clipping\)/ { hook = 1 }
+  ine && /shim_flush_3d *\(\);/ { call = 1 }
+  ine && /^}/ { ine = 0 }
+  END {
+      if (!set)  { printf "FAIL: glBegin does not choose the path from the projection\n"; exit 1 }
+      if (!hook) { printf "FAIL: glEnd never checks whether the primitive is 3D\n"; exit 1 }
+      if (!call) { printf "FAIL: a 3D primitive is never clipped\n"; exit 1 }
+  }
+' port/psp/gl_shim.c || exit 1
+# The 2D path must not have moved: an orthogonal projection still maps the
+# vertex straight onto the panel inside shim_emit_vertex().
+awk '
+  /^static void shim_emit_vertex/ { inf = 1 }
+  inf && /if \(shim_clipping\)/ { branch = 1 }
+  inf && /sx = \(float\)shim_vp_x/ { map = 1 }
+  inf && /^}/ { inf = 0 }
+  END {
+      if (!branch) { printf "FAIL: shim_emit_vertex lost its 3D branch\n"; exit 1 }
+      if (!map)    { printf "FAIL: shim_emit_vertex no longer maps a 2D vertex\n"; exit 1 }
+  }
+' port/psp/gl_shim.c || exit 1
+# And the module links it: a source that is not in PSP_BACKEND is a source that
+# the linker never sees.
+grep -q 'r_clip.o' port/psp/Makefile || {
+    echo "FAIL: r_clip.o is not in the PSP build"
+    exit 1
+}
+echo "PASS: the near-plane clipper is in the build, checked by numbers on the"
+echo "PASS: build machine, and only a perspective primitive goes through it."

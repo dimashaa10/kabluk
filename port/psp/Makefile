@@ -363,8 +363,8 @@ tests: $(TEST_EBOOTS)
 # without them the module has no header and psp_con_* stay undefined.
 PSP_BACKEND := psp_boot.o psp_console.o psp_heap.o psp_mem.o \
                main_psp.o sys_psp.o pl_psp.o in_psp.o pad_map.o snd_psp.o \
-               cd_psp.o vid_psp.o gu_psp.o gl_shim.o tex_arena.o gl_stub.o \
-               sdl_stub.o net_psp.o
+               cd_psp.o vid_psp.o gu_psp.o gl_shim.o r_clip.o tex_arena.o \
+               gl_stub.o sdl_stub.o net_psp.o
 
 GAME_ENGINE_OBJS := $(filter-out $(DESKTOP_ONLY) $(PSP_UNSUPPORTED),$(OBJS))
 GAME_DIR    := $(BUILD)/game
