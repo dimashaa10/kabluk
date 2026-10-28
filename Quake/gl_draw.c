@@ -301,19 +301,54 @@ qpic_t *Draw_RevivePic (qpic_t *pic)
 	return &entry->pic;
 }
 
-/* Release the texture of every cached picture that has not been drawn in the
- * last min_idle_frames frames.
+/* Never free a texture that is not this picture's own.
  *
- * Returns the number of pictures released.  The pictures themselves stay in
- * the cache: the next Draw_CachePic()/Draw_PicFromWad() with the same name
- * finds the entry marked evicted, loads it again into the same slot, and
- * returns the same qpic_t address it always returned. */
+ * This is what the hardware log caught next, once idleness really worked
+ * (build 07:04): the first emergency pass released 155 pictures at once and
+ * sixty-odd of the frees answered
+ *
+ *     TexMgr_FreeTexture: not found
+ *
+ * -- sixty-odd, not zero.  Small pictures do not get a texture of their own:
+ * Draw_PicFromWad2() packs them into the two 256x256 scrap atlases
+ * (scrap_textures[]), so every one of those cache entries points at the SAME
+ * gltexture_t.  Freeing it for the first entry deletes the atlas that dozens
+ * of other pictures are drawn from; every free after that finds nothing, and
+ * the memory the atlas held is never given back -- the log shows the arena at
+ * "1273 KB used of 1808 KB" right after releasing everything, i.e. most of it
+ * stayed allocated with nothing left pointing at it.
+ *
+ * So a texture that more than one live cache entry refers to is not ours to
+ * release, and neither is a scrap atlas.  Both are cheap (an atlas serves many
+ * pictures at once), so skipping them costs little and keeps the cache honest. */
+static qboolean Draw_TextureIsShared (gltexture_t *t);
+
+/* How many pictures one pass may release.
+ *
+ * Releasing "everything that has been idle for two frames" is what turned the
+ * first working pass into a stampede: 155 pictures dropped, the arena cut back
+ * to 6 chunks, and then the interface asked for all of them again -- a hundred
+ * re-decodes from the memory stick in a few frames, which on the panel is a
+ * stall.  Sixteen oldest-first is enough to make room for a 256 KB picture in
+ * one or two passes and does not empty the cache behind a screen that is about
+ * to be drawn again. */
+#define CACHEPIC_MAX_PER_PASS	16
+
+/* Release the textures of cached pictures that have not been drawn in the last
+ * min_idle_frames frames, oldest first, as many as fit the pass budget.
+ *
+ * Returns how many were released.  The pictures themselves stay in the cache:
+ * the next Draw_CachePic()/Draw_PicFromWad() with the same name finds the entry
+ * marked evicted, loads it again into the same slot, and returns the same qpic_t
+ * address it always returned.  Draw_RevivePic() does the same for callers that
+ * only ever hold the pointer. */
 int Draw_EvictCachePics (int min_idle_frames)
 {
 	cachepic_t *pic;
-	int i, released = 0;
+	int i, pass, released = 0;
+	byte shared[MAX_CACHED_PICS];
 #ifdef PSP_CACHEPIC_DIAG
-	int live = 0, lowreq = 0, fresh = 0, notex = 0, gone = 0;
+	int live = 0, lowreq = 0, fresh = 0, notex = 0, gone = 0, is_shared = 0;
 #endif
 
 	if (!draw_initialized)
@@ -331,88 +366,125 @@ int Draw_EvictCachePics (int min_idle_frames)
 		return 0;
 	}
 
-	for (pic = menu_cachepics, i = 0; i < menu_numcachepics; pic++, i++)
+	/* Which textures are shared, decided once: two entries with the same
+	 * gltexture_t mean neither may free it (see Draw_TextureIsShared). */
+	memset(shared, 0, sizeof(shared));
+
+	for (i = 0; i < menu_numcachepics; i++)
 	{
-		glpic_t *gl;
+		glpic_t *a, *b;
+		int j;
 
-		if (pic->evicted || !pic->name[0])
-		{
-#ifdef PSP_CACHEPIC_DIAG
-			gone++;
-#endif
+		if (menu_cachepics[i].evicted || !menu_cachepics[i].name[0])
 			continue;
+
+		a = (glpic_t *)menu_cachepics[i].pic.data;
+		if ((uintptr_t)a < 0x1000 || !a->gltexture)
+			continue;
+
+		for (j = i + 1; j < menu_numcachepics; j++)
+		{
+			if (menu_cachepics[j].evicted || !menu_cachepics[j].name[0])
+				continue;
+
+			b = (glpic_t *)menu_cachepics[j].pic.data;
+			if ((uintptr_t)b < 0x1000 || !b->gltexture)
+				continue;
+
+			if (b->gltexture == a->gltexture)
+				shared[i] = shared[j] = 1;
+		}
+	}
+
+	for (pass = 0; pass < CACHEPIC_MAX_PER_PASS; pass++)
+	{
+		cachepic_t *oldest = NULL;
+		glpic_t *oldest_gl = NULL;
+
+		for (pic = menu_cachepics, i = 0; i < menu_numcachepics; pic++, i++)
+		{
+			glpic_t *gl;
+
+			if (pic->evicted || !pic->name[0])
+			{
+#ifdef PSP_CACHEPIC_DIAG
+				if (pass == 0)
+					gone++;
+#endif
+				continue;
+			}
+
+#ifdef PSP_CACHEPIC_DIAG
+			if (pass == 0)
+				live++;
+#endif
+
+			/* Idleness alone decides, now -- see the note on
+			 * Draw_RevivePic: the picture is loaded again by whoever
+			 * draws it, into the same qpic_t, so nothing dangles. */
+#ifdef PSP_CACHEPIC_DIAG
+			if (pass == 0 && pic->requests < CACHEPIC_REQUESTS_TO_EVICT)
+				lowreq++;
+#endif
+
+			if ((int)host_framecount - pic->lastframe < min_idle_frames)
+			{
+#ifdef PSP_CACHEPIC_DIAG
+				if (pass == 0)
+					fresh++;
+#endif
+				continue;
+			}
+
+			gl = (glpic_t *)pic->pic.data;
+			if ((uintptr_t)gl < 0x1000 || !gl->gltexture)
+			{
+#ifdef PSP_CACHEPIC_DIAG
+				if (pass == 0)
+					notex++;
+#endif
+				continue;
+			}
+
+			/* Shared or packed into a scrap atlas: not ours to free. */
+			if (shared[i] || Draw_TextureIsShared(gl->gltexture))
+			{
+#ifdef PSP_CACHEPIC_DIAG
+				if (pass == 0)
+					is_shared++;
+#endif
+				continue;
+			}
+
+			/* Oldest first: the picture least likely to be drawn in
+			 * the next few frames is the one worth its memory. */
+			if (!oldest || pic->lastframe < oldest->lastframe)
+			{
+				oldest = pic;
+				oldest_gl = gl;
+			}
 		}
 
-#ifdef PSP_CACHEPIC_DIAG
-		live++;
-#endif
+		if (!oldest)
+			break;
 
-		/* Idleness alone, now.  This used to refuse to release anything that
-		 * had been asked for fewer than eight times, because a picture asked
-		 * once and kept in somebody's static pointer would have dangled.
-		 *
-		 * That rule is what made the pool grow until it was full and then
-		 * refuse to give anything back: the log had 124 live pictures and
-		 * "0 idle pictures unloaded" on every emergency pass, because the
-		 * QC menu and the status bar ask for a picture once and then keep
-		 * the pointer.  Draw_RevivePic() in the draw path is what replaced
-		 * the rule -- a released picture is loaded again by whoever draws
-		 * it, into the same qpic_t, so nothing dangles and nothing is
-		 * permanently lost. */
-#ifdef PSP_CACHEPIC_DIAG
-		if (pic->requests < CACHEPIC_REQUESTS_TO_EVICT)
-			lowreq++;
-#endif
-
-		if ((int)host_framecount - pic->lastframe < min_idle_frames)
-		{
-#ifdef PSP_CACHEPIC_DIAG
-			fresh++;
-#endif
-			continue;
-		}
-
-		gl = (glpic_t *)pic->pic.data;
-		if ((uintptr_t)gl < 0x1000 || !gl->gltexture)
-		{
-#ifdef PSP_CACHEPIC_DIAG
-			notex++;
-#endif
-			continue;
-		}
-
-		TexMgr_FreeTexture(gl->gltexture);
+		TexMgr_FreeTexture(oldest_gl->gltexture);
 
 		/* Nothing may be drawn from this entry until it is reloaded: a
 		 * zeroed glpic_t is GL_Bind(0), which is the null texture, and a
 		 * zero size draws nothing at all.  That is the right failure for
 		 * a picture somebody kept a pointer to -- an empty space, not
 		 * another picture's texels. */
-		memset(pic->pic.data, 0, sizeof(glpic_t));
-		pic->pic.width = pic->pic.height = 0;
-		pic->evicted = true;
+		memset(oldest->pic.data, 0, sizeof(glpic_t));
+		oldest->pic.width = oldest->pic.height = 0;
+		oldest->evicted = true;
 		released++;
 	}
 
-	/* The emergency pass found nothing to give up while the pool is full.
-	 * That is not a state to guess about: say which rule stopped every
-	 * picture, because the three rules fail for very different reasons and
-	 * only one of them is a bug.
-	 *
-	 * This line is why it is here: a run on the emulator held
-	 *
-	 *     tex: arena short for 256 KB: 0 idle pictures unloaded, retry
-	 *          STILL FAILED (17 chunks, 4664 KB used of 4904 KB)
-	 *
-	 * with 124 pictures alive, so the pool was full and nothing could be
-	 * released -- and no number in the log said whether that is because the
-	 * menu really does use all of them in the last two frames, or because
-	 * the cache is not counting asks at all. */
 #ifdef PSP_CACHEPIC_DIAG
-	/* A pass that released nothing while the pool is full is the state the
-	 * hardware log kept showing, and it is worth exactly one line: which rule
-	 * stopped every picture.  Once per ten seconds at most, so a full pool
-	 * cannot flood the log. */
+	/* A pass that released nothing while the pool is full is worth exactly
+	 * one line: which rule stopped every picture.  Once per ten seconds at
+	 * most, so a full pool cannot flood the log. */
 	if (released == 0 && live > 0)
 	{
 		static int last_report;
@@ -422,10 +494,11 @@ int Draw_EvictCachePics (int min_idle_frames)
 			last_report = (int)host_framecount ? (int)host_framecount : 1;
 			PSP_NOTE("pic: evict(%d) released nothing: %d live of %d entries "
 			         "(%d already evicted, %d asked under %d times), %d drawn "
-			         "in the last %d frames, %d without a texture",
+			         "in the last %d frames, %d without a texture, %d shared "
+			         "(scrap atlas or held by another entry)",
 			         min_idle_frames, live, (int)menu_numcachepics, gone,
 			         lowreq, CACHEPIC_REQUESTS_TO_EVICT, fresh,
-			         min_idle_frames, notex);
+			         min_idle_frames, notex, is_shared);
 		}
 	}
 	else if (released > 0)
@@ -436,7 +509,8 @@ int Draw_EvictCachePics (int min_idle_frames)
 
 		if (released_total == released)
 			PSP_NOTE("pic: picture cache can release memory now: %d pictures "
-			         "released in the first pass", released);
+			         "released in the first pass, %d per pass at most",
+			         released, CACHEPIC_MAX_PER_PASS);
 	}
 #endif
 
@@ -490,6 +564,27 @@ int			scrap_allocated[MAX_SCRAPS][BLOCK_WIDTH];
 byte		scrap_texels[MAX_SCRAPS][BLOCK_WIDTH*BLOCK_HEIGHT]; //johnfitz -- removed *4 after BLOCK_HEIGHT
 qboolean	scrap_dirty;
 gltexture_t	*scrap_textures[MAX_SCRAPS]; //johnfitz
+
+/* Is this texture the scrap atlas, or something the scrap holds?
+ *
+ * Small pictures do not get a texture each: Draw_PicFromWad2() packs them into
+ * scrap_textures[] and many cache entries then point at the same atlas.  The
+ * atlas must never be released on behalf of one of them -- see the note on
+ * Draw_TextureIsShared's declaration, and the sixty "TexMgr_FreeTexture: not
+ * found" lines it explains. */
+static qboolean Draw_TextureIsShared (gltexture_t *t)
+{
+	int i;
+
+	if (!t)
+		return true;
+
+	for (i = 0; i < MAX_SCRAPS; i++)
+		if (scrap_textures[i] == t)
+			return true;
+
+	return false;
+}
 
 
 /*

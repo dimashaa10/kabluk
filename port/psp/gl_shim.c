@@ -832,11 +832,30 @@ static void *shim_picture_alloc (size_t need)
 	 * menu that is merely full of pictures turns into a second-long stall. */
 	if (shim_evict_hook)
 	{
-		int released = shim_evict_hook();
+		int released = 0;
+		int tries;
 
-		shim_arena_trim();
+		/* The hook releases a bounded batch (see CACHEPIC_MAX_PER_PASS in
+		 * gl_draw.c), because emptying the whole cache behind a screen that
+		 * is about to be drawn again costs a hundred re-decodes from the
+		 * memory stick.  So ask it again while the batch it gave back was
+		 * worth something: sixteen pictures at a time until either the
+		 * picture fits or a pass releases nothing. */
+		for (tries = 0; tries < 8; tries++)
+		{
+			int got = shim_evict_hook();
 
-		p = tex_arena_alloc(&shim_arena, need);
+			released += got;
+
+			shim_arena_trim();
+
+			p = tex_arena_alloc(&shim_arena, need);
+			if (p)
+				break;
+
+			if (got == 0)
+				break;
+		}
 		if (p)
 		{
 			/* Worth a line in the log: it says the pool was full, what
@@ -857,10 +876,12 @@ static void *shim_picture_alloc (size_t need)
 		{
 			shim_arena_short_logs++;
 			psp_tracef("tex: arena short for %d KB: %d idle pictures unloaded, "
-			           "retry STILL FAILED (%d chunks, %d KB used of %d KB)",
+			           "retry STILL FAILED (%d chunks, %d KB used of %d KB, "
+			           "largest free %d KB)",
 			           (int)(need / 1024), released, shim_arena.chunks,
 			           (int)(tex_arena_used(&shim_arena) / 1024),
-			           (int)(tex_arena_size(&shim_arena) / 1024));
+			           (int)(tex_arena_size(&shim_arena) / 1024),
+			           (int)(tex_arena_largest_free(&shim_arena) / 1024));
 		}
 	}
 
