@@ -15117,8 +15117,14 @@ static qboolean MQC_Init(void)
 			}
 
 
-		qcvm->max_edicts = CLAMP (MIN_EDICTS,(int)max_edicts.value,MAX_EDICTS);
-		qcvm->edicts = (edict_t *) malloc (qcvm->max_edicts*qcvm->edict_size);
+		if (!PR_AllocEdicts (qcvm))
+		{
+			/* No entity array means no menu VM: drop the progs entirely so
+			 * nothing runs against a NULL edicts. */
+			PR_ClearProgs(qcvm);
+			PR_SwitchQCVM(NULL);
+			return false;
+		}
 		qcvm->num_edicts = qcvm->reserved_edicts = 1;
 		memset(qcvm->edicts, 0, qcvm->num_edicts*qcvm->edict_size);
 

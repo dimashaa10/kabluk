@@ -3869,8 +3869,16 @@ void SV_SpawnServer (const char *server)
 
 // allocate server memory
 	/* Host_ClearMemory() called above already cleared the whole sv structure */
-	qcvm->max_edicts = CLAMP (MIN_EDICTS,(int)max_edicts.value,MAX_EDICTS); //johnfitz -- max_edicts cvar
-	qcvm->edicts = (edict_t *) malloc (qcvm->max_edicts*qcvm->edict_size); // ericw -- sv.edicts switched to use malloc()
+	/* johnfitz -- max_edicts cvar; the size now comes from what the platform has
+	 * (PR_AllocEdicts), and a failure is an error with numbers instead of a
+	 * NULL that the very next memset writes through -- the console died exactly
+	 * there, on 15000 * 1160 bytes. */
+	if (!PR_AllocEdicts (qcvm))
+	{
+		Con_Printf ("Couldn't spawn server, no memory for %d edicts\n", qcvm->max_edicts);
+		sv.active = false;
+		return;
+	}
 
 	sv.datagram.maxsize = sizeof(sv.datagram_buf);
 	sv.datagram.cursize = 0;

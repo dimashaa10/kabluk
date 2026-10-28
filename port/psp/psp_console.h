@@ -75,6 +75,13 @@ void psp_con_screen_off (void);
  * psp_console.c).  For anything that can fire many times inside one frame. */
 void psp_tracef (const char *fmt, ...);
 
+/* One formatted line that is on the card before this returns.  For the places
+ * where the very next call can take the module down with no message: a
+ * whole-file allocation that is about to be attempted, and the report around a
+ * progs load.  Costs one card round trip (tens of milliseconds) -- never in a
+ * per-frame or per-picture path. */
+void psp_trace_syncf (const char *fmt, ...);
+
 /* While this is on, every traced line and every mark goes to the card
  * immediately instead of waiting for the watchdog's once-a-second drain.  For
  * the one place the console dies without a message: see the note in

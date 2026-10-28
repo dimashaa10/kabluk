@@ -1385,8 +1385,14 @@ static void CL_LoadCSProgs(void)
 			(PR_LoadProgs("csprogs.dat", false, PROGHEADER_CRC, pr_csqcbuiltins, pr_csqcnumbuiltins) && (qcvm->extfuncs.CSQC_DrawHud||qcvm->extfuncs.CSQC_DrawScores||cl.qcvm.extfuncs.CSQC_UpdateView))||
 			(PR_LoadProgs("progs.dat",   false, PROGHEADER_CRC, pr_csqcbuiltins, pr_csqcnumbuiltins) && (qcvm->extfuncs.CSQC_DrawHud||cl.qcvm.extfuncs.CSQC_UpdateView)))
 		{
-			qcvm->max_edicts = CLAMP (MIN_EDICTS,(int)max_edicts.value,MAX_EDICTS);
-			qcvm->edicts = (edict_t *) malloc (qcvm->max_edicts*qcvm->edict_size);
+			/* Same allocation as the server's, same failure: a NULL here was
+			 * a write through it two lines down. */
+			if (!PR_AllocEdicts (qcvm))
+			{
+				PR_ClearProgs(qcvm);
+				PR_SwitchQCVM(NULL);
+				return;
+			}
 			qcvm->num_edicts = qcvm->reserved_edicts = 1;
 			memset(qcvm->edicts, 0, qcvm->num_edicts*qcvm->edict_size);
 			for (i = 0; i < qcvm->num_edicts; i++)

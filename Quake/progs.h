@@ -72,6 +72,10 @@ void PR_Init (void);
 void PR_ExecuteProgram (func_t fnum);
 void PR_ClearProgs(qcvm_t *vm);
 qboolean PR_LoadProgs (const char *filename, qboolean fatal, unsigned int needcrc, const builtin_t *builtins, size_t numbuiltins);
+/* The VM's entity array (max_edicts * edict_size, ~17 MB at the default
+ * max_edicts of 15000).  Sized to the room the platform actually has, printed
+ * on the console, and false instead of a NULL that gets written through. */
+qboolean PR_AllocEdicts (qcvm_t *vm);
 
 //from pr_ext.c
 void PR_InitExtensions(void);

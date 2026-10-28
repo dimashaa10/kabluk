@@ -23,6 +23,13 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "quakedef.h"
 
+#if defined(PLATFORM_PSP) || defined(__psp__)
+/* port/psp/psp_console.c.  psp_tracef() joins the log batch, psp_trace_syncf()
+ * is on the card when it returns -- see the note on PR_AllocEdicts. */
+extern void psp_tracef (const char *fmt, ...);
+extern void psp_trace_syncf (const char *fmt, ...);
+#endif
+
 int		type_size[8] = {
 	1,					// ev_void
 	1,	// sizeof(string_t) / 4		// ev_string
@@ -1287,6 +1294,118 @@ static void PR_MergeEngineFieldDefs (void)
 
 /*
 ===============
+PR_AllocEdicts
+
+The entity array of a VM: one malloc of max_edicts * edict_size, at the top of
+every map, in three places (SV_SpawnServer, CL_LoadCSProgs, MQC_Init).
+
+It used to be written out at each of them as
+
+	qcvm->max_edicts = CLAMP (MIN_EDICTS, (int)max_edicts.value, MAX_EDICTS);
+	qcvm->edicts = (edict_t *) malloc (max_edicts_cvar * edict_size);
+
+with max_edicts defaulting to 15000.  For this game's progs edict_size is 1160
+bytes, so the request is
+
+	15000 * 1160 = 17 400 000 bytes
+
+-- the exact number in the round-67 log:
+
+	malloc: NULL for 17400000 bytes at 0x08949d64 -- last pic: cached,
+	phase host frame: input/commands/clien
+
+The heap block malloc() serves on the console is 10 MB (port/psp/psp_heap.c),
+of which 2.2 MB were already in use, so this could never be served, and the
+NULL was written through a moment later: the module died at the top of the
+level.  It is not a file, not a picture and not a leak -- it is a fixed
+allocation six times bigger than the console can ever make.
+
+So the size is computed from what the console actually has, and the answer is
+printed.  Two things follow from it:
+
+  * a VM gets the most edicts that still leave ROOM_FOR_THE_LEVEL for
+    everything else -- the progs of the other VMs, model scratch buffers, the
+    pak directory.  A client VM that spawns after the server VM sees what is
+    left, and shrinks the same way;
+  * a malloc that still fails is reported with both numbers and the caller
+    turns it into a Host_Error instead of a write through NULL.
+
+On the desktop nothing changes: the reserve is only taken when the platform
+knows its heap (psp_heap_block_left() returns 0 elsewhere).
+===============
+*/
+qboolean PR_AllocEdicts (qcvm_t *vm)
+{
+	extern cvar_t max_edicts;
+	int	want;
+	char	why[160];
+
+	if (!vm || !vm->progs || vm->edict_size <= 0)
+		return false;
+
+	want = CLAMP (MIN_EDICTS, (int)max_edicts.value, MAX_EDICTS);
+	why[0] = '\0';
+
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	{
+		extern unsigned int psp_heap_block_left (void);
+		unsigned int room = psp_heap_block_left ();
+
+		if (room)
+		{
+			/* What the level still needs after the entity array: a
+			 * 4 MB reserve is generous next to what the console had in
+			 * use after Host_Init (2.2 MB) and it is what keeps a
+			 * second VM from failing after the first one took
+			 * everything.  Never more than half of the room, so a small
+			 * heap still gets a usable number. */
+			unsigned int reserve = 4u * 1024u * 1024u;
+			unsigned int fit;
+
+			if (reserve > room / 2u)
+				reserve = room / 2u;
+			fit = (room - reserve) / (unsigned int)vm->edict_size;
+
+			if (fit < (unsigned int)MIN_EDICTS)
+			{
+				psp_trace_syncf ("edicts: %d KB left in the heap cannot hold even "
+				                 "%d edicts of %d bytes -- no map can start",
+				                 (int)(room / 1024), MIN_EDICTS, vm->edict_size);
+				return false;
+			}
+
+			if ((unsigned int)want > fit)
+			{
+				snprintf (why, sizeof(why),
+				          " -- reduced from %d, the heap cannot hold it", want);
+				want = (int)fit;
+			}
+		}
+	}
+#endif
+
+	vm->max_edicts = want;
+	vm->edicts = (edict_t *) malloc ((size_t)want * (size_t)vm->edict_size);
+
+	snprintf (why + strlen(why), sizeof(why) - strlen(why),
+	          vm->edicts ? "" : " -- FAILED");
+
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	if (vm->edicts)
+		psp_tracef ("edicts: %d of %d bytes = %d KB%s", want, vm->edict_size,
+		            (int)(((long)want * vm->edict_size) / 1024), why);
+	else
+		psp_trace_syncf ("edicts: %d of %d bytes = %d KB%s", want, vm->edict_size,
+		                 (int)(((long)want * vm->edict_size) / 1024), why);
+#else
+	(void)why;
+#endif
+
+	return vm->edicts != NULL;
+}
+
+/*
+===============
 PR_LoadProgs
 ===============
 */
@@ -1316,7 +1435,6 @@ qboolean PR_LoadProgs (const char *filename, qboolean fatal, unsigned int needcr
 	 * and what the heap can still reach -- instead of the module dying on a
 	 * NULL that COM_LoadFile() turns into a Sys_Error() with nowhere to go. */
 	{
-		extern void psp_tracef (const char *fmt, ...);
 		extern unsigned int psp_heap_block_left (void);
 		FILE *probe = NULL;
 		int progsize = COM_FOpenFile (filename, &probe, NULL);

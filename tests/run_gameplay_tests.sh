@@ -986,6 +986,64 @@ echo "PASS: the map CRC reads the .bsp in 4 KB windows and returns the same"
 echo "PASS: numbers as the one-piece Com_BlockChecksum() it replaces, checked"
 echo "PASS: on the build machine."
 
+# ---- the 17.4 MB request was the entity array, not a file ------------------
+#
+# The round-67 log answered the failure with three lines that each try to load
+# a level on their own -- and none of them fit:
+#
+#     malloc: NULL for 17400000 bytes at 0x08949d64 -- last pic: cached
+#     progs: progs.dat is 362 KB; malloc can still reach 8068 KB
+#
+# The arithmetic names it.  Every VM allocates its entities as one block
+#
+#     qcvm->max_edicts = CLAMP (MIN_EDICTS, (int)max_edicts.value, MAX_EDICTS);
+#     qcvm->edicts = (edict_t *) malloc (qcvm->max_edicts * qcvm->edict_size);
+#
+# with max_edicts defaulting to 15000 (Quake/host.c) and edict_size 1160 bytes
+# for this game's progs: 15000 * 1160 = 17 400 000, exactly the size in the log.
+# Against a 10 MB heap block that request can never succeed, and the NULL is
+# written through by the memset two lines later -- which is why the console
+# died at the top of every level with no message.
+#
+# So the size now comes from the room the platform actually has
+# (PR_AllocEdicts, Quake/pr_edict.c): the most edicts that leave a reserve for
+# the level, printed, with a false return instead of a NULL to write through.
+awk '
+  /^qboolean PR_AllocEdicts/ { inf = 1 }
+  inf && /psp_heap_block_left *\(/ { room = 1 }
+  inf && /reserve *>/ { reserve = 1 }
+  inf && /vm->edicts = \(edict_t \*\) malloc/ { alloc = 1 }
+  inf && /return vm->edicts != NULL/ { nonnull = 1 }
+  inf && /^}/ { inf = 0 }
+  END {
+      if (!room)    { printf "FAIL: the entity array is not sized to the heap\n"; exit 1 }
+      if (!reserve) { printf "FAIL: the entity array takes the whole heap\n"; exit 1 }
+      if (!alloc)   { printf "FAIL: the entity array is not allocated in one place\n"; exit 1 }
+      if (!nonnull) { printf "FAIL: a failed entity allocation is not reported\n"; exit 1 }
+  }
+' Quake/pr_edict.c || exit 1
+# All three VMs (server, CSQC, menu) go through it, and none of them keeps its
+# own unchecked malloc.
+for f in Quake/sv_main.c Quake/host.c Quake/menu.c; do
+    grep -q 'PR_AllocEdicts' "$f" || {
+        echo "FAIL: $f still allocates the entity array by hand"
+        exit 1
+    }
+done
+if grep -rn 'malloc (qcvm->max_edicts' Quake/*.c; then
+    echo "FAIL: an unchecked entity array malloc is back"
+    exit 1
+fi
+# And the number is on the card, not in the batch: it is written where the last
+# crash happened, and the next instruction is a memset through the pointer.
+grep -q 'psp_trace_syncf ("edicts:' Quake/pr_edict.c || {
+    echo "FAIL: the entity allocation no longer reports its size durably"
+    exit 1
+}
+echo "PASS: the entity array is 15000 x 1160 = 17.4 MB, which is the number in"
+echo "PASS: the log; it is now sized to the heap the console has, reported on"
+echo "PASS: the card before the memset, and fails as an error instead of a NULL."
+
 # ---- a failed allocation names the line that asked for it ----------------
 #
 # Round 65 read `last pic: cached` and concluded "a picture decoder".  Round 66

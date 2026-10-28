@@ -2862,11 +2862,23 @@ byte *COM_LoadFile (const char *path, int usehunk, unsigned int *path_id)
 		 * ones (progs.dat of a stock game is 400 KB). */
 		if (len >= (1 << 20))
 		{
-			extern void psp_tracef (const char *fmt, ...);
-			psp_tracef ("load: %s wants one malloc of %d KB", path, len / 1024);
+			extern void psp_trace_syncf (const char *fmt, ...);
+			extern unsigned int psp_heap_block_left (void);
+			/* Durable: the line has to be on the card before the malloc
+			 * runs, because a NULL here ends the module (see above). */
+			psp_trace_syncf ("load: %s wants one malloc of %d KB, %d KB left",
+			                 path, len / 1024,
+			                 (int)(psp_heap_block_left() / 1024));
 		}
 #endif
 		buf = (byte *) malloc (len+1);
+#if defined(PLATFORM_PSP) || defined(__psp__)
+		if (!buf && len >= (1 << 20))
+		{
+			extern void psp_trace_syncf (const char *fmt, ...);
+			psp_trace_syncf ("load: %s FAILED -- %d KB requested, NULL returned", path, len / 1024);
+		}
+#endif
 		break;
 	default:
 		Sys_Error ("COM_LoadFile: bad usehunk");

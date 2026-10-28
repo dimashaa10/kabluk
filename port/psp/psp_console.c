@@ -941,6 +941,39 @@ void psp_tracef (const char *fmt, ...)
  * still names the last step it saw.*/
 static int con_marks_live = 1;
 
+/*
+ * A line that must survive the call it is written in.
+ *
+ * psp_tracef() and the engine's console output go into a RAM buffer and reach
+ * the card at most a second later (the watchdog drains it).  That is right for
+ * a running game and wrong for the two places where the very next call can take
+ * the module down with no message at all: an allocation that is about to be
+ * asked for a file, and the report of the one that failed.
+ *
+ * Round 67 is the example.  The log answered "malloc: NULL for 17400000 bytes"
+ * with three lines in the engine that all try to load a level on their own --
+ * "load: X wants N KB", "progs: ... is N KB" -- and every one of them was still
+ * in RAM when the console went off.  The failure line was on the card (it goes
+ * through con_log_direct, which syncs), the explanation right after it was not.
+ *
+ * So this is the primitive for those lines: it formats, writes, and syncs, one
+ * card write.  Use it sparingly -- a line per picture would put the port back
+ * to a slideshow -- and only where losing the line loses the diagnosis.
+ */
+void psp_trace_syncf (const char *fmt, ...)
+{
+	char buf[320];
+	va_list args;
+
+	va_start(args, fmt);
+	vsnprintf(buf, sizeof(buf), fmt, args);
+	va_end(args);
+
+	con_write(buf);
+	con_putc('\n');
+	con_log_sync();
+}
+
 /* How often a boot mark may reach the card: four times a second.
  *
  * The rule used to be "every mark, every time", on the argument that a mark is
