@@ -725,9 +725,28 @@ int psp_gl_shim_texture_sane (void)
 	return 0;
 }
 
-/* Give back every chunk that holds nothing.  Called after a picture is
- * released: on a console with no VRAM, memory that is not holding a picture
- * should be back in the heap where the map and the decoder can use it. */
+/* How much room the arena keeps for itself even when it is empty.
+ *
+ * Trimming every chunk that happens to be empty was thrashing the arena.  The
+ * hardware log of build 07:12 shows the shape of it:
+ *
+ *     tex: 67 pictures, 2399 KB in use of 2568 KB arena (9 chunks ...)
+ *     ...evict 16 pictures, their chunk becomes empty, trim frees it...
+ *     tex: arena short for 256 KB: 48 idle pictures unloaded, retry STILL
+ *          FAILED (6 chunks, 1401 KB used of 1808 KB, largest free 127 KB)
+ *
+ * i.e. the arena had been shrunk to 1808 KB by trimming while the interface
+ * still needed it, so the next picture had to come from a fresh 256 KB chunk
+ * that nothing would ever grow again during that emergency path.  Chunks are
+ * given back only above this much free room, which is more than any single
+ * menu screen asks for. */
+#define SHIM_ARENA_KEEP_FREE   (768u * 1024u)
+
+/* Give back the chunks that hold nothing, down to the watermark above.  Called
+ * after a picture is released: on a console with no VRAM, memory that is not
+ * holding a picture should be back in the heap where the map and the decoder
+ * can use it -- but not so eagerly that the interface has to take it back a
+ * frame later. */
 static void shim_arena_trim (void)
 {
 	int index;
@@ -737,8 +756,13 @@ static void shim_arena_trim (void)
 
 	while ((index = tex_arena_idle_chunk(&shim_arena)) >= 0)
 	{
-		void *base = shim_arena.chunk[index].base;
+		void *base;
 
+		if (tex_arena_size(&shim_arena) - tex_arena_used(&shim_arena) <=
+		    SHIM_ARENA_KEEP_FREE)
+			break;
+
+		base = shim_arena.chunk[index].base;
 		tex_arena_remove_chunk(&shim_arena, index);
 		free(base);
 	}
@@ -834,6 +858,7 @@ static void *shim_picture_alloc (size_t need)
 	{
 		int released = 0;
 		int tries;
+		int grew = 0;
 
 		/* The hook releases a bounded batch (see CACHEPIC_MAX_PER_PASS in
 		 * gl_draw.c), because emptying the whole cache behind a screen that
@@ -849,7 +874,27 @@ static void *shim_picture_alloc (size_t need)
 
 			shim_arena_trim();
 
+			/* The freed blocks are coalesced by the arena, but a
+			 * picture needs its box in ONE run: if the runs that came
+			 * back are not big enough, take another chunk.  Without
+			 * this the emergency path only ever freed memory and never
+			 * grew, which is exactly what the log shows -- "48 idle
+			 * pictures unloaded, retry STILL FAILED (6 chunks, 1401 KB
+			 * used of 1808 KB)" -- and the picture went outside the
+			 * pool. */
 			p = tex_arena_alloc(&shim_arena, need);
+
+			/* Two chunks at most per request: a run that is still too
+			 * small after that is a layout problem, not a shortage, and
+			 * the arena must not creep up to its cap one retry at a
+			 * time. */
+			if (!p && grew < 2 && tex_arena_largest_free(&shim_arena) < need &&
+			    shim_arena_grow(need))
+			{
+				grew++;
+				p = tex_arena_alloc(&shim_arena, need);
+			}
+
 			if (p)
 				break;
 
