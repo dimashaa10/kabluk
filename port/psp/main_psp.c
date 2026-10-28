@@ -224,7 +224,7 @@ int main (int argc, char *argv[])
 			 * GPU half of it. */
 			psp_phase("host frame: input/commands/client/screen");
 
-			/* One screen gets a line-per-line trail on the card: the
+			/* One screen gets a close-to-live trail on the card: the
 			 * save/load screen, which is where the port dies.  Every
 			 * other screen keeps the batched log.
 			 *
@@ -233,7 +233,14 @@ int main (int argc, char *argv[])
 			 * and the frame went from 20 ms to 350 ms -- the game felt
 			 * broken, and the diagnostic was the thing that broke it.
 			 * The save/load screen draws two pictures and is the one
-			 * being investigated, so it pays and nothing else does. */
+			 * being investigated, so it pays and nothing else does.
+			 *
+			 * It turned out to draw sixty lines a frame, not two --
+			 * the motif redraws every frame and every draw marks its
+			 * picture -- so even one round trip per line cost ~290 ms
+			 * per frame here.  The trail is now throttled in
+			 * psp_console.c: at most one card write per 15 ms, in
+			 * order, nothing dropped until the buffer is full. */
 			{
 				static int traced_saves = -1;
 				int on_saves = (key_dest == key_menu && M_IsSaveMenu());
@@ -241,8 +248,8 @@ int main (int argc, char *argv[])
 				if (on_saves != traced_saves)
 				{
 					traced_saves = on_saves;
-					psp_tracef("trace: the card is written per line %s",
-					           on_saves ? "on the save/load screen"
+					psp_tracef("trace: the card is written %s",
+					           on_saves ? "about sixty times a second on the save/load screen"
 					                    : "once a second again");
 				}
 

@@ -501,7 +501,7 @@ awk '
   inloop && /Host_Frame/ { if (!seen) { printf "FAIL: psp_con_trace_sync is not set before Host_Frame\n"; exit 1 } after = 1 }
   END { if (!after) { printf "FAIL: the frame loop does not set psp_con_trace_sync\n"; exit 1 } }
 ' port/psp/main_psp.c || exit 1
-# And a synced line must actually reach the card: the flag has to be read in
+# And a traced line must actually reach the card: the flag has to be read in
 # both the tracing and the mark paths.
 awk '
   /^void psp_tracef/ { inf = 1 }
@@ -515,8 +515,43 @@ awk '
       if (!m) { printf "FAIL: psp_mark never consults con_trace_sync\n"; exit 1 }
   }
 ' port/psp/psp_console.c || exit 1
-echo "PASS: on the save/load screen every traced line and mark goes to the card"
-echo "PASS: immediately, so the next log ends at the fault and not at a flush."
+
+# ...but a round trip per LINE is 5 ms, and the save/load screen emits sixty
+# lines a frame (the motif redraws, and the drawing code marks a picture per
+# draw).  The hardware log of round 61 shows what that costs: frames 5163-5190
+# in the save/load menu took 98, 285, 292, 290 and 287 ms with the GE idle at
+# 0.2 ms -- three frames a second, inside the menu the trail was meant to
+# explain.  So a traced line goes to the card through the throttled sync, and
+# the throttle is a real bound, not a comment.
+grep -q 'con_log_sync_throttled' port/psp/psp_console.c || exit 1
+grep -q 'define CON_TRACE_SYNC_MIN_US' port/psp/psp_console.c || exit 1
+awk '
+  /^void psp_tracef/ { inf = 1 }
+  inf && /con_log_sync \(\);/ { direct = 1 }
+  inf && /^}/ { inf = 0 }
+  END { if (direct) { printf "FAIL: a traced line goes straight to con_log_sync() again\n"; exit 1 } }
+' port/psp/psp_console.c || exit 1
+awk '
+  /^static void con_log_sync_throttled/ { inf = 1 }
+  inf && /CON_TRACE_SYNC_MIN_US/ { bound = 1 }
+  inf && /con_log_sync\(\)/ { call = 1 }
+  inf && /^}/ { inf = 0 }
+  END {
+      if (!bound) { printf "FAIL: the throttled sync has no time bound\n"; exit 1 }
+      if (!call) { printf "FAIL: the throttled sync never writes to the card\n"; exit 1 }
+  }
+' port/psp/psp_console.c || exit 1
+# Boot marks stay on the per-line path: they are one per picture load, tens of
+# milliseconds apart, and a fault in an initialiser has nothing else.
+awk '
+  /^void psp_mark/ { inm = 1 }
+  inm && /if \(con_marks_live\)/ { boot = 1 }
+  inm && boot && /con_log_sync\(\);/ { synced = 1 }
+  inm && /^}/ { inm = 0 }
+  END { if (!synced) { printf "FAIL: boot marks no longer reach the card per line\n"; exit 1 } }
+' port/psp/psp_console.c || exit 1
+echo "PASS: on the save/load screen the trail goes to the card in order and no more"
+echo "PASS: often than every 15 ms, so the screen renders instead of crawling."
 
 # The load/save screen asked for a picture whose name is no name at all.
 #

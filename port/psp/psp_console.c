@@ -118,6 +118,7 @@ static void con_log_lock (void);
 static void con_log_unlock (void);
 static void con_log_drain_locked (void);
 static void con_log_sync (void);
+static void con_log_sync_throttled (void);
 
 /* One card write: open (append) -- write -- close, all of it in one place.
  *
@@ -286,6 +287,41 @@ static void con_log_sync (void)
 	con_log_lock();
 	con_log_drain_locked();
 	con_log_unlock();
+}
+
+/*
+ * The same, but no more often than CON_TRACE_SYNC_MIN_US.
+ *
+ * Per-line sync is the only way to guarantee that the line which killed the
+ * module is itself on the card.  It is also, measured on the hardware, about
+ * 5 ms per line: open-write-close on the Memory Stick is a round trip, and the
+ * save/load screen issues sixty lines per frame (the drawing code marks a
+ * picture per draw, and that screen's motif redraws every frame).  Sixty round
+ * trips per frame is ~290 ms per frame -- the screen rendered, but at three
+ * frames a second, which is how this diagnostic turns into the bug it is
+ * supposed to find.
+ *
+ * So the trail keeps its order and its buffer, and reaches the card at most
+ * once every CON_TRACE_SYNC_MIN_US.  Nothing is dropped: con_log_append()
+ * already drains when the 4 KB buffer fills, so the card always holds every
+ * line older than that window.  What a hard fault can take with it is the last
+ * fraction of a frame of lines -- against one card write per frame instead of
+ * sixty.
+ */
+#define CON_TRACE_SYNC_MIN_US 15000
+
+static unsigned int con_sync_last_us;
+
+static void con_log_sync_throttled (void)
+{
+	unsigned int now = (unsigned int)(sceKernelGetSystemTimeWide() & 0xffffffffu);
+	unsigned int since = now - con_sync_last_us;	/* wraps cleanly */
+
+	if (con_sync_last_us && since < CON_TRACE_SYNC_MIN_US)
+		return;
+
+	con_sync_last_us = now;
+	con_log_sync();
 }
 
 static void con_log_line (const char *text)
@@ -805,9 +841,11 @@ void psp_tracef (const char *fmt, ...)
 	con_putc('\n');
 
 	/* Hunting the menu crash: get the line onto the card before the next
-	 * instruction can take the module down.  See the note above. */
+	 * instruction can take the module down.  See the note above -- and on
+	 * con_log_sync_throttled(), because one round trip per line is what made
+	 * the save/load screen take a third of a second per frame. */
 	if (con_trace_sync)
-		con_log_sync();
+		con_log_sync_throttled();
 }
 
 /*
@@ -910,12 +948,23 @@ void psp_mark (const char *what)
 	 * costs a few milliseconds per picture and turns the log into an exact
 	 * trail. */
 	/* A boot mark is the trail a crash needs, and so is a mark inside the
-	 * menu while that is where the crash is (con_trace_sync, above). */
-	if (con_marks_live || con_trace_sync)
+	 * menu while that is where the crash is (con_trace_sync, above).
+	 *
+	 * During boot every mark still pays the round trip: they are one-time
+	 * (a picture load each, tens of milliseconds apart) and a crash in an
+	 * initialiser has nothing else.  Inside the menu there are sixty of
+	 * them per frame, so that trail is throttled. */
+	if (con_marks_live)
 	{
 		snprintf(line, sizeof(line), "mark: %s", step);
 		con_log_line(line);
 		con_log_sync();
+	}
+	else if (con_trace_sync)
+	{
+		snprintf(line, sizeof(line), "mark: %s", step);
+		con_log_line(line);
+		con_log_sync_throttled();
 	}
 }
 
