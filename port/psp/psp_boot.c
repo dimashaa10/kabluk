@@ -33,10 +33,25 @@ PSP_MAIN_THREAD_STACK_SIZE_KB(512);
  * is the whole point of having a memory layout: nothing else may grow into this
  * region, and this may not grow into anything else.
  *
- * 10 MB holds what the engine asks malloc() for -- gfx.wad (~1 MB), IPLog's
- * Q_malloc(2 MB), the decoder's w*h*4 buffers (1.2 MB for 640x480), the model
- * loader's scratch and the .cfg/.rc files -- with room for the fragmentation a
- * long session creates.  The zone and the pictures do NOT come from here; see
- * psp_mem.c.
- */
-PSP_HEAP_SIZE_KB(10 * 1024);
+ * The size is 14 MB, and the number below says why it is not the 10 MB this
+ * started at.
+ *
+ * The round-71 log ended with the heap full at the exact moment the map
+ * started, and with three malloc()s returning NULL:
+ *
+ *     run: f 565 state 2, malloc 10234 KB used, 4 KB left, NULL 5
+ *     malloc: NULL for 6029312 / 57344 / 851968 bytes -- last gfx/conback2.lmp
+ *
+ * while the engine's own hunk was healthy (8280 KB used of 19456, 11 MB
+ * free) -- so this was never a shortage of memory, it was the wrong split.
+ * The 5.75 MB request is the size of one thing being loaded at map start
+ * (a file image or a decoded picture); it cannot fit in what is left of a
+ * 10 MB heap that already holds the .cfg/.rc files, progs.dat, the client's
+ * picture decoder buffers and every scratch copy the texture manager makes.
+ *
+ * The four megabytes come out of the zone, which psp_mem.c sizes from what is
+ * left after this block: it goes from 19 MB to 15 MB, and the hunk still had
+ * 7 MB free after the whole map was loaded.  The picture pool (6 MB) is
+ * untouched -- it is a separate block and shrinking it is what broke the
+ * menus in earlier rounds. */
+PSP_HEAP_SIZE_KB(14 * 1024);

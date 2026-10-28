@@ -414,6 +414,30 @@ void CL_SignonReply (void)
 
 	Con_DPrintf ("CL_SignonReply: %i\n", cls.signon);
 
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	/* The signon is the gate the port spent round 71 stuck behind, and the
+	 * only trace of it in the log was `state 2` -- the number of the client
+	 * state, not of the signon stage.  Each reply is printed once, on the
+	 * card, so a log that stops after one of these lines says exactly which
+	 * stage of the connect the engine never got past.
+	 *
+	 * Stages (SIGNONS is 4): 1 name, 2 colour+userinfo+spawn, 3 begin,
+	 * 4 the world is live and the console closes. */
+	{
+		extern void psp_tracef (const char *fmt, ...);
+		static int seen[8];
+
+		if (cls.signon > 0 && cls.signon < (int)(sizeof(seen) / sizeof(seen[0])) &&
+		    !seen[cls.signon])
+		{
+			seen[cls.signon] = 1;
+			psp_tracef ("signon: reply %d of %d (state %d, worldmodel %s)",
+			            cls.signon, SIGNONS, (int)cls.state,
+			            cl.worldmodel ? "yes" : "no");
+		}
+	}
+#endif
+
 	switch (cls.signon)
 	{
 	case 1:
@@ -2487,6 +2511,34 @@ extern qboolean Sky_DownloadSkybox(const char* name);
 qboolean CL_CheckDownloads(void)
 {
 	int i;
+
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	/* Which of the stages below is holding the signon up, printed once per
+	 * stage change.  host.c only sends `prespawn` when this function returns
+	 * true, and the client cannot go past signon 2 until it does; a log that
+	 * ends with one of these lines and no `reply 3` says the stage by name
+	 * instead of leaving it to be guessed from the memory report.
+	 *
+	 * 0 the .lit probe  1 the .loc lookup  2 the skybox  3 the models
+	 * 4 the sounds      5 everything is loaded, the server can be told */
+	{
+		extern void psp_tracef (const char *fmt, ...);
+		static int last = -1;
+		int stage = (cl.model_download == 0) ? 0
+		          : (cl.loc_download == 0) ? 1
+		          : (cl.skybox_download == 0) ? 2
+		          : (cl.model_download < cl.model_count) ? 3
+		          : (cl.sound_download < cl.sound_count) ? 4 : 5;
+
+		if (stage != last)
+		{
+			last = stage;
+			psp_tracef ("signon: downloads stage %d of 5 (%d models of %d, "
+			            "%d sounds of %d)", stage, cl.model_download,
+			            cl.model_count, cl.sound_download, cl.sound_count);
+		}
+	}
+#endif
 	if (cl.model_download == 0 && cl.model_count && cl.model_name[1][0]) // woods
 	{	//haxors, download the lit first, but only if we don't already have the bsp
 		//this ensures that we don't keep requesting the lit for maps that just don't have one (although may be problematic if the first server we find deleted them all, but oh well)

@@ -213,7 +213,9 @@ for f in port/psp/psp_mem.c port/psp/psp_mem.h; do
 done
 grep -q 'sceKernelAllocPartitionMemory(PSP_MEMORY_PARTITION_USER' port/psp/psp_mem.c
 grep -q 'sceKernelGetBlockHeadAddr' port/psp/psp_mem.c
-grep -q 'PSP_HEAP_SIZE_KB(10 \* 1024)' port/psp/psp_boot.c
+# 14 MB since round 71: the round-71 log had the hunk 11 MB free while malloc()
+# returned NULL for 5.75 MB, i.e. the split was wrong rather than the total.
+grep -q 'PSP_HEAP_SIZE_KB(14 \* 1024)' port/psp/psp_boot.c
 if grep -q 'PSP_HEAP_SIZE_KB(-1)' port/psp/psp_boot.c; then
     echo "FAIL: the newlib heap takes the whole partition again (-1) -- nothing"
     echo "FAIL: else can then be sized from what is left"
@@ -1317,3 +1319,94 @@ grep -q 'cl.max_edicts = CLAMP (MIN_EDICTS, sv.qcvm.max_edicts, MAX_EDICTS);' Qu
     exit 1
 }
 echo "PASS: cl_entities is as big as the server can talk, not as big as max_edicts."
+
+# ---- the world is drawn by the GE, not by the CPU ------------------------
+#
+# Round 71.  Until now every vertex the port drew was transformed on the CPU
+# and handed to the GE as a screen coordinate (GU_TRANSFORM_2D).  The world is
+# drawn with the GE's own transform stage: the vertices keep the world
+# coordinates the engine gave them and sceGuSetMatrix() loads the projection
+# and the view.
+grep -q 'GU_COLOR_8888 | GU_VERTEX_32BITF)' port/psp/gl_shim.c || {
+    echo "FAIL: there is no 3D vertex format (one without GU_TRANSFORM_2D)"
+    exit 1
+}
+grep -q 'sceGuSetMatrix(GU_PROJECTION' port/psp/gl_shim.c || {
+    echo "FAIL: the projection is never given to the GE"
+    exit 1
+}
+grep -q 'sceGuSetMatrix(GU_VIEW' port/psp/gl_shim.c || {
+    echo "FAIL: the view is never given to the GE"
+    exit 1
+}
+grep -q 'sceGuSetMatrix(GU_MODEL' port/psp/gl_shim.c || {
+    echo "FAIL: the model-view the engine loaded never reaches the GE"
+    exit 1
+}
+# The world vertex must not be divided on the CPU any more: shim_emit_world()
+# copies the position through.
+awk '
+  /static void shim_emit_world/ { inf = 1 }
+  inf && /1\.0f \/ cv->w/ { bad = 1 }
+  inf && /^}/ { inf = 0 }
+  END { if (bad) { printf "FAIL: the world vertex is still divided by w on the CPU\n"; exit 1 } }
+' port/psp/gl_shim.c || exit 1
+echo "PASS: world vertices go to the GE in world space, with the engine's own"
+echo "PASS: projection and view matrices loaded into the transform stage."
+
+# ---- and the depth buffer is cleared to the far plane, GL style ----------
+#
+# Before this the GE range was (65535, 0) and the buffer was cleared to 0.  That
+# only ever worked because nothing was depth-tested in 3D; with the GL
+# convention (0, 65535) and GL_LEQUAL a cleared buffer must hold the far value
+# or the first world fragment is rejected against it.
+grep -q 'sceGuDepthRange(0, 65535);' port/psp/gu_psp.c || {
+    echo "FAIL: the GE depth range is not the GL one (0 near, 65535 far)"
+    exit 1
+}
+grep -q 'sceGuClearDepth(65535);' port/psp/gu_psp.c || {
+    echo "FAIL: the depth buffer is not cleared to the far plane"
+    exit 1
+}
+grep -q 'GL_GEQUAL:  shim_guDepthFunc(GU_GEQUAL)' port/psp/gl_shim.c || {
+    echo "FAIL: gl_sky's GL_GEQUAL has no mapping"
+    exit 1
+}
+echo "PASS: the depth test has the convention the projection was written for."
+
+# ---- the scene cache cannot work here, and fails silently ----------------
+#
+# RSceneCache_Queue() builds its batches on a worker thread and draws them with
+# glDrawElements() out of a VBO.  port/psp/sdl_stub.c never runs a thread (it
+# would spin on a condition variable and freeze Host_Init) and gl_stub.c's
+# glDrawElements()/glVertexPointer() are empty, so with the cache on the world
+# would never be drawn at all -- with no error anywhere.
+awk '
+  /static qboolean RSceneCache_Queue/ { inf = 1 }
+  inf && /PLATFORM_PSP/ { psp = 1 }
+  inf && /return false/ { ret = 1 }
+  inf && /^}/ { inf = 0 }
+  END { if (!(psp && ret)) { printf "FAIL: the PSP still queues the scene cache\n"; exit 1 } }
+' Quake/r_world.c || exit 1
+echo "PASS: the PSP takes the classic immediate-mode world path, which the shim draws."
+
+# ---- the heap and the hunk are sized the right way round -----------------
+#
+# The round-71 log had the hunk 11 MB free and malloc() returning NULL at the
+# same moment, so the split was wrong, not the total.
+grep -q 'PSP_HEAP_SIZE_KB(14 \* 1024);' port/psp/psp_boot.c || {
+    echo "FAIL: the newlib heap is back to a size the map cannot load in"
+    exit 1
+}
+echo "PASS: the heap has room for the 5.75 MB load, the hunk keeps 7 MB spare."
+
+# ---- and the signon names its own stage ---------------------------------
+grep -q 'signon: downloads stage %d of 5' Quake/cl_main.c || {
+    echo "FAIL: a stalled signon still prints nothing about which stage it is on"
+    exit 1
+}
+grep -q 'signon: reply %d of %d' Quake/cl_main.c || {
+    echo "FAIL: the signon replies are not traced"
+    exit 1
+}
+echo "PASS: a log that ends during the connect says which stage never finished."

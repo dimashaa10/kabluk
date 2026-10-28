@@ -49,6 +49,24 @@
 #define SHIM_VERTEX_FORMAT \
 	(GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_2D)
 
+/* The same vertex, transformed by the GE instead of by us.
+ *
+ * GU_TRANSFORM_2D is a promise that the position is already in screen
+ * coordinates and the GE has nothing to do but rasterise it.  For the world
+ * that promise is the whole cost of a frame: every vertex of every surface
+ * would be multiplied by the model-view-projection matrix on the CPU, in
+ * float, before anything is drawn.  Without the flag the GE takes the
+ * position as a WORLD coordinate and runs it through its own transform stage
+ * (sceGuSetMatrix, below), which is what the hardware is for -- this is what
+ * Interstice's port does (source/psp/gu_main.cpp: sceGumPerspective() for the
+ * projection and world-space vertices handed to sceGuDrawArray, and
+ * source/psp/gu_draw.cpp for the 2D sprites that stay on GU_TRANSFORM_2D).
+ *
+ * The two formats are not mixed inside one draw: shim_batch_flush() picks the
+ * one the batch was queued with. */
+#define SHIM_VERTEX_FORMAT_3D \
+	(GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF)
+
 #define SHIM_MAX_MATRIX_STACK 8
 
 /* Vertices accumulated between glBegin() and glEnd().  A whole line of text
@@ -68,9 +86,15 @@
  * vertices, or a half-written mix of two -- which is what the full-screen
  * wedges, the diagonal edge and the flicker between frames are.  Every draw
  * now gets its own slice of this ring; the ring is reset at frame start, after
- * the previous frame has been synchronised.  8192 vertices is 192 KB and holds
- * 1365 quads, i.e. a screen and a half of 8x8 text. */
-#define SHIM_GE_VERTICES      8192
+ * the previous frame has been synchronised.
+ *
+ * 16384 vertices is 384 KB.  The menu needs a small fraction of that (a screen
+ * of text is a few thousand), but a frame of the WORLD does not: the GE draws
+ * triangles straight out of this array, so a room with a thousand visible
+ * surfaces is three or four thousand triangles, i.e. ten thousand vertices and
+ * more when the player looks down a long corridor.  At 8192 the world would
+ * have hit the ring limit inside the first frame and drawn whatever fit. */
+#define SHIM_GE_VERTICES      16384
 
 typedef struct
 {
@@ -241,8 +265,15 @@ static shim_vertex_t *shim_batch_v;
 static int            shim_batch_n;
 static int            shim_batch_prim;
 static unsigned int   shim_batch_tex;
+/* 1 when the queued batch carries WORLD coordinates and has to be drawn with
+ * the GE's own transform (SHIM_VERTEX_FORMAT_3D), 0 when the vertices are
+ * already screen coordinates.  Kept per batch because the engine interleaves
+ * the two: R_RenderScene draws the world, then the HUD is drawn in 2D over
+ * it, and both go through this one queue. */
+static int            shim_batch_3d;
 
 static void shim_batch_flush (void);
+static void shim_ge3d_matrices (void);
 
 /* ------------------------------------------------------------------ */
 /* the gate                                                           */
@@ -301,23 +332,97 @@ static void shim_guTexEnable (int on)
 
 static void shim_guTexMode (int psm, int levels, int a2, int swz)
                                                   { shim_batch_flush(); if (shim_frame_active) sceGuTexMode(psm, levels, a2, swz); }
+/* Hand the GE's transform stage the two matrices a world-space draw needs.
+ *
+ * The GE multiplies its own three: a vertex goes through the model matrix,
+ * then the view matrix, then the projection, and the result is divided by w
+ * and mapped into the 4096x4096 coordinate space the viewport in gu_psp.c
+ * describes.  The engine hands us exactly the two matrices that fit:
+ *
+ *   glMatrixMode(GL_PROJECTION); glLoadMatrixf(mat);   <- the projection
+ *   glMatrixMode(GL_MODELVIEW);  glLoadMatrixf(mat);   <- THE VIEW (R_SetupGL)
+ *
+ * so the GL model-view slot holds the camera's view matrix, and the model slot
+ * stays identity: proj * view * identity * vertex is proj * view * vertex,
+ * which is what GL_SetupGL's own glLoadMatrixf pair means.
+ *
+ * The storage is the same on both sides.  GL's matrices are column-major
+ * (mathlib.c: Matrix4_ProjectionMatrix writes m[11] = -1 and m[14] = ...,
+ * exactly where a GL perspective puts them) and ScePspFMatrix4 is column-major
+ * too (pspgu.h: the first ScePspFVector4 is the first COLUMN), so the 16 floats
+ * are copied, not transposed.  pspsdk's sceGumPerspective (src/gum/pspgum.c)
+ * builds the same numbers as glFrustum, minus the two minus signs that GL also
+ * has -- i.e. the GE expects the GL convention.
+ *
+ * Re-sent only when the matrix changed: three sceGuSetMatrix calls are fifteen
+ * words of the frame's draw list, and a frame of world surfaces changes them
+ * once.  Below: the three buffers, in GE-aligned storage.
+ *
+ * ScePspFMatrix4 is `struct { ScePspFVector4 x, y, z, w; }` -- four COLUMNS,
+ * not a flat float[16] (pspsdk src/base/psptypes.h), and it is declared
+ * __attribute__((aligned(16))) because the GE path loads it with VFPU
+ * quadword instructions.  So the shim's own float[16] cannot be handed over
+ * by pointer: it is neither that type nor aligned.  These three buffers are. */
+static float shim_ge3d_projection[16] __attribute__((aligned(16)));
+static float shim_ge3d_model[16] __attribute__((aligned(16)));
+static float shim_ge3d_view[16] __attribute__((aligned(16)));
+static int   shim_ge3d_identity_ready;
+static shim_matrix_t  shim_ge3d_sent_projection;
+static shim_matrix_t  shim_ge3d_sent_modelview;
+static int            shim_ge3d_sent_valid;
+
+static void shim_ge3d_matrices (void)
+{
+	if (!shim_ge3d_identity_ready)
+	{
+		memset(shim_ge3d_view, 0, sizeof(shim_ge3d_view));
+		shim_ge3d_view[0] = shim_ge3d_view[5] = 1.0f;
+		shim_ge3d_view[10] = shim_ge3d_view[15] = 1.0f;
+		shim_ge3d_identity_ready = 1;
+	}
+
+	if (shim_ge3d_sent_valid &&
+	    !memcmp(shim_ge3d_sent_projection.m, shim_projection.m,
+	            sizeof(shim_projection.m)) &&
+	    !memcmp(shim_ge3d_sent_modelview.m, shim_modelview.m,
+	            sizeof(shim_modelview.m)))
+		return;
+
+	memcpy(shim_ge3d_projection, shim_projection.m, sizeof(shim_ge3d_projection));
+	memcpy(shim_ge3d_model, shim_modelview.m, sizeof(shim_ge3d_model));
+
+	sceGuSetMatrix(GU_PROJECTION, (const ScePspFMatrix4 *)shim_ge3d_projection);
+	sceGuSetMatrix(GU_VIEW, (const ScePspFMatrix4 *)shim_ge3d_view);
+	sceGuSetMatrix(GU_MODEL, (const ScePspFMatrix4 *)shim_ge3d_model);
+
+	shim_ge3d_sent_projection = shim_projection;
+	shim_ge3d_sent_modelview = shim_modelview;
+	shim_ge3d_sent_valid = 1;
+}
+
 /* Queue one draw.  Merged into the pending batch when the primitive matches
  * and the vertices are exactly where the pending batch ends, i.e. when the two
  * draws are already one contiguous run in the ring. */
-static void shim_batch_add (int prim, unsigned int texture, shim_vertex_t *v, int count)
+static void shim_batch_add (int prim, unsigned int texture, shim_vertex_t *v,
+                            int count, int is3d)
 {
 	if (!v || count <= 0)
 		return;
 
 	shim_frame_verts += (unsigned int)count;
 
-	/* The merge key is primitive + texture + contiguity.  Contiguity alone
-	 * would in practice be enough, because a texture change sends GE
-	 * commands and those flush the batch -- but "in practice" is exactly
-	 * what a batching bug looks like from the outside, so the texture is
-	 * part of the condition rather than a side effect of another module. */
+	/* The merge key is primitive + texture + contiguity + which transform
+	 * the vertices are in.  Contiguity alone would in practice be enough,
+	 * because a texture change sends GE commands and those flush the batch
+	 * -- but "in practice" is exactly what a batching bug looks like from
+	 * the outside, so the texture is part of the condition rather than a
+	 * side effect of another module.  The transform is part of it for a
+	 * harder reason: a screen-space vertex list and a world-space one are
+	 * drawn with two different vertex formats, and merging them would put
+	 * one of the two into the GE with the wrong meaning -- a world surface
+	 * drawn as pixels, or a picture drawn as a coordinate in the map. */
 	if (shim_batch_n > 0 && shim_batch_prim == prim &&
-	    shim_batch_tex == texture &&
+	    shim_batch_tex == texture && shim_batch_3d == is3d &&
 	    shim_batch_v + shim_batch_n == v)
 	{
 		shim_batch_n += count;
@@ -330,6 +435,7 @@ static void shim_batch_add (int prim, unsigned int texture, shim_vertex_t *v, in
 	shim_batch_n = count;
 	shim_batch_prim = prim;
 	shim_batch_tex = texture;
+	shim_batch_3d = is3d;
 }
 
 static void shim_batch_flush (void)
@@ -363,8 +469,17 @@ static void shim_batch_flush (void)
 
 		if (shim_frame_active)
 		{
-			sceGuDrawArray(shim_batch_prim, SHIM_VERTEX_FORMAT, shim_batch_n,
-			               NULL, shim_batch_v);
+			/* A world-space batch needs the GE's transform stage
+			 * loaded before it can be drawn; the 2D one must not
+			 * get those matrices, because it is the identity that
+			 * keeps a pixel at the pixel it says it is. */
+			if (shim_batch_3d)
+				shim_ge3d_matrices();
+
+			sceGuDrawArray(shim_batch_prim,
+			               shim_batch_3d ? SHIM_VERTEX_FORMAT_3D
+			                             : SHIM_VERTEX_FORMAT,
+			               shim_batch_n, NULL, shim_batch_v);
 			shim_frame_batches++;
 		}
 	}
@@ -1350,41 +1465,55 @@ static int shim_perspective (void)
 static void shim_emit_vertex (float x, float y, float z)
 {
 	shim_matrix_t mvp;
-	float cx, cy, cz, cw, sx, sy;
+	float cx, cy, cw, sx, sy;
 
 	if (shim_vertex_count >= SHIM_MAX_VERTICES)
 		return;
+
+	if (shim_clipping)
+	{
+		/* The only matrix arithmetic left on the CPU for the world: ONE
+		 * row of the mvp, for the near-plane distance.  Everything the
+		 * pipeline used to do here -- the full transform, the clip
+		 * test on four components, the divide, the viewport map -- is
+		 * the GE's job now (shim_emit_world, shim_ge3d_matrices). */
+		mvp = shim_modelview;
+		shim_multiply(&mvp, &shim_projection, &shim_modelview);
+
+		cw = mvp.m[3] * x + mvp.m[7] * y + mvp.m[11] * z + mvp.m[15];
+
+		/* Perspective: the vertex is parked as the WORLD coordinate the
+		 * engine gave us, plus the one number the near-plane clipper
+		 * needs -- w, the signed distance in front of the eye.
+		 *
+		 * For any GL perspective the bottom row of the projection is
+		 * (0,0,-1,0) (mathlib.c: Matrix4_ProjectionMatrix writes
+		 * out[11] = -1, i.e. -z_eye), so this w IS that distance, and
+		 * it is a linear function of the world position -- which is
+		 * what lets r_clip_near() cut the polygon in world space. */
+		{
+			r_clip_vertex_t *cv = &shim_clip_vertices[shim_vertex_count++];
+
+			cv->x = x;
+			cv->y = y;
+			cv->z = z;
+			cv->w = cw;
+			cv->u = shim_current_u;
+			cv->v = shim_current_v;
+			cv->color = shim_current_color;
+		}
+		return;
+	}
 
 	mvp = shim_modelview;
 	shim_multiply(&mvp, &shim_projection, &shim_modelview);
 
 	cx = mvp.m[0] * x + mvp.m[4] * y + mvp.m[8]  * z + mvp.m[12];
 	cy = mvp.m[1] * x + mvp.m[5] * y + mvp.m[9]  * z + mvp.m[13];
-	cz = mvp.m[2] * x + mvp.m[6] * y + mvp.m[10] * z + mvp.m[14];
-	cw = mvp.m[3] * x + mvp.m[7] * y + mvp.m[11] * z + mvp.m[15];
 
-	if (shim_clipping)
-	{
-		/* Perspective: keep the vertex in clip space.  Dividing by w
-		 * here would be dividing by a number that can be zero or
-		 * negative, which is how a polygon that crossed the camera
-		 * ended up painted across the whole panel.  The primitive is
-		 * clipped and mapped in shim_flush_3d(), when glEnd() knows
-		 * what the polygon is. */
-		r_clip_vertex_t *cv = &shim_clip_vertices[shim_vertex_count++];
-
-		cv->x = cx;
-		cv->y = cy;
-		cv->z = cz;
-		cv->w = cw;
-		cv->u = shim_current_u;
-		cv->v = shim_current_v;
-		cv->color = shim_current_color;
-		return;
-	}
-
-	/* Orthogonal: w is 1, cz is not used (the 2D canvases draw everything at
-	 * the same depth and the GE compares what they give it). */
+	/* Orthogonal: w is 1, and the depth of a 2D canvas is whatever the
+	 * engine put in z (all of it is at the same depth, so the GE compares
+	 * equal values). */
 	sx = (float)shim_vp_x + (cx * 0.5f + 0.5f) * (float)shim_vp_w;
 	sy = (float)PSP_SCREEN_HEIGHT -
 	     ((float)shim_vp_y + (cy * 0.5f + 0.5f) * (float)shim_vp_h);
@@ -1808,7 +1937,7 @@ static void shim_flush_quads (void)
 			v[k * 6 + 5] = shim_vertices[o + 3];
 		}
 
-		shim_batch_add(GU_TRIANGLES, shim_texture_bound, v, batch * 6);
+		shim_batch_add(GU_TRIANGLES, shim_texture_bound, v, batch * 6, 0);
 
 		done += batch;
 	}
@@ -1828,27 +1957,31 @@ static unsigned int shim_3d_triangles;   /* since the shim started */
 static unsigned int shim_3d_clipped;
 static int          shim_3d_logged;
 
-/* Map one clipped vertex onto the panel: the perspective divide, the viewport,
- * and the depth the GE compares.  This is the 2D mapping in shim_emit_vertex()
- * with the divide actually performed, and it exists separately because a
- * clipped polygon has vertices that never went through glVertex. */
-static void shim_project_clip (shim_vertex_t *out, const r_clip_vertex_t *cv)
+/* Hand one clipped vertex to the GE as a WORLD coordinate.
+ *
+ * Nothing is transformed here any more.  The vertex keeps the position the
+ * engine gave glVertex3f, and the GE's own transform stage multiplies it by the
+ * projection and view matrices that shim_ge3d_matrices() loaded -- the divide,
+ * the viewport mapping and the depth mapping all happen in the hardware, on
+ * the geometry processor, for free.
+ *
+ * What the CPU still owes the pipeline is the ONE thing the GE does not do: the
+ * near plane.  A vertex at or behind the eye has w <= 0, and the GE would put
+ * it at a coordinate outside its 4096x4096 space and drop the whole primitive
+ * (that is the hardware cull Interstice's clipping.cpp describes at length), so
+ * a wall the player walks up to would vanish.  The polygon is therefore cut
+ * against the near plane first, in world space -- which is exact, because w
+ * (the distance in front of the eye) is a linear function of the world position,
+ * so interpolating both with the same parameter gives a point that is on the
+ * edge AND on the plane.  Clip, then let the GE transform and rasterise. */
+static void shim_emit_world (shim_vertex_t *out, const r_clip_vertex_t *cv)
 {
-	float iw = 1.0f / cv->w;
-	float nx = cv->x * iw;
-	float ny = cv->y * iw;
-	float nz = cv->z * iw;
-
 	out->u = cv->u * shim_u_scale;
 	out->v = cv->v * shim_v_scale;
 	out->color = cv->color;
-	out->x = (float)shim_vp_x + (nx * 0.5f + 0.5f) * (float)shim_vp_w;
-	out->y = (float)PSP_SCREEN_HEIGHT -
-	         ((float)shim_vp_y + (ny * 0.5f + 0.5f) * (float)shim_vp_h);
-	/* GL's normalised depth is -1..1, the GE's is 0..1.  gu_psp.c sets the
-	 * depth range to 65535..0, so this maps the near plane to the value the
-	 * GE treats as nearest. */
-	out->z = nz * 0.5f + 0.5f;
+	out->x = cv->x;
+	out->y = cv->y;
+	out->z = cv->z;
 }
 
 /* One triangle, clipped at the near plane and handed to the GE.
@@ -1886,14 +2019,16 @@ static void shim_emit_3d_triangle (const r_clip_vertex_t *a,
 		if (!v)
 			return;
 
-		shim_project_clip(&v[0], &poly[0]);
-		shim_project_clip(&v[1], &poly[i - 1]);
-		shim_project_clip(&v[2], &poly[i]);
+		shim_emit_world(&v[0], &poly[0]);
+		shim_emit_world(&v[1], &poly[i - 1]);
+		shim_emit_world(&v[2], &poly[i]);
 
 		/* Same primitive and texture as the previous triangle, so the
 		 * batch merges them into one sceGuDrawArray: a surface of
-		 * thirty polygons is still one command. */
-		shim_batch_add(GU_TRIANGLES, shim_texture_bound, v, 3);
+		 * thirty polygons is still one command.  The 1 marks these
+		 * vertices as world coordinates, i.e. drawn with the GE's
+		 * transform stage. */
+		shim_batch_add(GU_TRIANGLES, shim_texture_bound, v, 3, 1);
 	}
 }
 
@@ -1915,11 +2050,25 @@ static void shim_flush_3d (void)
 	if (!shim_3d_logged)
 	{
 		shim_3d_logged = 1;
-		psp_tracef("3d: first perspective primitive: %s of %d vertices, "
-		           "near plane w %.4f, proj m15 %.3f m3 %.3f",
+		/* The one line that says the world reached the hardware: a
+		 * perspective primitive, in world coordinates, drawn with the
+		 * GE's transform (sceGuSetMatrix) rather than ours.  Everything
+		 * up to this point in the port's history drew 2D only, and the
+		 * trace of a frame consisted of rectangles covering the panel. */
+		/* The viewport matters as much as the matrices: the GE maps the
+		 * projected vertex into the 4096-wide space gu_psp.c set up, which
+		 * is the WHOLE panel, so a 3D viewport smaller than 480x272 would
+		 * be stretched over it.  The engine computes that rectangle in
+		 * R_SetupGL (glViewport), and if it is ever not the full panel the
+		 * next round needs to know the numbers rather than the symptom. */
+		psp_tracef("3d: first world primitive on the GE: %s of %d vertices, "
+		           "near plane w %.4f, proj m11 %.3f m14 %.3f, viewport "
+		           "%d,%d %dx%d (panel %dx%d)",
 		           shim_prim_name(shim_primitive), n, (double)SHIM_NEAR_W,
-		           (double)shim_projection.m[15],
-		           (double)shim_projection.m[3]);
+		           (double)shim_projection.m[11],
+		           (double)shim_projection.m[14],
+		           shim_vp_x, shim_vp_y, shim_vp_w, shim_vp_h,
+		           PSP_SCREEN_WIDTH, PSP_SCREEN_HEIGHT);
 	}
 
 	switch (shim_primitive)
@@ -2055,7 +2204,7 @@ void glEnd (void)
 		{
 			memcpy(v, shim_vertices, sizeof(shim_vertex_t) * (size_t)shim_vertex_count);
 			shim_batch_add(shim_gu_primitive(shim_primitive), shim_texture_bound, v,
-			               shim_vertex_count);
+			               shim_vertex_count, 0);
 		}
 
 		shim_vertex_count = 0;
@@ -2139,11 +2288,18 @@ void glMatrixMode (GLenum mode)
 
 void glLoadIdentity (void)
 {
+	/* A queued 3D batch belongs to the matrices that were in force when its
+	 * vertices were produced, and the GE reads them from its own registers
+	 * at draw time -- so changing a matrix has to close the batch.  Cheap:
+	 * shim_batch_flush() returns immediately when there is nothing queued,
+	 * and the engine changes matrices between draws, not inside them. */
+	shim_batch_flush();
 	shim_identity(shim_current_matrix());
 }
 
 void glLoadMatrixf (const GLfloat *m)
 {
+	shim_batch_flush();
 	memcpy(shim_current_matrix()->m, m, sizeof(float) * 16);
 }
 
@@ -2151,12 +2307,14 @@ void glMultMatrixf (const GLfloat *m)
 {
 	shim_matrix_t t, *cur = shim_current_matrix();
 
+	shim_batch_flush();
 	memcpy(t.m, m, sizeof(t.m));
 	shim_multiply(cur, cur, &t);
 }
 
 void glPushMatrix (void)
 {
+	shim_batch_flush();
 	if (shim_matrix_mode == GL_PROJECTION)
 	{
 		if (shim_projection_depth < SHIM_MAX_MATRIX_STACK)
@@ -2168,6 +2326,7 @@ void glPushMatrix (void)
 
 void glPopMatrix (void)
 {
+	shim_batch_flush();
 	if (shim_matrix_mode == GL_PROJECTION)
 	{
 		if (shim_projection_depth > 0)
@@ -2181,6 +2340,8 @@ void glOrtho (GLdouble left, GLdouble right, GLdouble bottom, GLdouble top,
               GLdouble zNear, GLdouble zFar)
 {
 	shim_matrix_t ortho, *cur = shim_current_matrix();
+
+	shim_batch_flush();
 
 	memset(ortho.m, 0, sizeof(ortho.m));
 	ortho.m[0]  = (float)(2.0 / (right - left));
@@ -2196,6 +2357,7 @@ void glOrtho (GLdouble left, GLdouble right, GLdouble bottom, GLdouble top,
 
 void glTranslatef (GLfloat x, GLfloat y, GLfloat z)
 {
+	shim_batch_flush();
 	shim_matrix_t t, *cur = shim_current_matrix();
 
 	shim_identity(&t);
@@ -2207,6 +2369,7 @@ void glTranslatef (GLfloat x, GLfloat y, GLfloat z)
 
 void glScalef (GLfloat x, GLfloat y, GLfloat z)
 {
+	shim_batch_flush();
 	shim_matrix_t t, *cur = shim_current_matrix();
 
 	shim_identity(&t);
@@ -2218,6 +2381,7 @@ void glScalef (GLfloat x, GLfloat y, GLfloat z)
 
 void glRotatef (GLfloat angle, GLfloat x, GLfloat y, GLfloat z)
 {
+	shim_batch_flush();
 	shim_matrix_t t, *cur = shim_current_matrix();
 	float r = angle * (float)M_PI / 180.0f;
 	float c = (float)cos(r), s = (float)sin(r);
@@ -2425,6 +2589,12 @@ void glDepthFunc (GLenum func)
 	case GL_EQUAL:  shim_guDepthFunc(GU_EQUAL);  break;
 	case GL_LEQUAL: shim_guDepthFunc(GU_LEQUAL); break;
 	case GL_GREATER: shim_guDepthFunc(GU_GREATER); break;
+	/* The depth convention is GL's now (gu_psp.c: sceGuDepthRange(0,
+	 * 65535)), so these three are also the same way round as GL means
+	 * them.  gl_sky.c uses GL_GEQUAL for the sky and would otherwise get
+	 * whatever the previous draw left behind. */
+	case GL_GEQUAL:  shim_guDepthFunc(GU_GEQUAL);  break;
+	case GL_NOTEQUAL: shim_guDepthFunc(GU_NOTEQUAL); break;
 	case GL_ALWAYS: shim_guDepthFunc(GU_ALWAYS); break;
 	default: break;
 	}
@@ -2858,6 +3028,7 @@ void psp_gl_shim_begin_frame (void)
 	/* A new draw list remembers nothing: whatever this process cached about
 	 * what the GE had been told is void, so the state is sent again. */
 	shim_ge_tex2d = -1;
+	shim_ge3d_sent_valid = 0;
 	shim_guTexEnable(shim_texture_2d ? 1 : 0);
 
 	if (shim_blend)

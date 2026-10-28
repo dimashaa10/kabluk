@@ -195,7 +195,23 @@ int psp_gu_init (void)
 	 * middle; these two calls centre a 480x272 window in it. */
 	sceGuOffset(2048 - (PSP_SCREEN_WIDTH / 2), 2048 - (PSP_SCREEN_HEIGHT / 2));
 	sceGuViewport(2048, 2048, PSP_SCREEN_WIDTH, PSP_SCREEN_HEIGHT);
-	sceGuDepthRange(65535, 0);
+	/* GL's depth convention, not the inverted one this file started with.
+	 *
+	 * sceGuDepthRange(near, far) tells the GE how to turn the projected
+	 * z/w into a buffer value: (src/gu/sceGuDepthRange.c) zscale =
+	 * (near+far)/2 - near, zcenter = (near+far)/2.  With (0, 65535) that
+	 * is the GL mapping, -1 (the near plane of a glFrustum projection) to
+	 * 0 and +1 (the far plane) to 65535, which is exactly what a GL
+	 * perspective matrix produces and what the world is drawn with now
+	 * that the GE does the transform (gl_shim.c, SHIM_VERTEX_FORMAT_3D).
+	 *
+	 * The port ran (65535, 0) until now -- an inverted range that only
+	 * ever worked because nothing was depth-tested in three dimensions:
+	 * the interface is 2D and draws every quad at the same z.  Under the
+	 * GL convention the interface still works (a 2D quad at z = 0 lands on
+	 * the near plane and the engine draws the HUD after the world, with
+	 * GL_LEQUAL), and the world finally sorts itself correctly. */
+	sceGuDepthRange(0, 65535);
 
 	sceGuScissor(0, 0, PSP_SCREEN_WIDTH, PSP_SCREEN_HEIGHT);
 	sceGuEnable(GU_SCISSOR_TEST);
@@ -208,7 +224,10 @@ int psp_gu_init (void)
 	sceGuDisable(GU_LIGHTING);
 
 	sceGuClearColor(0xFF101820);
-	sceGuClearDepth(0);
+	/* The far end of the new range: a cleared depth buffer must hold the
+	 * value that every drawn fragment is nearer than, or GL_LEQUAL would
+	 * reject the whole world against it. */
+	sceGuClearDepth(65535);
 
 	sceGuFinish();
 	sceGuSync(0, 0);

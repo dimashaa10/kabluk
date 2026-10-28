@@ -23,7 +23,7 @@ extern unsigned int psp_heap_sbrk (void);
 extern unsigned int psp_heap_sbrk_peak_bytes (void);
 extern unsigned int psp_heap_arena (void);
 extern unsigned int psp_heap_chunks (void);
-/* How much malloc() can still reach inside the 10 MB heap block (psp_boot.c).
+/* How much malloc() can still reach inside the 14 MB heap block (psp_boot.c).
  * mallinfo alone reports 0 KB here when the allocator has simply not grown yet,
  * which reads as "about to die" on a healthy run. */
 extern unsigned int psp_heap_block_left (void);
@@ -66,7 +66,7 @@ extern void         psp_gl_shim_set_pool (void *base, size_t bytes);
 
 /* The memory layout lives in psp_mem.c: the pictures' pool and the engine's
  * zone are two blocks taken straight from the firmware partition
- * (sceKernelAllocPartitionMemory), and newlib's heap is a fixed 10 MB, set in
+ * (sceKernelAllocPartitionMemory), and newlib's heap is a fixed 14 MB, set in
  * psp_boot.c.  This file only asks psp_mem for the zone and hands the pictures
  * their block.
  *
