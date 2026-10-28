@@ -447,6 +447,11 @@ void COM_LoadCacheFile (const char *path, struct cache_user_s *cu,
 byte *COM_LoadMallocFile (const char *path, unsigned int *path_id);
 	// allocates the buffer on the system mem (malloc).
 
+qboolean COM_BlockChecksumFile (const char *path, int quick_bytes,
+                                unsigned *quick, unsigned *full, int *size);
+	// the two Com_BlockChecksum() values of a file, read in 4 KB pieces.
+	// Never allocates: the whole file is never in memory (see common.c).
+
 // Opens the given path directly, ignoring search paths.
 // Returns NULL on failure, or else a '\0'-terminated malloc'ed buffer.
 // Loads in "t" mode so CRLF to LF translation is performed on Windows.

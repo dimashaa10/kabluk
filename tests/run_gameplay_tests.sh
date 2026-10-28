@@ -927,6 +927,65 @@ echo "PASS: the progs check reads the file a window per frame and allocates"
 echo "PASS: nothing, and it gives CRC_Block()'s CRC and q_memmem()'s whole-word"
 echo "PASS: answer -- checked against both on the build machine."
 
+# ---- the 17.4 MB request was the map, read to be checksummed --------------
+#
+# Round 66 fixed the menu's progs.dat read and the next log still ended with
+#
+#     malloc: NULL for 17400000 bytes at 0x08949898 -- last pic: cached,
+#     phase host frame: input/commands/clien
+#
+# -- 17.4 MB, i.e. COM_LoadFile()'s len+1 of a 17 399 999-byte file, asked for
+# while drawing a menu.  The one place in the engine that reads a file that
+# size, in one malloc, with no breadcrumb of its own, is the map CRC of
+# sv_mapcrc: SV_SpawnServer() (Quake/sv_main.c) and CL_MapCRC_Validate()
+# (Quake/crc.c) both read the *whole* .bsp just to hash it, at the top of every
+# level.  A checksum is a chain over 64-byte blocks, so neither needs the file
+# in memory: COM_BlockChecksumFile() (Quake/common.c) reads it in 4 KB windows
+# and returns the same two numbers (Quake/mdfour.c,
+# Com_BlockChecksumBegin/Update/End).
+#
+# Those numbers are compared between a client and a server to decide that they
+# are playing the same map, so "the same" has to be checked, not assumed:
+# tests/test_checksum_stream.c compares the streaming chain with
+# Com_BlockChecksum() on random data, split at every awkward place.
+compile -c "$repo/Quake/mdfour.c" -o "$work/mdfour.o"
+compile "$repo/tests/test_checksum_stream.c" "$work/mdfour.o" \
+    ${LDFLAGS:-} -Wl,--gc-sections -o "$work/checksum_stream"
+if ! "$work/checksum_stream" > "$work/checksum_stream.out" 2>&1; then
+    cat "$work/checksum_stream.out"
+    exit 1
+fi
+cat "$work/checksum_stream.out"
+# And the whole-file read must not come back into either caller.
+if grep -q 'COM_LoadMallocFile *( *sv\.modelname' Quake/sv_main.c; then
+    echo "FAIL: the server reads the whole .bsp to checksum it again"
+    exit 1
+fi
+if grep -q 'COM_LoadMallocFile' Quake/crc.c; then
+    echo "FAIL: CL_MapCRC_Validate reads the whole .bsp again"
+    exit 1
+fi
+grep -q 'COM_BlockChecksumFile *( *sv\.modelname' Quake/sv_main.c || {
+    echo "FAIL: the server no longer checksums the map through the window"
+    exit 1
+}
+grep -q 'COM_BlockChecksumFile *( *bsp' Quake/crc.c || {
+    echo "FAIL: the client no longer checksums the map through the window"
+    exit 1
+}
+# The window must be a buffer on the stack, not a malloc of the file.
+grep -q 'define COM_CHECKSUM_WINDOW 4096' Quake/common.c || {
+    echo "FAIL: the map checksum window changed size without a measurement"
+    exit 1
+}
+grep -q 'byte	buf\[COM_CHECKSUM_WINDOW\];' Quake/common.c || {
+    echo "FAIL: the map checksum window is not the 4 KB on-stack buffer"
+    exit 1
+}
+echo "PASS: the map CRC reads the .bsp in 4 KB windows and returns the same"
+echo "PASS: numbers as the one-piece Com_BlockChecksum() it replaces, checked"
+echo "PASS: on the build machine."
+
 # ---- a failed allocation names the line that asked for it ----------------
 #
 # Round 65 read `last pic: cached` and concluded "a picture decoder".  Round 66

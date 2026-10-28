@@ -728,11 +728,21 @@ FUNC_NORETURN void psp_con_panic (const char *what, const char *file, int line,
 {
 	char buf[256];
 
-	/* A fatal message is worth taking the display for: otherwise nobody
-	 * can read it on the console itself. */
-	con_screen_take_panel();
+	/* The message goes to the card FIRST, and the display comes afterwards.
+	 *
+	 * Taking the panel means talking to the display driver and the GE, and a
+	 * fatal error happens in the middle of something -- most often in the
+	 * middle of a frame.  In the map-start crash of round 66 the log ends at
+	 *
+	 *     malloc: NULL for 17400000 bytes at 0x08949898 -- last pic: cached
+	 *     hist: ...
+	 *
+	 * and the "*** FATAL ERROR ***" that Sys_Error() must have written right
+	 * after it is simply not there: the module died in the display call
+	 * before the message reached the memory stick.  A test report that ends
+	 * one line too early is a round lost, and the one line that is missing is
+	 * always the interesting one. */
 	con_ensure();
-	con_flush();
 
 	con_write("*** ");
 	con_write(what ? what : "FAILED");
@@ -760,7 +770,13 @@ FUNC_NORETURN void psp_con_panic (const char *what, const char *file, int line,
 
 	con_write("  (holding for 30s)");
 	con_putc('\n');
+
+	/* On the card before anything touches the hardware (see above). */
 	con_log_sync();
+
+	/* And now the panel, so it can be read on the console itself. */
+	con_screen_take_panel();
+	con_flush();
 
 	/* Give the tester time to read it before the module dies. */
 	sceKernelDelayThread(30 * 1000 * 1000);

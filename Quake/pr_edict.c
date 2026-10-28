@@ -1296,6 +1296,61 @@ qboolean PR_LoadProgs (const char *filename, qboolean fatal, unsigned int needcr
 
 	PR_ClearProgs(qcvm);	//just in case.
 
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	/* ---- the two numbers that decide whether this can work at all -------
+	 *
+	 * COM_LoadMallocFile() reads the whole progs into one malloc(): the QC VM
+	 * addresses everything by offset into that block, so the file -- not just
+	 * its code -- has to be resident.  The pool malloc() serves on the console
+	 * is a fixed 10 MB (port/psp/psp_heap.c), and both map-start logs so far
+	 * ended at
+	 *
+	 *     malloc: NULL for 17400000 bytes at 0x08949898 -- last pic: cached,
+	 *     phase host frame: input/commands/clien
+	 *
+	 * -- 17.4 MB, which is COM_LoadFile()'s len+1 of a 17 399 999-byte file.
+	 * Two files are read whole at the start of a level: the .bsp, for the map
+	 * CRC in SV_SpawnServer() below (that one was 17.4 MB of the heap until
+	 * round 67 replaced it with a 4 KB window, port/README.md 3al), and this
+	 * one.  If it is the progs, the log has to say so -- with the file's size
+	 * and what the heap can still reach -- instead of the module dying on a
+	 * NULL that COM_LoadFile() turns into a Sys_Error() with nowhere to go. */
+	{
+		extern void psp_tracef (const char *fmt, ...);
+		extern unsigned int psp_heap_block_left (void);
+		FILE *probe = NULL;
+		int progsize = COM_FOpenFile (filename, &probe, NULL);
+		unsigned int room = psp_heap_block_left ();
+
+		if (progsize >= 0 && probe)
+			fclose (probe);
+
+		if (progsize < 0)
+		{
+			psp_tracef ("progs: %s not found in the search path", filename);
+		}
+		else
+		{
+			qboolean fits = ((unsigned int)progsize + 1u <= room);
+
+			psp_tracef ("progs: %s is %d KB; malloc can still reach %d KB%s",
+			            filename, progsize / 1024, (int)(room / 1024),
+			            fits ? "" : " -- TOO BIG FOR THE HEAP");
+
+			if (!fits)
+			{
+				/* Do not ask for memory that cannot exist: the answer is a
+				 * NULL that Sys_Error()s inside the server spawn.  Name the
+				 * problem where it can be read. */
+				Host_Error ("%s is %i KB and this console can only give malloc "
+				            "%i KB: the progs does not fit (see port/README.md 3al)",
+				            filename, progsize / 1024, (int)(room / 1024));
+				return false;
+			}
+		}
+	}
+#endif
+
 	qcvm->progs = (dprograms_t *)COM_LoadMallocFile(filename, NULL);
 	if (!qcvm->progs)
 		return false;
