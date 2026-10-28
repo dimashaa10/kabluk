@@ -662,13 +662,32 @@ static void shim_edge_extend (shim_texture_t *t)
  * port takes one block of that size at start-up and hands it to the arena
  * (psp_gl_shim_set_pool), so the cap and the block are the same number and the
  * arena can never need a chunk the block does not have. */
-#define SHIM_ARENA_LIMIT       (4u * 1024u * 1024u)
+#define SHIM_ARENA_LIMIT       (6u * 1024u * 1024u)
+
+/* How much of the *heap* the arena may borrow when it is full.
+ *
+ * A picture the arena cannot serve used to fall back to memalign() from the
+ * same malloc heap the engine keeps its entity array, its lightmaps, its model
+ * scratch and its progs in.  On the hardware that turned into
+ *
+ *     tex: arena short for 256 KB: ... retry STILL FAILED (6019 KB used of 6144 KB)
+ *     tex: ... kept outside the pool, 17 pictures outside it now
+ *     run: f 408 ..., malloc 10232 KB used, 1 KB left in the heap block, NULL 17
+ *
+ * -- seventeen textures borrowed the heap, the heap ran out, and from then on
+ * seventeen allocations inside the *engine* failed.  A texture that is missing
+ * draws as the engine's null texture, which is ugly and visible; an allocation
+ * that fails inside the map loader ends the session.  So the borrowing is
+ * capped: past this much, a picture is reported and left without a texture, and
+ * the heap stays the engine's. */
+#define SHIM_FALLBACK_LIMIT    (2u * 1024u * 1024u)
 
 static tex_arena_t  shim_arena;
 static int          shim_arena_ready;
 static int          shim_arena_pooled;	/* holds one block, see below      */
 static int          shim_arena_refused;	/* the cap, for the log           */
 static int          shim_arena_fallback;	/* pictures that had to use memalign */
+static size_t       shim_fallback_bytes;	/* and how much heap they took    */
 static int          shim_arena_short_logs;	/* "arena short" lines written  */
 
 /* Called when the arena cannot satisfy a request.  The pictures the engine is
@@ -732,12 +751,15 @@ void psp_gl_shim_texture_report (void)
 
 	psp_tracef("tex: %d pictures, %d KB in use of %d KB arena (%d chunks of "
 	           "256 KB-1 MB, cap %d KB), largest free %d KB in %d runs, "
-	           "%d outside the arena",
+	           "%d outside the arena taking %d KB of the heap (cap %d KB), "
+	           "%d refused",
 	           (int)shim_texture_count, (int)(tex_arena_used(&shim_arena) / 1024),
 	           (int)(tex_arena_size(&shim_arena) / 1024), shim_arena.chunks,
 	           (int)(SHIM_ARENA_LIMIT / 1024),
 	           (int)(tex_arena_largest_free(&shim_arena) / 1024),
-	           tex_arena_free_runs(&shim_arena), shim_arena_fallback);
+	           tex_arena_free_runs(&shim_arena), shim_arena_fallback,
+	           (int)(shim_fallback_bytes / 1024), (int)(SHIM_FALLBACK_LIMIT / 1024),
+	           shim_arena_refused);
 }
 
 /* Walk the arena's block list and report the first thing that does not add
@@ -1116,7 +1138,19 @@ static int shim_texture_alloc (shim_texture_t *t, int width, int height, int opa
 			shim_arena_trim();
 		}
 		else
+		{
 			free(t->pixels);
+
+			/* Give the borrowing back: a block that lived outside the
+			 * pool must stop counting against SHIM_FALLBACK_LIMIT when it
+			 * is released, or the cap would only ever be reached once. */
+			if (shim_fallback_bytes >= t->bytes)
+				shim_fallback_bytes -= t->bytes;
+			else
+				shim_fallback_bytes = 0;
+			if (shim_arena_fallback > 0)
+				shim_arena_fallback--;
+		}
 
 		shim_texture_bytes -= t->bytes;
 		t->pixels = NULL;
@@ -1143,25 +1177,42 @@ static int shim_texture_alloc (shim_texture_t *t, int width, int height, int opa
 		{
 			/* The arena is capped and still full after the eviction
 			 * pass: rather than lose the picture, fall back to a plain
-			 * malloc.  It is the old, fragmented path -- but a picture
-			 * that fits is better than one that does not.
+			 * memalign.  It is the old, fragmented path -- but a picture
+			 * that fits is better than one that does not.  (What lives
+			 * out here is invisible to every arena report and is never
+			 * trimmed, which is why it is counted and printed.)
 			 *
-			 * Say so, with the size: a picture out here is invisible to
-			 * every arena report, is never trimmed, and takes memory the
-			 * pool would otherwise reuse.  The emulator log ended with
-			 * "2 outside the arena" and no way to tell which two. */
-			t->pixels = memalign(16, need);
-			t->in_arena = 0;
-			if (t->pixels)
+			 * Capped: see SHIM_FALLBACK_LIMIT.  A picture that would
+			 * take the heap past the cap is left without one, and the
+			 * engine keeps its memory. */
+			if (shim_fallback_bytes + need > SHIM_FALLBACK_LIMIT)
 			{
-				shim_arena_fallback++;
+				shim_arena_refused++;
 
-				if (shim_arena_fallback <= 20)
+				if (shim_arena_refused <= 4)
 					psp_tracef("tex: %dx%d picture (%d KB box) does not fit the "
-					           "arena even after unloading: kept outside the "
-					           "pool, %d pictures outside it now",
+					           "pool and would take %d KB of the engine's heap "
+					           "(cap %d KB): drawn with the null texture",
 					           width, height, (int)(need / 1024),
-					           shim_arena_fallback);
+					           (int)((shim_fallback_bytes + need) / 1024),
+					           (int)(SHIM_FALLBACK_LIMIT / 1024));
+			}
+			else
+			{
+				t->pixels = memalign(16, need);
+				t->in_arena = 0;
+				if (t->pixels)
+				{
+					shim_fallback_bytes += need;
+					shim_arena_fallback++;
+
+					if (shim_arena_fallback <= 20)
+						psp_tracef("tex: %dx%d picture (%d KB box) does not fit the "
+						           "arena even after unloading: kept outside the "
+						           "pool, %d pictures outside it now",
+						           width, height, (int)(need / 1024),
+						           shim_arena_fallback);
+				}
 			}
 		}
 
@@ -2475,7 +2526,15 @@ void glDeleteTextures (GLsizei n, const GLuint *textures)
 				shim_arena_trim();
 			}
 			else
+			{
 				free(t->pixels);
+				if (shim_fallback_bytes >= t->bytes)
+					shim_fallback_bytes -= t->bytes;
+				else
+					shim_fallback_bytes = 0;
+				if (shim_arena_fallback > 0)
+					shim_arena_fallback--;
+			}
 
 			shim_texture_bytes -= t->bytes;
 		}

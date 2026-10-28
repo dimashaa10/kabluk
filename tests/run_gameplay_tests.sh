@@ -1080,12 +1080,13 @@ awk '
   inf && /Sys_Error/ { printf "FAIL: the hunk report can die itself\n"; exit 1 }
   inf && /^}/ { inf = 0 }
 ' Quake/zone.c || exit 1
-# And the picture pool gave the zone two megabytes: 4 MB, matching the arena cap.
-grep -q 'define PSP_PICTURE_POOL	(4u \* 1024u \* 1024u)' port/psp/psp_mem.c || {
-    echo "FAIL: the picture pool and the zone are back out of balance"
+# The picture pool and the arena cap are one number in two files: the block
+# taken from the firmware and the ceiling the arena believes it has.
+grep -q 'define PSP_PICTURE_POOL	(6u \* 1024u \* 1024u)' port/psp/psp_mem.c || {
+    echo "FAIL: the picture pool changed without measuring the map's textures"
     exit 1
 }
-grep -q 'define SHIM_ARENA_LIMIT       (4u \* 1024u \* 1024u)' port/psp/gl_shim.c || {
+grep -q 'define SHIM_ARENA_LIMIT       (6u \* 1024u \* 1024u)' port/psp/gl_shim.c || {
     echo "FAIL: the arena cap no longer matches the block it is given"
     exit 1
 }
@@ -1095,8 +1096,50 @@ grep -q 'static volatile int con_panicking;' port/psp/psp_console.c || {
     exit 1
 }
 echo "PASS: the hunk reports its size, its free bytes and the six biggest"
-echo "PASS: allocations by name before it says it is full, the picture pool is"
-echo "PASS: 4 MB so the zone gets the rest, and a fatal error ends the log."
+echo "PASS: allocations by name before it says it is full, and a fatal error"
+echo "PASS: ends the log instead of filling it with status lines."
+
+# ---- the textures spilled into the engine's heap -------------------------
+#
+# Round 69's log got the map loaded and the game running, and then showed what
+# the texture budget really is on a console with no VRAM:
+#
+#     tex: arena short for 256 KB: ... retry STILL FAILED (6019 KB used of 6144 KB)
+#     tex: ... kept outside the pool, 17 pictures outside it now
+#     run: f 408 ..., malloc 10232 KB used, 1 KB left in the heap block, NULL 17
+#
+# A 512x512 miptex is 512 KB of the pool, so one map fills it; what did not fit
+# fell back to memalign() from the same heap the engine keeps its entity array
+# and lightmaps in, and filled it to the last kilobyte -- after which seventeen
+# allocations *inside the engine* failed.  A missing texture is ugly; a failed
+# engine allocation ends the run.  So the borrowing is capped.
+grep -q 'define SHIM_FALLBACK_LIMIT    (2u \* 1024u \* 1024u)' port/psp/gl_shim.c || {
+    echo "FAIL: pictures may borrow the whole engine heap again"
+    exit 1
+}
+awk '
+  /if \(!t->pixels\)/ { pending = 1 }
+  pending && /memalign\(16, need\)/ { guarded = 1 }
+  pending && /^\t\t}/ { pending = 0 }
+  END { if (!guarded) { printf "FAIL: the heap fallback is not capped\n"; exit 1 } }
+' port/psp/gl_shim.c || exit 1
+grep -q 'shim_fallback_bytes += need' port/psp/gl_shim.c || {
+    echo "FAIL: the heap a spilled picture takes is not counted"
+    exit 1
+}
+grep -q 'shim_fallback_bytes -= t->bytes' port/psp/gl_shim.c || {
+    echo "FAIL: a released outside-picture never gives its allowance back"
+    exit 1
+}
+# Two megabytes of the heap that nothing on this console uses: IPLog's table of
+# player addresses, 65536 entries for a machine with no Wi-Fi.
+grep -q 'define DEFAULT_IPLOGSIZE	0x400' Quake/iplog.c || {
+    echo "FAIL: IPLog takes its desktop share of the console's heap again"
+    exit 1
+}
+echo "PASS: the texture pool is 6 MB because the map's miptex live in it, what"
+echo "PASS: spills over may borrow at most 2 MB of the engine's heap, and"
+echo "PASS: IPLog's two megabytes are back for the engine."
 
 # ---- a failed allocation names the line that asked for it ----------------
 #

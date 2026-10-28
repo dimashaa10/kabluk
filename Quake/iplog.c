@@ -17,7 +17,24 @@ int iplog_size;
 int iplog_next;
 int iplog_full;
 
+/* 65536 entries, 32 bytes each: two megabytes of the malloc heap, taken once at
+ * start-up and held for the whole session (`IPLog_Init` -> Q_malloc).  It is a
+ * table of the addresses of the players seen on the Internet -- useful on a
+ * desktop that joins public servers, useless on a console that has no Wi-Fi at
+ * all (PSP-E1008), and expensive on one whose whole malloc heap is 10 MB.
+ *
+ * The hardware log is where that stopped being a theory:
+ *
+ *     run: f 408 ..., malloc 10232 KB used, 1 KB left in the heap block, NULL 17
+ *
+ * and two of those megabytes were this table.  The PSP keeps 1024 entries (32
+ * KB): the code paths, the save file and the menu keep working, they just
+ * remember a LAN's worth of players instead of the whole Internet's. */
+#if defined(PLATFORM_PSP) || defined(__psp__)
+#define DEFAULT_IPLOGSIZE	0x400
+#else
 #define DEFAULT_IPLOGSIZE	0x10000
+#endif
 #define MAX_REPETITION	128
 
 static qboolean migrated_old_files = false; // Track if migration has occurred
