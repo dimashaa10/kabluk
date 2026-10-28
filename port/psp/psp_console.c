@@ -12,6 +12,7 @@
 #include <pspdebug.h>
 #include <pspdisplay.h>
 #include <pspiofilemgr.h>
+#include <psppower.h>
 #include <pspthreadman.h>
 
 #include <stdarg.h>
@@ -395,7 +396,10 @@ static void con_write (const char *s)
  * libpspkernel to provide the kernel stub).
  *
  * A crash therefore still takes the screen with it.  What survives is
- * kabluk.log: every console line is written to it through sceIo as it is
+ * kabluk.log -- and, for the two cases the port can still see for itself (a
+ * Sys_Error/assert and a stall the watchdog notices), the text console put
+ * back on the panel by con_screen_take_panel().  Every console line is
+ * written to kabluk.log through sceIo as it is
  * printed, so the last line before a fault says where the engine got to.
  * The register dump can come back later, either through psplink (which runs
  * the module under a host-side debugger) or by moving the handler into a
@@ -567,12 +571,56 @@ int psp_con_fflush (FILE *stream)
 	return 0;
 }
 
+/*
+ * con_screen_take_panel -- put the text console back on the display.
+ *
+ * The console and the game do not share a framebuffer.  pspDebugScreen* draws
+ * with the CPU straight into EDRAM page 0 (pspsdk src/debug/scr_printf.c,
+ * debug_put_char_32(): vram = g_vram_base + y * PSP_LINE_SIZE), and the game
+ * draws into its own two buffers starting at 0x088000 (see the layout note at
+ * the top of gu_psp.c).  Once the GU presents its first frame, sceDisplay
+ * frame buffer points at the game's buffer and page 0 is no longer scanned out.
+ *
+ * That made every message printed after handover invisible: text went into a
+ * page nobody was showing, and kabluk.log was the only copy.  The consequences
+ * were exactly the symptom reported from the hardware -- "the game crashes and
+ * switches the console off, with no message":
+ *
+ *   - a Sys_Error()/assert() in the middle of a game wrote its reason to page 0,
+ *     the panel kept the last game frame (the freeze), and the log line was all
+ *     there was;
+ *   - the watchdog's stall report had the same problem, so "5 s without
+ *     progress, last step ..." only ever existed in the file.
+ *
+ * pspDebugScreenInit() is pspsdk's own way of doing this: it points
+ * sceDisplaySetFrameBuf back at page 0 and clears that page.  The clear is
+ * bounded by the page itself (512 x 272 x 4 = 0x88000 bytes), i.e. it stops
+ * exactly where the game's frame buffers begin, so nothing the GE is drawing
+ * into is touched.
+ *
+ * It is reversible by construction: the next frame the game presents calls
+ * sceGuSwapBuffers(), which re-points the display at the game's buffer.  So a
+ * stall that recovers goes back to the game by itself, and a real failure keeps
+ * the text on screen instead of a dead frame.
+ */
+static void con_screen_take_panel (void)
+{
+	pspDebugScreenInit();
+	con_ready = 1;
+	con_row = 0;
+	con_len = 0;
+	con_line[0] = '\0';
+	con_screen_on = 1;
+}
+
 FUNC_NORETURN void psp_con_panic (const char *what, const char *file, int line,
                                   const char *func, const char *expr)
 {
 	char buf[256];
 
-	con_screen_on = 1;	/* a fatal message is worth a mangled frame */
+	/* A fatal message is worth taking the display for: otherwise nobody
+	 * can read it on the console itself. */
+	con_screen_take_panel();
 	con_ensure();
 	con_flush();
 
@@ -722,16 +770,21 @@ void psp_con_boot_done (void)
 
 /* The game is about to take the display over.
  *
- * pspDebugScreenPrintf() does not own a separate plain-text buffer: it draws
- * its characters with the same sceGu primitives the game uses, into whatever
- * framebuffer happens to be current.  Once the game swaps buffers, a console
- * line is a handful of stray triangles and a texture bind in the middle of the
- * game's own draw list -- which is exactly what "random blue and orange
- * pixels smeared across the screen" looks like.
+ * pspDebugScreen* draws with the CPU into EDRAM page 0 -- pspsdk
+ * src/debug/scr_printf.c, debug_put_char_32(): vram = g_vram_base + y *
+ * PSP_LINE_SIZE, no GE involved.  Once the game presents its own frames,
+ * sceDisplay's frame buffer points at the game's page (0x088000 upwards, see
+ * gu_psp.c) and page 0 is no longer scanned out.
  *
- * So the screen is released here and everything keeps going to kabluk.log.
- * psp_con_panic() still prints, because it is the one case where a message is
- * worth a mangled frame. */
+ * So everything printed after this point is invisible: it lands in a page
+ * nobody is showing.  That is fine while the game runs -- the text is in
+ * kabluk.log either way -- but it is not fine for a failure or a freeze, so
+ * those two paths call con_screen_take_panel(), which points the display back
+ * at page 0 before printing.  (This note used to claim the console drew with
+ * sceGu into the current framebuffer and left stray triangles in the game's
+ * frame; that is not what pspsdk does.  The reason to release the screen is
+ * that page 0 is not on the panel any more, not that the characters would
+ * pollute the frame.) */
 void psp_con_screen_off (void)
 {
 	if (!con_screen_on)
@@ -849,7 +902,7 @@ static void con_log_direct (const char *text)
 /* The tail of the breadcrumb ring: the last dozen steps, oldest first.  Printed
  * once per stall, because the point of a stall report is to say where the
  * engine was and what it had just been doing. */
-static void con_watchdog_history (void)
+static void con_watchdog_history (int to_screen)
 {
 	char line[CON_LINE_MAX + 2];
 	int i, count, start, len;
@@ -876,8 +929,19 @@ static void con_watchdog_history (void)
 		len += n;
 	}
 
-	if (len)
-		con_log_direct(line);
+	if (!len)
+		return;
+
+	con_log_direct(line);
+
+	/* The same trail on the panel when the panel has been taken for the
+	 * report.  One step per row, oldest first: the file is what gets sent
+	 * back, but on the console itself this is the only way to see what led
+	 * to the stall without a PC in front of it. */
+	if (to_screen)
+		for (i = 0; i < count; i++)
+			pspDebugScreenPrintf("%c %-66.66s\n", i ? ' ' : '>',
+			                     con_steps[(start + i) % CON_STEPS]);
 }
 
 static int con_watchdog_thread (SceSize args, void *argp)
@@ -899,6 +963,18 @@ static int con_watchdog_thread (SceSize args, void *argp)
 		char line[CON_LINE_MAX + 2];
 
 		sceKernelDelayThread(1000 * 1000);
+
+		/* pspsdk src/power/psppower.h: "Generate a power tick, preventing
+		 * unit from powering off and turning off display."  Nothing in the
+		 * port called it (checked: no scePowerTick anywhere), so the one
+		 * timer that would keep the unit awake depended on the game still
+		 * feeding the display.  The moment the engine stops -- the freeze
+		 * this port has been chasing -- nobody ticks any more, and the
+		 * firmware is free to switch the console off under the frozen
+		 * picture.  That is the "and then it turns itself off" half of the
+		 * report; a tick a second from this thread, which keeps running
+		 * while the engine is stuck, removes it. */
+		scePowerTick(PSP_POWER_TICK_ALL);
 
 		/* A crash takes the screen with it, so the last breadcrumb has to
 		 * reach the card *while the engine is still alive*.  Only real
@@ -944,17 +1020,43 @@ static int con_watchdog_thread (SceSize args, void *argp)
 		         "watchdog: %d s without progress, last step: %s, phase: %s",
 		         stalled, con_last_step, con_phase);
 
-		pspDebugScreenSetXY(0, CON_ROWS - 1);
-		pspDebugScreenPrintf("%-67.67s", msg);
-		pspDebugScreenSetXY(0, con_row < CON_ROWS ? con_row : 0);
+		/* First report of this stall: put the text console on the panel.
+		 *
+		 * Until now this wrote into EDRAM page 0 with pspDebugScreenPrintf,
+		 * and after the game's first frame that page is not what the
+		 * display scans out -- so the one line that names the hang was
+		 * invisible on the hardware and existed only in kabluk.log.  Taking
+		 * the panel back is what makes a freeze readable on the console
+		 * itself, and it is undone by the next sceGuSwapBuffers() if the
+		 * engine recovers. */
+		if (!reported)
+		{
+			con_screen_take_panel();
+			pspDebugScreenPrintf("*** kabluk: the game stopped "
+			                     "making progress ***\n");
+			pspDebugScreenPrintf("%s\n", msg);
+
+			/* The history is the part that turns "it froze somewhere in
+			 * a picture" into a file name.  Printed once, because the
+			 * later reports would scroll it off the 33 rows. */
+			con_watchdog_history(1);
+		}
+		else
+		{
+			/* Later reports only update the bottom row: the panel keeps
+			 * the first report and the trail above it, and the seconds
+			 * counter in the corner keeps climbing so a photograph of
+			 * the screen says how long it has been stuck. */
+			pspDebugScreenSetXY(0, CON_ROWS - 1);
+			pspDebugScreenPrintf("%.68s", msg);
+			pspDebugScreenSetXY(0, con_row < CON_ROWS ? con_row : 0);
+		}
 
 		snprintf(line, sizeof(line), "*** %s", msg);
 		con_log_direct(line);
 
-		/* The history is the part that turns "it froze somewhere in a
-		 * picture" into a file name. */
-		if (!reported)
-			con_watchdog_history();
+		/* Already on the card before the panel goes dark again. */
+		con_log_sync();
 
 		reported = 1;
 	}

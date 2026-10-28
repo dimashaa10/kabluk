@@ -947,6 +947,11 @@ static void *shim_picture_alloc (size_t need)
  * between GL_RGB and GL_RGBA uploads then walks the heap down until malloc
  * cannot find a block at all, while the amount actually held never grows.
  * Reusing the block removes the churn entirely. */
+/* The largest texture the GE can address in either direction.  This is not a
+ * policy choice: pspsdk src/gu/sceGuTexImage.c asserts width and height 1..512
+ * and encodes each as a 4-bit LOG2 field. */
+#define SHIM_TEX_MAX 512
+
 /* Round a picture size up to what the GE can sample.
  *
  * sceGuTexImage() does not store width and height, it stores their LOGARITHMS
@@ -980,8 +985,26 @@ static int shim_texture_alloc (shim_texture_t *t, int width, int height, int opa
 	t->tbw = potw;
 	need = (size_t)potw * (size_t)poth * 2;
 
-	if (potw < width || poth < height)
-		return 0;	/* beyond what the GE can address; the caller logs it */
+	/* Beyond what the GE can address, in either direction.
+	 *
+	 * Below the picture size the box would be smaller than the picture.  Above
+	 * 512 it is worse than a wrong size: sceGuTexImage() stores the LOG2 of
+	 * each dimension in a 4-bit field, and pspsdk derives it with
+	 *
+	 *     getExp(val) { return 31 - __builtin_clz(val & 0x3FF); }
+	 *
+	 * so a 1024-wide picture goes through the mask as 0, __builtin_clz(0) is
+	 * 32, and getExp() returns -1.  (getExp(h) << 8) | -1 is 0xFFFF, i.e. the
+	 * GE is told to sample a 32768x32768 texture and reads far outside the
+	 * picture memory.  On hardware that is garbage on the panel in the best
+	 * case and a GE that never finishes in the worst -- and the emulator does
+	 * not reproduce it, because it clamps the size field.
+	 *
+	 * So the picture is not uploaded, glTexImage2D() says so once with its
+	 * size, and the drawing code gets the engine's null texture. */
+	if (potw < width || poth < height ||
+	    potw > SHIM_TEX_MAX || poth > SHIM_TEX_MAX)
+		return 0;	/* the caller logs it */
 
 	changed = (t->width != width || t->height != height ||
 	           t->potw != potw || t->poth != poth ||
@@ -2221,6 +2244,24 @@ void glTexImage2D (GLenum target, GLint level, GLint internalFormat,
 	t = shim_texture_for(shim_texture_bound, 1);
 	if (!t)
 		return;
+
+	/* Say it in the log *before* the arena reports "no room": a picture this
+	 * size is not a memory question, and the two used to look identical. */
+	if (width > SHIM_TEX_MAX || height > SHIM_TEX_MAX)
+	{
+		static int too_big;
+
+		if (too_big < 8)
+		{
+			too_big++;
+			psp_tracef("tex: %dx%d picture is bigger than the GE's %d "
+			           "limit in one direction -- not uploaded (this is "
+			           "not a memory problem; the picture is drawn as the "
+			           "null texture)", width, height, SHIM_TEX_MAX);
+		}
+
+		return;
+	}
 
 	switch (format)
 	{

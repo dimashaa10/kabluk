@@ -139,7 +139,12 @@ LDFLAGS += -Wl,-zmax-page-size=128
 # sceKernel* (DelayThread, ExitGame) live in libpspkernel, which pspsdk's
 # build.mak does not add for user-mode programs.
 PSP_LIBS := -lpspdebug -lpspdisplay -lpspge -lpspctrl -lpspkernel
-TEST_LIBS := $(PSP_LIBS) -lm
+# -lpsppower for scePowerTick(), which psp_console.c's watchdog calls once a
+# second (see the note there: without it the firmware is free to switch the
+# unit off as soon as the engine stops feeding the display).  The GAME link
+# already names -lpsppower further down; the test EBOOTs also contain
+# psp_console.o, so they need it too.
+TEST_LIBS := $(PSP_LIBS) -lpsppower -lm
 # SDL2 for PSP is not a self-contained black box: its video backend talks to
 # sceGu directly and its audio backend to sceAudio, so linking it drags in most
 # of the SDK.  This is SDL's own Makefile.psp list minus the optional pspgl
