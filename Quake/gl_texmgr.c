@@ -1856,12 +1856,32 @@ TexMgr_LoadLightmap -- handles lightmap data
 */
 static void TexMgr_LoadLightmap(gltexture_t* glt, byte* data)
 {
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	/* A map without its lightmaps is a black map, and the picture pool is
+	 * always full by the time a map is entered (gl_shim.c: the round-73 log
+	 * has it at 6131 KB of 6144 with 12 KB free).  Say that this upload is a
+	 * lightmap, so the shim lets it past the picture cap.  Cleared again
+	 * below, so no ordinary picture inherits the exemption. */
+	{
+		extern void psp_gl_shim_priority_texture (int on);
+
+		psp_gl_shim_priority_texture (1);
+	}
+#endif
 	// upload it
 	GL_Bind(glt);
 	if (gl_lightmap_format == GL_RGB9_E5)
 		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB9_E5, glt->width, glt->height, 0, GL_RGB, GL_UNSIGNED_INT_5_9_9_9_REV, data);
 	else
 		glTexImage2D(GL_TEXTURE_2D, 0, lightmap_bytes, glt->width, glt->height, 0, gl_lightmap_format, GL_UNSIGNED_BYTE, data);
+
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	{
+		extern void psp_gl_shim_priority_texture (int on);
+
+		psp_gl_shim_priority_texture (0);
+	}
+#endif
 
 	// set filter modes
 	TexMgr_SetFilterModes(glt);

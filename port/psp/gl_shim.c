@@ -120,6 +120,8 @@ typedef struct
 	int          filter;          /* GU_NEAREST or GU_LINEAR             */
 	int          dirty;           /* needs a re-upload before drawing    */
 	int          in_arena;        /* the block came from the texture arena */
+	int          priority;        /* a lightmap: counted against its own
+	                               * budget, not the picture cap (below) */
 } shim_texture_t;
 
 #define SHIM_MAX_TEXTURES 1024
@@ -806,6 +808,33 @@ static int          shim_arena_pooled;	/* holds one block, see below      */
 static int          shim_arena_refused;	/* the cap, for the log           */
 static int          shim_arena_fallback;	/* pictures that had to use memalign */
 static size_t       shim_fallback_bytes;	/* and how much heap they took    */
+/* ---- the lightmaps ----------------------------------------------------
+ *
+ * A lightmap is not a picture: the world is unlit without it, it exists for
+ * the whole level, and there are only a few dozen of them.  The picture arena
+ * is full by the time a map is entered -- the round-73 log has it at 6131 KB
+ * of 6144 with 12 KB free, and the fallback path outside the pool at its
+ * 2048 KB cap -- so every lightmap would be refused and every surface of the
+ * map would be drawn with the null texture: a black world that is otherwise
+ * rendering correctly, which is a far worse thing to debug than a crash.
+ *
+ * So the engine marks the texture it is about to upload as a lightmap
+ * (TexMgr_LoadLightmap calls psp_gl_shim_priority_texture), and that one
+ * allocation is allowed past the picture cap under a budget of its own.  A
+ * 128x128 lightmap block is 32 KB here (port/psp/vid_psp.c sets the block
+ * size), so this budget holds 48 of them.
+ *
+ * The flag is sticky until the next glTexImage2D, which is exactly the window
+ * TexMgr_LoadLightmap needs (GL_Bind, then glTexImage2D). */
+#define SHIM_PRIORITY_LIMIT    (1536u * 1024u)
+static int          shim_texture_priority;
+static size_t       shim_priority_bytes;
+static int          shim_priority_logged;
+
+void psp_gl_shim_priority_texture (int on)
+{
+	shim_texture_priority = on ? 1 : 0;
+}
 static int          shim_arena_short_logs;	/* "arena short" lines written  */
 
 /* Called when the arena cannot satisfy a request.  The pictures the engine is
@@ -1262,7 +1291,14 @@ static int shim_texture_alloc (shim_texture_t *t, int width, int height, int opa
 			/* Give the borrowing back: a block that lived outside the
 			 * pool must stop counting against SHIM_FALLBACK_LIMIT when it
 			 * is released, or the cap would only ever be reached once. */
-			if (shim_fallback_bytes >= t->bytes)
+			if (t->priority)
+			{
+				if (shim_priority_bytes >= t->bytes)
+					shim_priority_bytes -= t->bytes;
+				else
+					shim_priority_bytes = 0;
+			}
+			else if (shim_fallback_bytes >= t->bytes)
 				shim_fallback_bytes -= t->bytes;
 			else
 				shim_fallback_bytes = 0;
@@ -1303,7 +1339,26 @@ static int shim_texture_alloc (shim_texture_t *t, int width, int height, int opa
 			 * Capped: see SHIM_FALLBACK_LIMIT.  A picture that would
 			 * take the heap past the cap is left without one, and the
 			 * engine keeps its memory. */
-			if (shim_fallback_bytes + need > SHIM_FALLBACK_LIMIT)
+			if (shim_texture_priority &&
+			    shim_priority_bytes + need <= SHIM_PRIORITY_LIMIT)
+			{
+				/* A lightmap: allowed past the picture cap, see
+				 * SHIM_PRIORITY_LIMIT.  Counted separately and said once,
+				 * so the log still shows where the heap went. */
+				t->pixels = memalign(16, need);
+				t->in_arena = 0;
+				if (t->pixels)
+				{
+					t->priority = 1;
+					shim_priority_bytes += need;
+					if (shim_priority_logged++ == 0)
+						psp_tracef("tex: lightmaps are kept outside the picture "
+						           "pool: the first one took %d KB (budget %d KB)",
+						           (int)(need / 1024),
+						           (int)(SHIM_PRIORITY_LIMIT / 1024));
+				}
+			}
+			else if (shim_fallback_bytes + need > SHIM_FALLBACK_LIMIT)
 			{
 				shim_arena_refused++;
 

@@ -79,6 +79,12 @@ size_t psp_gl_shim_texture_room (void);
  * usable by malloc() again.  Returns the number of pictures released. */
 int psp_gl_shim_reclaim_pictures (void);
 
+/* The texture uploaded by the NEXT glTexImage2D is a lightmap: it may use
+ * memory past the picture pool's fallback cap, under a budget of its own.
+ * A map is unlit without its lightmaps, and the pool is always full by the
+ * time a map is entered (gl_shim.c: SHIM_PRIORITY_LIMIT). */
+void psp_gl_shim_priority_texture (int on);
+
 /* One line stating what the picture pool actually holds, for the frame card. */
 void psp_gl_shim_texture_report (void);
 

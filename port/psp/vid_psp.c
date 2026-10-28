@@ -72,6 +72,66 @@ qboolean	gl_texture_e5bgr9 = false;
  * texture later divides by zero in the GL maths.  The PSP GPU tops out at
  * 512x512. */
 GLint		gl_hardware_maxsize = 512;
+
+/* ---- the lightmap block size, which nothing on this port was setting ------
+ *
+ * Quake/gl_vidsdl.c is the file that owns this number on the desktop:
+ *
+ *     glGetIntegerv (GL_MAX_TEXTURE_SIZE, &gl_hardware_maxsize);
+ *     LMBLOCK_WIDTH  = q_min(gl_hardware_maxsize, 512);
+ *     LMBLOCK_HEIGHT = q_min(gl_hardware_maxsize, 16384);
+ *
+ * and this port does not compile that file -- vid_psp.c replaces it, and
+ * gl_vidsdl.c is not in the Makefile.  So the two variables kept the value
+ * their definition gives them, which is zero:
+ *
+ *     Quake/r_brush.c:42   int LMBLOCK_WIDTH, LMBLOCK_HEIGHT;
+ *
+ * Nothing read them until a map loaded, and then two things happened at once.
+ *
+ * 1. CalcSurfaceExtents() throws away a surface whose lightmap is too big for
+ *    a block --
+ *
+ *        if (!(tex->flags & TEX_SPECIAL) &&
+ *            s->extents[i] >= (i?LMBLOCK_HEIGHT:LMBLOCK_WIDTH))
+ *                s->extents[i] = 1;
+ *
+ *    -- and with a block of 0x0 that is EVERY surface: the whole map's
+ *    lightmaps became 2x2 texels.
+ *
+ * 2. AllocBlock() could then never place one:
+ *
+ *        for (i = 0; i < LMBLOCK_WIDTH - w; i++)   // 0 - 2, never runs
+ *        if (best + h > LMBLOCK_HEIGHT)            // 0 + 2 > 0, always true
+ *            continue;
+ *
+ *    so the loop walked texnum up to MAX_SANITY_LIGHTMAPS (1<<20), realloc()ing
+ *    the lightmap array every iteration.  That realloc eventually returned NULL
+ *    and the very next line, memset(&lightmaps[texnum], 0, ...), wrote through
+ *    it.  On this hardware that is an exception with no handler and no message
+ *    (port/psp/psp_console.c), so the console simply stopped -- and the last
+ *    line of kabluk.log was
+ *
+ *        r_newmap: 36 surfaces, lightmaps first
+ *
+ *    which is the line immediately before GL_BuildLightmaps() is called.
+ *
+ * 128x128 is GLQuake's own lightmap block and it fits this hardware twice
+ * over: a block is 64 KB of engine memory (4 bytes a texel) and the GE
+ * texture the shim builds from it is 128x128x2 = 32 KB, well inside the 512
+ * texel limit of sceGuTexImage().  A taller block would only save lightmap
+ * objects: the 16384 the desktop uses is 8 MB of bytes per block. */
+#define PSP_LMBLOCK 128
+
+static void psp_lmblock_init (void)
+{
+	if (LMBLOCK_WIDTH > 0 && LMBLOCK_HEIGHT > 0)
+		return;
+
+	LMBLOCK_WIDTH = LMBLOCK_HEIGHT = PSP_LMBLOCK;
+	Con_Printf("Video: lightmap blocks are %dx%d\n",
+	           LMBLOCK_WIDTH, LMBLOCK_HEIGHT);
+}
 float		gl_max_anisotropy = 0.0f;
 GLint		gl_max_texture_units = 1;
 GLint		gl_max_texture_image_units = 1;
@@ -104,6 +164,9 @@ void VID_Init (void)
 	vid.numpages = 1;
 	vid.recalc_refdef = 1;
 	vid.fullbright = 0;
+
+	/* Before anything can build a lightmap (see psp_lmblock_init above). */
+	psp_lmblock_init ();
 
 	/* Register the video cvars even though nothing renders yet: default.cfg
 	 * sets 'gamma' and 'vid_fsaa', and an unregistered cvar turns every line

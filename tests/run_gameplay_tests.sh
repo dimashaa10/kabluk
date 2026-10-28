@@ -1606,3 +1606,68 @@ awk '
 ' Quake/r_part_fte.c || exit 1
 echo "PASS: particles and decals are sized for the console (under 1 MB, not"
 echo "PASS: 6.5 MB), retried at half size, and never left NULL."
+
+# ---- the lightmap block size is set, and lightmaps get memory ----------
+#
+# Round 74's log ends on "r_newmap: 36 surfaces, lightmaps first", which is the
+# line immediately before GL_BuildLightmaps().  The reason is a variable that
+# nothing on this port ever set:
+#
+#   Quake/r_brush.c      int LMBLOCK_WIDTH, LMBLOCK_HEIGHT;      // zero
+#   Quake/gl_vidsdl.c    LMBLOCK_WIDTH = q_min(...)              // not built here
+#
+# With a 0x0 block, CalcSurfaceExtents() collapses the lightmap of every
+# surface to 2x2 and AllocBlock() can never place one: its placement loop is
+# `i < LMBLOCK_WIDTH - w` (never runs) and its fit test is
+# `best + h > LMBLOCK_HEIGHT` (always true), so it walks texnum to
+# MAX_SANITY_LIGHTMAPS, realloc()ing the lightmap array each time until that
+# realloc returns NULL -- and the memset right after it writes through the NULL.
+# Silent, because there is no exception handler on this port.
+grep -q 'psp_lmblock_init' port/psp/vid_psp.c || {
+    echo "FAIL: nothing on this port sets LMBLOCK_WIDTH/HEIGHT, so every"
+    echo "FAIL: lightmap is 2x2 and AllocBlock walks a million times"
+    exit 1
+}
+grep -q 'LMBLOCK_WIDTH = LMBLOCK_HEIGHT = PSP_LMBLOCK' port/psp/vid_psp.c || {
+    echo "FAIL: psp_lmblock_init does not set both block dimensions"
+    exit 1
+}
+grep -q 'psp_lmblock_init ();' port/psp/vid_psp.c || {
+    echo "FAIL: the lightmap block size is defined but never applied"
+    exit 1
+}
+# A block of zero must be a named error, not a million-iteration walk.
+grep -q 'LMBLOCK_WIDTH < LMBLOCK_MIN' Quake/r_brush.c || {
+    echo "FAIL: AllocBlock does not notice a 0x0 lightmap block"
+    exit 1
+}
+grep -q 'if (!grown)' Quake/r_brush.c || {
+    echo "FAIL: a failed lightmap-array realloc is still written through"
+    exit 1
+}
+# And the per-surface lightmap buffer is not on a 512 KB stack.
+awk '
+  /^void R_BuildLightMap/ { inb = 1 }
+  inb && /alloca\(size/ { alloc = 1 }
+  inb && /blocklights = \(unsigned \*\)malloc/ { heap = 1 }
+  inb && /^}/ { inb = 0 }
+  END {
+    if (alloc && !heap) { printf "FAIL: R_BuildLightMap alloca()s up to 193 KB on a 512 KB stack\n"; exit 1 }
+  }
+' Quake/r_brush.c || exit 1
+# The world needs its lightmaps even though the picture pool is full.
+grep -q 'psp_gl_shim_priority_texture' Quake/gl_texmgr.c || {
+    echo "FAIL: nothing tells the shim that a lightmap is a lightmap, so every"
+    echo "FAIL: lightmap is refused by the full picture pool"
+    exit 1
+}
+grep -q '#define SHIM_PRIORITY_LIMIT' port/psp/gl_shim.c || {
+    echo "FAIL: lightmaps have no budget of their own in the shim"
+    exit 1
+}
+grep -q 'void psp_gl_shim_priority_texture (int on)' port/psp/gl_shim.c || {
+    echo "FAIL: psp_gl_shim_priority_texture is declared but not defined"
+    exit 1
+}
+echo "PASS: the lightmap block size is set by the PSP backend, a 0x0 block is a"
+echo "PASS: named error, and lightmaps get memory past the full picture pool."

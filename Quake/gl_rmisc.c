@@ -561,7 +561,9 @@ void R_NewMap (void)
 	{
 		extern void psp_tracef (const char *fmt, ...);
 
-		psp_tracef ("r_newmap: lightmaps done, textures and sky next");
+		psp_tracef ("r_newmap: lightmaps done: %d blocks of %dx%d for %d surfaces",
+		            lightmap_count, LMBLOCK_WIDTH, LMBLOCK_HEIGHT,
+		            cl.worldmodel->numsurfaces);
 	}
 #endif
 	GL_BuildBModelVertexBuffer ();
