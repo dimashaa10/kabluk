@@ -1229,3 +1229,91 @@ grep -q 'unsigned int caller);' port/psp/psp_console.h || {
 }
 echo "PASS: an allocation that fails says which instruction asked for it, so the"
 echo "PASS: next one has a name and a line (psp-addr2line) and not just a size."
+
+# ---- the 4 MB hunk request was a texture the GE could not draw anyway ----
+#
+# Round 70's log, right after the listen server connected:
+#
+#     connecting to ^mlocal:26000
+#     Kabluk Engine 0.2.2-lox Server (56774 CRC)
+#     Using protocol fte999
+#     run: f 203 state 2, malloc 10229 KB used, 7 KB left in the heap block, ...
+#     hunk: Hunk_Alloc 4194336 bytes failed: 19456 KB total, 18128 KB used,
+#           (low 14673 + cache 3454), 1327 KB free
+#     *** FATAL ERROR *** Hunk_Alloc: failed on 4194336 bytes (holding for 30s)
+#     *** watchdog: last step: tex: convert
+#
+# 4194336 = sizeof(hunk_t) 32 + exactly 4 MB, and "tex: convert" is the
+# breadcrumb TexMgr_LoadImage() sets before it dispatches.  The 4 MB is
+# TexMgr_8to32(): a 1024x1024 miptex expanded to four bytes a texel, in the
+# hunk, while the hunk also holds the zone (4096 KB), the console buffer
+# (1024 KB), progs/player.mdl (1024 KB) and cl_entities (5507 KB).
+#
+# The texture could not have been drawn either: pspsdk src/gu/sceGuTexImage.c
+# keeps width and height as 4-bit logs, so gl_shim.c refuses anything past
+# SHIM_TEX_MAX 512.  The picture was converted at full size and thrown away.
+grep -q 'define TEX_PSP_MAX 512' Quake/gl_texmgr.c || {
+    echo "FAIL: nothing caps a texture at what the GE can sample"
+    exit 1
+}
+grep -q 'static byte \*TexMgr_Downscale8 (byte \*data' Quake/gl_texmgr.c || {
+    echo "FAIL: the indexed downscale is gone, so big miptexes cost 4 bytes a texel"
+    exit 1
+}
+# The two limits are one limit: if the shim refuses 512 and the engine scales to
+# 1024, every such texture is converted and then dropped.
+shimmax=$(awk '/#define SHIM_TEX_MAX/ { print $3 }' port/psp/gl_shim.c)
+texmax=$(awk '/#define TEX_PSP_MAX/ { print $3 }' Quake/gl_texmgr.c)
+if [ "$shimmax" != "$texmax" ]; then
+    echo "FAIL: engine scales to $texmax, the shim samples at most $shimmax"
+    exit 1
+fi
+# ...and it has to run on the *indexed* texels, before TexMgr_8to32().
+down=$(grep -n 'data = TexMgr_Downscale8 (data, &glt->width' Quake/gl_texmgr.c | cut -d: -f1 | head -1)
+t32=$(grep -n 'data = (byte\*)TexMgr_8to32(data' Quake/gl_texmgr.c | cut -d: -f1 | head -1)
+if [ -z "$down" ] || [ -z "$t32" ] || [ "$down" -ge "$t32" ]; then
+    echo "FAIL: the downscale is not before the 32-bit expansion (lines $down, $t32)"
+    exit 1
+fi
+# Nearest neighbour, not an average: these are palette indices.
+awk '
+  /static byte \*TexMgr_Downscale8/ { inf = 1 }
+  inf && /dst\[x\] = src\[x \* f\]/ { ok = 1 }
+  inf && /^}/ { inf = 0 }
+  END { if (!ok) { printf "FAIL: the downscale averages palette indices\n"; exit 1 } }
+' Quake/gl_texmgr.c || exit 1
+echo "PASS: a miptex bigger than the GE can sample is halved in 8-bit space, so"
+echo "PASS: the hunk never holds a 4 MB RGBA copy of a picture it cannot draw."
+
+# ---- and a failed hunk allocation names the line that asked -------------
+#
+# The round-70 line gave the size and nothing else, so finding TexMgr_8to32()
+# took reading every Hunk_Alloc() in the tree.  Hunk_AllocName() knows the name;
+# it goes into the report now.
+grep -q 'Hunk_Alloc %i bytes failed (%s)' Quake/zone.c || {
+    echo "FAIL: a failed Hunk_Alloc no longer names what asked for the bytes"
+    exit 1
+}
+grep -q 'name ? name : "?"' Quake/zone.c || {
+    echo "FAIL: an unnamed allocation must still say so instead of printing NULL"
+    exit 1
+}
+echo "PASS: a hunk that runs out names the allocation that did not fit."
+
+# ---- cl_entities was the biggest block in that hunk ----------------------
+#
+# sizeof(entity_t) is 376 bytes and max_edicts defaults to 15000, so the client
+# entity array was 5507 KB of a 19456 KB hunk -- while the server's own entity
+# array was 3852 KB at the 3401 edicts this heap can hold (PR_AllocEdicts).
+# An edict number on the wire is an index into the *server's* array, so on the
+# PSP, where the only connection is the loopback one, the local server's limit
+# is the whole bound: 1249 KB instead of 5507 KB.
+grep -q 'sv.qcvm.max_edicts < cl.max_edicts' Quake/cl_main.c || {
+    echo "FAIL: the client entity array ignores the server's own limit again"
+    exit 1
+}
+grep -q 'cl.max_edicts = CLAMP (MIN_EDICTS, sv.qcvm.max_edicts, MAX_EDICTS);' Quake/cl_main.c || {
+    echo "FAIL: the client entity array is not sized from the server's edicts"
+    exit 1
+}
+echo "PASS: cl_entities is as big as the server can talk, not as big as max_edicts."

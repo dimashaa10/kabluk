@@ -1566,6 +1566,100 @@ static void TexMgr_LoadImageCompressed(gltexture_t* glt, byte* data)
 	TexMgr_SetFilterModes(glt);
 }
 
+#if defined(PLATFORM_PSP) || defined(__psp__)
+/*
+================
+TexMgr_Downscale8 -- halve 8-bit texels until both sides fit maxdim
+
+The GE cannot sample more than 512 texels in either direction.  pspsdk
+src/gu/sceGuTexImage.c keeps width and height as 4-bit logarithms
+(getExp(height) << 8 | getExp(width)), so anything above 512 either loses a bit
+of its size or, at 1024 and up, is masked to zero and encoded as 0xFFFF --
+"sample a 32768x32768 texture".  port/psp/gl_shim.c refuses those pictures
+instead of drawing garbage (SHIM_TEX_MAX), but by then the engine has already
+paid for them.
+
+Round 70 showed what "paid for them" costs.  Entering the map needed
+
+    Hunk_Alloc 4194336 bytes failed: 19456 KB total, 18128 KB used, 1327 KB free
+
+and 4194336 is 32 bytes of hunk header plus exactly 4 MB: one 1024x1024 miptex
+expanded by TexMgr_8to32() at four bytes a texel, into a hunk that also holds
+the zone, the console buffer, progs/player.mdl and cl_entities.  The texture
+could never have been drawn either -- 1024 is past what the GE addresses.
+
+Interstice-ProQuake (MotoLegacy/Interstice-ProQuake) does the opposite of this
+whole pipeline on the same hardware: source/psp/gu_draw.cpp GL_LoadTexture()
+rounds the picture up to a power of two, halves it when it is over 800
+(r_tex_scale_down), caps the mip chain at 16 texels and uploads it as
+GU_PSM_T8 -- one byte a texel, the map's own palette in a CLUT -- straight into
+VRAM.  There is no 32-bit copy at any point, so a big miptex costs its own size
+and nothing else.
+
+So the reduction is done here, on the indexed texels, *before* TexMgr_8to32()
+turns them into four bytes each.  The copy is one byte a texel (256 KB at
+512x512, against the megabyte the 32-bit version needed), and afterwards the
+largest 32-bit scratch this file can ask the hunk for is 512*512*4 = 1 MB.
+
+It is a copy and not an edit in place, because the same miptex is loaded twice
+when it has fullbright pixels (gl_model.c loads it once with TEXPREF_NOBRIGHT
+and once with TEXPREF_FULLBRIGHT from the same `(byte *)(tx+1)`), and the second
+load has no way to know the first one changed the bytes under it.
+
+Nearest-neighbour, not averaging: these are palette *indices*, and the mean of
+index 3 and index 200 is not a colour.  Averaging them is how a downscaled
+texture comes out looking like noise.  Interstice subsamples for the same
+reason.
+================
+*/
+#define TEX_PSP_MAX 512
+
+static byte *TexMgr_Downscale8 (byte *data, unsigned int *width, unsigned int *height, int maxdim)
+{
+	unsigned int w = *width, h = *height;
+	unsigned int f = 1, nw, nh, x, y;
+	byte *out;
+
+	if (!w || !h)
+		return data;
+
+	/* How many halvings are needed to fit both sides, done in one pass: the
+	 * sample step is 2^n, so every destination texel reads one source texel
+	 * and nothing else. */
+	while (w / f > (unsigned int)maxdim || h / f > (unsigned int)maxdim)
+	{
+		if (f > (1u << 16))
+			break;
+		f <<= 1;
+	}
+
+	nw = w / f;
+	nh = h / f;
+	if (nw < 1) nw = 1;
+	if (nh < 1) nh = 1;
+
+	if (nw == w && nh == h)
+		return data;		/* already small enough */
+
+	out = (byte *)Hunk_AllocName ((int)(nw * nh), "tex_scale");
+	if (!out)
+		return data;		/* no room: upload it as it came */
+
+	for (y = 0; y < nh; y++)
+	{
+		const byte *src = data + (size_t)(y * f) * w;
+		byte *dst = out + (size_t)y * nw;
+
+		for (x = 0; x < nw; x++)
+			dst[x] = src[x * f];
+	}
+
+	*width = nw;
+	*height = nh;
+	return out;
+}
+#endif
+
 /*
 ================
 TexMgr_LoadImage8 -- handles 8bit source data, then passes it to LoadImage32
@@ -1589,6 +1683,36 @@ static void TexMgr_LoadImage8(gltexture_t* glt, byte* data)
 		// 32 pixels from the bottom to make it look nice.
 		memcpy(data, data + 32 * 31, 32);
 	}
+
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	/* ---- keep the 32-bit copy inside what the GE can address -----------
+	 * See TexMgr_Downscale8 above for why this is here and not in the
+	 * upload path.  gl_hardware_maxsize (512 on the PSP, vid_psp.c) clamps
+	 * the *result* of the conversion, which is one texture too late: the
+	 * 4 MB block has been taken by then.
+	 *
+	 * The gltexture stops being reloadable from its original source:
+	 * TexMgr_ReloadImage() would read source_width*source_height bytes out
+	 * of the lump and colour a smaller picture with them, which is not the
+	 * same picture.  World textures are never reloaded (the player skins
+	 * are, and those are 320x200 at most), but saying so costs one line and
+	 * prevents a silently scrambled picture if that ever changes. */
+	if (glt->width > TEX_PSP_MAX || glt->height > TEX_PSP_MAX)
+	{
+		extern void psp_tracef (const char *fmt, ...);
+		unsigned int ow = glt->width, oh = glt->height;
+
+		data = TexMgr_Downscale8 (data, &glt->width, &glt->height, TEX_PSP_MAX);
+		glt->source_width = glt->width;
+		glt->source_height = glt->height;
+		glt->source_file[0] = 0;
+		glt->source_offset = 0;
+
+		psp_tracef ("tex: %s is %dx%d, the GE takes %d -- scaled to %dx%d",
+		            glt->name, (int)ow, (int)oh, TEX_PSP_MAX,
+		            (int)glt->width, (int)glt->height);
+	}
+#endif
 
 	// detect false alpha cases
 	if (glt->flags & TEXPREF_ALPHA && !(glt->flags & TEXPREF_CONCHARS))

@@ -184,6 +184,33 @@ void CL_ClearState (void)
 
 	//johnfitz -- cl_entities is now dynamically allocated
 	cl.max_edicts = CLAMP (MIN_EDICTS,(int)max_edicts.value,MAX_EDICTS);
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	/* ---- the client array only has to be as big as the server can talk ---
+	 *
+	 * The two arrays are different things with the same cvar:
+	 *
+	 *   sv.qcvm->edicts     one malloc, max_edicts * edict_size (1160 for
+	 *                       this game) -- 3852 KB at 3401 edicts, and
+	 *                       PR_AllocEdicts() already sizes it from what the
+	 *                       10 MB heap can hold;
+	 *   cl.entities         a hunk block, cl.max_edicts * sizeof(entity_t)
+	 *                       (376 bytes) -- and sizeof is why it was the
+	 *                       biggest single block in the round-70 hunk:
+	 *                       15000 * 376 = 5507 KB of 19456 KB.
+	 *
+	 * An edict number reaching the client is an index into the *server's*
+	 * array (CL_EntityNum()), so it can never be >= sv.qcvm.max_edicts.  On
+	 * the PSP the only connection there can be is the loopback one
+	 * (port/psp/net_psp.c registers that driver and nothing else), so the
+	 * local server's own limit is the exact bound: the same 3401 edicts
+	 * become 1249 KB instead of 5507 KB, 4 MB back into the hunk on the
+	 * frame where the world textures are converted.
+	 *
+	 * On the desktop, and for a client whose listen server is not the thing
+	 * it will talk to, nothing changes: max_edicts.value decides, as before. */
+	if (sv.active && sv.qcvm.max_edicts > 0 && sv.qcvm.max_edicts < cl.max_edicts)
+		cl.max_edicts = CLAMP (MIN_EDICTS, sv.qcvm.max_edicts, MAX_EDICTS);
+#endif
 	cl.entities = (entity_t *) Hunk_AllocName (cl.max_edicts*sizeof(entity_t), "cl_entities");
 	//johnfitz
 

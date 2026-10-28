@@ -597,7 +597,13 @@ void *Hunk_AllocName (int size, const char *name)
 
 	if (hunk_size - hunk_low_used - hunk_high_used < size)
 	{
-		Hunk_Report (va ("Hunk_Alloc %i bytes failed", size));
+		/* The name goes into the report as well as the size.  Round 70 needed
+		 * it: the failure read "Hunk_Alloc 4194336 bytes failed" and 4194336
+		 * is 32 bytes of hunk header plus exactly 4 MB, but nothing in the
+		 * log said which of the hundred allocations that size could be --
+		 * it took reading gl_texmgr.c to find TexMgr_8to32().  A call site
+		 * that is unnamed ("unknown", i.e. plain Hunk_Alloc) says so. */
+		Hunk_Report (va ("Hunk_Alloc %i bytes failed (%s)", size, name ? name : "?"));
 		Sys_Error ("Hunk_Alloc: failed on %i bytes",size);
 	}
 
