@@ -768,6 +768,40 @@ static void shim_arena_trim (void)
 	}
 }
 
+/* The other half of the same budget: the picture *decoder*.
+ *
+ * A texture costs 16 bits per pixel out of the arena, but a picture under
+ * construction is w*h*4 bytes of RGBA from plain malloc(), and both pools are
+ * fed from the same ten megabytes.  The hardware log of build 08:12 ends with
+ *
+ *     img: gfx/a_sgl/asgl3.bmp FAILED: outofmem (14166 bytes,
+ *          sig 42 4D 56 37 00 00 00 00)
+ *
+ * "outofmem" is stb_image's word for "malloc() returned NULL".  Nothing was
+ * wrong with the file: it was read completely, its own header says it is 14166
+ * bytes long, and those bytes start with "BM".  What was missing was the
+ * decode buffer -- while the picture cache was holding megabytes of pictures
+ * that no frame had drawn for a long time (the same log has "tex 4022 KB" a
+ * few dozen frames earlier).
+ *
+ * A cache that will not give memory back is not a cache, so the decoder asks
+ * here: the port's own purge decides which pictures are really idle, and then
+ * the chunks that became empty go back to the heap instead of sitting in the
+ * arena's free list waiting for the interface to want them again.  This is the
+ * same pair of operations shim_picture_alloc() already performs when a texture
+ * does not fit; the only difference is who is short of memory. */
+int psp_gl_shim_reclaim_pictures (void)
+{
+	int released = 0;
+
+	if (shim_evict_hook)
+		released = shim_evict_hook();
+
+	shim_arena_trim();
+
+	return released;
+}
+
 /* Take one more chunk big enough for `need` and try again.  Returns 1 when the
  * arena can now serve it. */
 static int shim_arena_grow (size_t need)

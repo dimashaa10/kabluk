@@ -89,3 +89,21 @@ awk '
   END { exit (bad ? 1 : 0) }
 ' "$repo/Quake/gl_draw.c"
 echo "PASS: the picture-cache diagnostics are defined above the code that uses them."
+# The picture decoder's "ask the cache for memory" path crosses three files:
+# image.c calls psp_gl_shim_reclaim_pictures(), gl_shim.h promises it and
+# gl_shim.c implements it.  A missing or mismatched piece is a link error on
+# the user's Windows build -- i.e. a whole round spent on a symbol -- and a
+# macro defined below the code that uses it is the same silent deletion as
+# above.  Both are cheap to check here.
+awk '
+  /^#[[:space:]]*define[[:space:]]+IMG_ALLOC[[:space:]]*\(/ { seen = 1 }
+  /[^_[:alnum:]]IMG_ALLOC[[:space:]]*\(/ {
+      if (!seen) { printf "FAIL: IMG_ALLOC used at line %d of image.c before it is defined\n", NR; bad = 1 }
+  }
+  END { exit (bad ? 1 : 0) }
+' "$repo/Quake/image.c"
+grep -q 'int psp_gl_shim_reclaim_pictures (void);' "$repo/port/psp/gl_shim.h"
+grep -q '^int psp_gl_shim_reclaim_pictures (void)$' "$repo/port/psp/gl_shim.c"
+grep -q 'psp_gl_shim_reclaim_pictures (void)' "$repo/Quake/image.c"
+echo "PASS: the decoder's reclaim path is declared, defined and used, and IMG_ALLOC"
+echo "PASS: is defined before the allocations that use it."

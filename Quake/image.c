@@ -160,6 +160,82 @@ static byte *Image_STBIDone (byte *heap, int width, int height)
  * path stays as a safety net for something huge in a pak. */
 #define IMG_STBI_READ_LIMIT (2u * 1024u * 1024u)
 
+#if defined(PLATFORM_PSP) || defined(__psp__)
+/* ---- what a picture decode does when the heap says no --------------------
+ *
+ * A decoded picture is w*h*4 bytes of RGBA from malloc(), and that buffer
+ * competes with the picture arena's chunks for the same ten megabytes.  The
+ * hardware log of build 08:12 has both numbers on it:
+ *
+ *     tex: 84 pictures, 2488 KB in use of ...
+ *     ... tex 4022 KB at run: f 347
+ *     img: gfx/a_sgl/asgl3.bmp FAILED: outofmem (14166 bytes,
+ *          sig 42 4D 56 37 00 00 00 00)
+ *
+ * "outofmem" is stb_image's own word for "malloc() returned NULL", and the
+ * file was fine: the whole 14166 bytes were read (its header declares exactly
+ * 14166) and they begin with "BM".  The memory that was missing was the one
+ * the decoder needed, while the engine's picture cache was still holding
+ * megabytes of pictures that nothing had drawn for a long time.
+ *
+ * So an allocation for a picture that fails now asks the cache first
+ * (psp_gl_shim_reclaim_pictures(): evict idle pictures, then hand the arena
+ * chunks that became empty back to the heap) and tries once more.  Nothing is
+ * retried blindly -- each line in the log names the allocation, its size, how
+ * many pictures were released and what the heap looked like on both sides. */
+extern int psp_gl_shim_reclaim_pictures (void);
+extern unsigned int psp_heap_free (void);
+
+#define IMG_RECLAIM_LOGS 16
+static int img_reclaim_logs;
+
+/* `size` is 0 when the failed allocation is the decoder's own (stb allocates
+ * w*h*4 internally and does not tell us how big it was). */
+static int Image_ReclaimForPicture (const char *what, size_t size)
+{
+	int released;
+	unsigned int before = psp_heap_free (), after;
+
+	released = psp_gl_shim_reclaim_pictures ();
+	after = psp_heap_free ();
+
+	if (img_reclaim_logs < IMG_RECLAIM_LOGS)
+	{
+		extern void psp_tracef (const char *fmt, ...);
+
+		img_reclaim_logs++;
+
+		if (size)
+			psp_tracef ("img: %s: %d bytes failed, %d idle pictures "
+			            "released, heap free %d -> %d KB",
+			            what, (int)size, released,
+			            (int)(before / 1024), (int)(after / 1024));
+		else
+			psp_tracef ("img: %s: the decoder's buffer failed, %d idle "
+			            "pictures released, heap free %d -> %d KB",
+			            what, released,
+			            (int)(before / 1024), (int)(after / 1024));
+	}
+
+	return released;
+}
+
+/* malloc() for picture work, with the reclaim above in front of the failure. */
+static void *Image_AllocPicture (const char *what, size_t size)
+{
+	void *p = malloc (size);
+
+	if (!p && Image_ReclaimForPicture (what, size) > 0)
+		p = malloc (size);
+
+	return p;
+}
+
+#define IMG_ALLOC(what, size)	Image_AllocPicture ((what), (size))
+#else
+#define IMG_ALLOC(what, size)	malloc (size)
+#endif
+
 static byte *Image_LoadSTBI(FILE *f, int *width, int *height)
 {
 	int bytesPerPixel;
@@ -218,7 +294,7 @@ static byte *Image_LoadSTBI(FILE *f, int *width, int *height)
 		return Image_STBIDone(heap, *width, *height);
 	}
 
-	in = want ? (unsigned char *)malloc(want) : NULL;
+	in = want ? (unsigned char *)IMG_ALLOC(loadfilename, want) : NULL;
 
 	if (in)
 		got = fread(in, 1, want, f);
@@ -256,6 +332,16 @@ static byte *Image_LoadSTBI(FILE *f, int *width, int *height)
 	}
 
 	heap = stbi_load_from_memory(in, (int)got, width, height, &bytesPerPixel, 4);
+
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	/* Only one failure of the decoder is worth a second attempt: its own
+	 * allocation coming back empty.  Everything else (a corrupt file, an
+	 * unsupported format) says the same thing twice. */
+	if (!heap && stbi_failure_reason () && !strcmp (stbi_failure_reason (), "outofmem"))
+		if (Image_ReclaimForPicture (loadfilename, 0) > 0)
+			heap = stbi_load_from_memory (in, (int)got, width, height,
+			                              &bytesPerPixel, 4);
+#endif
 
 #if defined(PLATFORM_PSP) || defined(__psp__)
 	{
@@ -372,8 +458,8 @@ static byte *Image_LoadBMP(FILE *f, int *width, int *height, qboolean *malloced,
 		palette[i][3] = 255;
 	}
 
-	row = (byte *)malloc(row_stride);
-	rgba = (byte *)malloc(output_size);
+	row = (byte *)IMG_ALLOC(loadfilename, row_stride);
+	rgba = (byte *)IMG_ALLOC(loadfilename, output_size);
 	if (!row || !rgba)
 		goto fail;
 	if (fseek(f, file_start + (long)pixel_offset, SEEK_SET) != 0)

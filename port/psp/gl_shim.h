@@ -57,6 +57,22 @@ void psp_gl_shim_set_evict_hook (int (*fn)(void));
  * could get right now.  Read between frames by the port. */
 size_t psp_gl_shim_texture_room (void);
 
+/* Give memory back to the heap for the picture decoder.
+ *
+ * Uploading a picture costs 16 bits per pixel out of the arena, but *decoding*
+ * one costs w*h*4 bytes out of plain malloc() -- and both come from the same
+ * ten megabytes.  The hardware log of build 08:12 ends with
+ *
+ *     img: gfx/a_sgl/asgl3.bmp FAILED: outofmem (14166 bytes, sig 42 4D ...)
+ *
+ * i.e. a file that arrived whole and intact could not get its decode buffer
+ * while several megabytes of pictures that no frame had drawn for a long time
+ * were still held.  This calls the same purge the arena uses when a picture
+ * does not fit (the port's Draw_EvictCachePics) and then hands the arena
+ * chunks that became empty back to the heap, which is what makes that memory
+ * usable by malloc() again.  Returns the number of pictures released. */
+int psp_gl_shim_reclaim_pictures (void);
+
 /* One line stating what the picture pool actually holds, for the frame card. */
 void psp_gl_shim_texture_report (void);
 
