@@ -111,12 +111,16 @@ typedef struct
 typedef struct
 {
 	int          used;
-	unsigned int psm;             /* GU_PSM_4444 or GU_PSM_5650          */
+	unsigned int psm;             /* GU_PSM_4444, GU_PSM_5650 or GU_PSM_T8 */
 	int          width, height;   /* what the engine asked for          */
 	int          potw, poth;      /* what the GE is told (power of two) */
 	int          tbw;             /* row stride in pixels (power of two) */
 	void        *pixels;          /* main-memory copy the GU samples     */
-	size_t       bytes;           /* 2 bytes per pixel: tbw * height * 2 */
+	/* For GU_PSM_T8 the 256-entry palette (GU_PSM_8888 words) sits at
+	 * pixels + potw * poth, inside the same block -- potw * poth is a
+	 * multiple of 64, so the palette is 16-byte aligned as
+	 * sceGuClutLoad() requires, and one arena block per picture still. */
+	size_t       bytes;           /* 1 or 2 bytes per pixel, plus a palette */
 	int          filter;          /* GU_NEAREST or GU_LINEAR             */
 	int          dirty;           /* needs a re-upload before drawing    */
 	int          in_arena;        /* the block came from the texture arena */
@@ -151,6 +155,10 @@ static int            shim_tex_announced_filter;
 static int            shim_tex_announced_potw;
 static int            shim_tex_announced_poth;
 static int            shim_tex_announced_tbw;
+/* An 8-bit picture is its indices plus a palette, and the palette is GE
+ * state as much as the format is: two pictures can share nothing but the
+ * address, so the palette that was loaded is part of "already announced". */
+static const void    *shim_tex_announced_palette;
 static int            shim_tex_state_valid;
 
 /* matrix state */
@@ -351,6 +359,22 @@ static void shim_guTexEnable (int on)
 
 static void shim_guTexMode (int psm, int levels, int a2, int swz)
                                                   { shim_batch_flush(); if (shim_frame_active) sceGuTexMode(psm, levels, a2, swz); }
+/* The palette of an 8-bit picture.  Two GE commands, and the "16 colours per
+ * block, 32 blocks = 256" arithmetic is straight out of pspgu.h:
+ *
+ *     sceGuClutLoad(num_blocks, cbp) -- "How many blocks of 8 entries to
+ *     upload (32*8 is 256 colors)", palette 16-byte aligned;
+ *     sceGuClutMode(GU_PSM_8888, 0, 0xFF, 0) -- 8888 entries, no index shift,
+ *     all 256 indices, no base.
+ *
+ * Both have to be sent before the draw that samples the picture, and only
+ * when the picture changed: the CLUT lives in the GE's texture cache, so it
+ * is exactly as much state as the format is. */
+static void shim_guClutMode (unsigned int cpsm, unsigned int shift,
+                             unsigned int mask, unsigned int csa)
+                                                  { shim_batch_flush(); if (shim_frame_active) sceGuClutMode(cpsm, shift, mask, csa); }
+static void shim_guClutLoad (int blocks, const void *p)
+                                                  { shim_batch_flush(); if (shim_frame_active) sceGuClutLoad(blocks, p); }
 /* Hand the GE's transform stage the two matrices a world-space draw needs.
  *
  * The GE multiplies its own three: a vertex goes through the model matrix,
@@ -711,17 +735,70 @@ static unsigned short shim_px5650 (int r, int g, int b)
 	return (unsigned short)(((b >> 3) << 11) | ((g >> 2) << 5) | (r >> 3));
 }
 
-static void shim_put_pixels (shim_texture_t *t, int x, int y, int w, int h,
-                             const unsigned char *src, int row_bytes, GLenum format)
+/* ---- 8-bit pictures -----------------------------------------------------
+ *
+ * Half of everything the arena holds used to be twice as big as it needs to
+ * be.  The round-83 log is the reason this exists at all:
+ *
+ *     tex: 240x112 picture (64 KB box) does not fit the pool and would take
+ *          2112 KB of the engine's heap (cap 2048 KB): drawn with the null
+ *          texture
+ *     img: gfx/a_mmenu/mainmenu1.png ok 240x112 (3343 bytes)
+ *
+ * -- six lines apart, every frame, 240 ms a frame of which the panel shows
+ * nothing (ge 0.1).  The arena is full (6140 KB of 6144) with the map's own
+ * textures and the model skins, and the menu art it cannot fit is 100 KB.  No
+ * eviction policy invents 100 KB: the pictures have to get smaller.
+ *
+ * A GE texture can be 8-bit indices plus a 256-entry palette (GU_PSM_T8 +
+ * sceGuClutLoad, pspgu.h:"GU_PSM_T8 - Indexed, 8-bit").  That is exactly what
+ * a Quake world texture already is -- an 8-bit miptex against a 256-colour
+ * palette -- so for those pictures the conversion is lossless: the palette is
+ * the distinct colours of the picture, and a miptex has at most 256 of them.
+ *
+ * The rule is deliberately narrow, because a wrong pixel format on the panel
+ * is a black screen and this port cannot be debugged frame by frame:
+ *
+ *   - only when every texel is opaque (a == 255): alpha art keeps 4444, so
+ *     not one blending path changes;
+ *   - only when the picture has at most 256 distinct 15-bit colours, which is
+ *     checked before anything is allocated.  A picture with more colours --
+ *     every photo-like menu picture -- stays 16-bit rather than being
+ *     quantised, because "the menu renders correctly" is worth more here than
+ *     two megabytes;
+ *   - never for a lightmap (shim_texture_priority): those are updated with
+ *     glTexSubImage2D, and indices cannot be updated in place.
+ */
+static unsigned short shim_pal_lut[32768];       /* 15-bit key -> index+1 */
+static unsigned int  shim_pal_color[256];
+
+#define SHIM_PAL_KEY(r, g, b)  ((((r) >> 3) << 10) | (((g) >> 3) << 5) | ((b) >> 3))
+
+/* The palette lives in the tail of the picture's own block. */
+static unsigned int *shim_palette_of (shim_texture_t *t)
 {
-	int row, col, opaque = (t->psm == GU_PSM_5650);
-	unsigned char *base = (unsigned char *)t->pixels +
-	                      (size_t)y * (size_t)t->tbw * 2 + (size_t)x * 2;
+	return (unsigned int *)((unsigned char *)t->pixels +
+	                        (size_t)t->potw * (size_t)t->poth);
+}
+
+/* Would this picture survive an 8-bit palette without changing a pixel?
+ *
+ * Runs before the allocation, so a picture that cannot is not even asked for
+ * an arena block.  `distinct` stops counting past 256: the answer is already
+ * no, and the rest of the picture still has to be scanned for alpha. */
+#define SHIM_T8_MAX_COLORS 256
+
+static int shim_picture_fits_8bit (const unsigned char *src, int row_bytes,
+                                   int w, int h, GLenum format)
+{
+	static unsigned char seen[32768];
+	int row, col, distinct = 0;
+
+	memset(seen, 0, sizeof(seen));
 
 	for (row = 0; row < h; row++)
 	{
 		const unsigned char *s = src + (size_t)row * (size_t)row_bytes;
-		unsigned short *d = (unsigned short *)(base + (size_t)row * (size_t)t->tbw * 2);
 
 		for (col = 0; col < w; col++)
 		{
@@ -740,8 +817,107 @@ static void shim_put_pixels (shim_texture_t *t, int x, int y, int w, int h,
 			default:       r = s[0]; g = s[1]; b = s[2]; a = s[3]; s += 4; break;
 			}
 
-			d[col] = opaque ? shim_px5650(r, g, b) : shim_px4444(r, g, b, a);
+			/* Any transparency at all and this is not an 8-bit picture:
+			 * alpha art keeps 4444, so not one blending path changes. */
+			if (a != 255)
+				return 0;
+
+			if (distinct <= SHIM_T8_MAX_COLORS)
+			{
+				unsigned int key = SHIM_PAL_KEY(r, g, b);
+
+				if (!seen[key])
+				{
+					seen[key] = 1;
+					distinct++;
+				}
+			}
 		}
+	}
+
+	return distinct <= SHIM_T8_MAX_COLORS;
+}
+
+static void shim_put_pixels (shim_texture_t *t, int x, int y, int w, int h,
+                             const unsigned char *src, int row_bytes, GLenum format)
+{
+	int row, col, opaque = (t->psm == GU_PSM_5650);
+	int t8 = (t->psm == GU_PSM_T8);
+	int bpp = t8 ? 1 : 2;
+	int pal_n = 0;
+	unsigned char *base = (unsigned char *)t->pixels +
+	                      (size_t)y * (size_t)t->tbw * (size_t)bpp +
+	                      (size_t)x * (size_t)bpp;
+
+	/* The table belongs to one picture: an index left over from the
+	 * previous upload would put another picture's colour under this texel. */
+	if (t8)
+		memset(shim_pal_lut, 0, sizeof(shim_pal_lut));
+
+	for (row = 0; row < h; row++)
+	{
+		const unsigned char *s = src + (size_t)row * (size_t)row_bytes;
+		unsigned char *d8 = base + (size_t)row * (size_t)t->tbw;
+		unsigned short *d16 = (unsigned short *)(base +
+		                       (size_t)row * (size_t)t->tbw * (size_t)bpp);
+
+		for (col = 0; col < w; col++)
+		{
+			int r, g, b, a;
+
+			switch (format)
+			{
+			case GL_RGBA:  r = s[0]; g = s[1]; b = s[2]; a = s[3]; s += 4; break;
+			case GL_BGRA:  b = s[0]; g = s[1]; r = s[2]; a = s[3]; s += 4; break;
+			case GL_RGB:   r = s[0]; g = s[1]; b = s[2]; a = 255;  s += 3; break;
+			case GL_LUMINANCE_ALPHA:
+			               r = g = b = s[0]; a = s[1]; s += 2; break;
+			case GL_LUMINANCE:
+			               r = g = b = s[0]; a = 255;  s += 1; break;
+			case GL_ALPHA: r = g = b = 255;  a = s[0]; s += 1; break;
+			default:       r = s[0]; g = s[1]; b = s[2]; a = s[3]; s += 4; break;
+			}
+
+			if (t8)
+			{
+				unsigned int key = SHIM_PAL_KEY(r, g, b);
+				unsigned int idx = shim_pal_lut[key];
+
+				if (!idx)
+				{
+					/* glTexImage2D() has already checked that the whole
+					 * picture has at most 256 of these, so this cannot
+					 * run past the palette. */
+					if (pal_n < 256)
+					{
+						shim_pal_color[pal_n] =
+						    0xFF000000u | ((unsigned)r << 0) |
+						    ((unsigned)g << 8) | ((unsigned)b << 16);
+						pal_n++;
+					}
+					idx = (unsigned int)pal_n;
+					shim_pal_lut[key] = idx;
+				}
+
+				d8[col] = (unsigned char)(idx - 1);
+			}
+			else
+				d16[col] = opaque ? shim_px5650(r, g, b)
+				                  : shim_px4444(r, g, b, a);
+		}
+	}
+
+	if (t8)
+	{
+		unsigned int *pal = shim_palette_of(t);
+		unsigned int i;
+
+		for (i = 0; i < (unsigned int)pal_n; i++)
+			pal[i] = shim_pal_color[i];
+		for (; i < 256; i++)
+			pal[i] = 0xFF000000u;   /* black, for an index no texel uses */
+
+		t->dirty = 1;
 	}
 }
 
@@ -764,8 +940,6 @@ static void shim_put_pixels (shim_texture_t *t, int x, int y, int w, int h,
 static void shim_edge_extend (shim_texture_t *t)
 {
 	int row, col;
-	unsigned short *base, *lastrow;
-	unsigned short edge;
 
 	if (!t || !t->pixels || t->width <= 0 || t->height <= 0)
 		return;
@@ -773,7 +947,38 @@ static void shim_edge_extend (shim_texture_t *t)
 	if (t->potw <= t->width && t->poth <= t->height)
 		return;	/* the box is the picture: nothing to extend into */
 
-	base = (unsigned short *)t->pixels;
+	if (t->psm == GU_PSM_T8)
+	{
+		/* One byte per texel: the same two passes, over indices.  Copying
+		 * an index is copying the colour it names -- the palette is shared
+		 * by the whole picture. */
+		unsigned char *b8 = (unsigned char *)t->pixels;
+
+		if (t->potw > t->width)
+			for (row = 0; row < t->height; row++)
+			{
+				unsigned char *p = b8 + (size_t)row * (size_t)t->tbw;
+				unsigned char edge = p[t->width - 1];
+
+				for (col = t->width; col < t->potw; col++)
+					p[col] = edge;
+			}
+
+		if (t->poth > t->height)
+		{
+			unsigned char *last = b8 + (size_t)(t->height - 1) * (size_t)t->tbw;
+
+			for (row = t->height; row < t->poth; row++)
+				memcpy(b8 + (size_t)row * (size_t)t->tbw, last,
+				       (size_t)t->potw);
+		}
+
+		return;
+	}
+
+	{
+	unsigned short *base = (unsigned short *)t->pixels;
+	unsigned short *lastrow, edge;
 
 	/* right edge: every row of the picture, from its last texel outwards */
 	if (t->potw > t->width)
@@ -795,6 +1000,7 @@ static void shim_edge_extend (shim_texture_t *t)
 		for (row = t->height; row < t->poth; row++)
 			memcpy(base + (size_t)row * (size_t)t->tbw, lastrow,
 			       (size_t)t->potw * sizeof(unsigned short));
+	}
 	}
 }
 
@@ -1294,14 +1500,19 @@ static int shim_pot (int n)
 	return p;
 }
 
-static int shim_texture_alloc (shim_texture_t *t, int width, int height, int opaque)
+#define SHIM_PALETTE_BYTES 1024	/* 256 GU_PSM_8888 entries, 16-byte aligned */
+
+static int shim_texture_alloc (shim_texture_t *t, int width, int height,
+                               int opaque, int t8)
 {
 	size_t need;
 	int changed;
+	unsigned int new_psm;
 	int potw = shim_pot(width), poth = shim_pot(height);
 
 	t->tbw = potw;
-	need = (size_t)potw * (size_t)poth * 2;
+	need = (size_t)potw * (size_t)poth * (t8 ? 1 : 2) +
+	       (t8 ? SHIM_PALETTE_BYTES : 0);
 
 	/* Beyond what the GE can address, in either direction.
 	 *
@@ -1324,9 +1535,10 @@ static int shim_texture_alloc (shim_texture_t *t, int width, int height, int opa
 	    potw > SHIM_TEX_MAX || poth > SHIM_TEX_MAX)
 		return 0;	/* the caller logs it */
 
+	new_psm = t8 ? GU_PSM_T8 : (opaque ? GU_PSM_5650 : GU_PSM_4444);
+
 	changed = (t->width != width || t->height != height ||
-	           t->potw != potw || t->poth != poth ||
-	           (t->psm == GU_PSM_5650) != (opaque != 0));
+	           t->potw != potw || t->poth != poth || t->psm != new_psm);
 
 	/* The block is exactly the picture's box now, and the arena coalesces,
 	 * so a block of the wrong size is always returned and taken again --
@@ -1373,7 +1585,7 @@ static int shim_texture_alloc (shim_texture_t *t, int width, int height, int opa
 	t->height = height;
 	t->potw = potw;
 	t->poth = poth;
-	t->psm = opaque ? GU_PSM_5650 : GU_PSM_4444;
+	t->psm = new_psm;
 
 	if (!t->pixels && need)
 	{
@@ -1551,6 +1763,8 @@ static void shim_upload_bound_texture (void)
 	    shim_tex_announced_id == shim_texture_bound &&
 	    shim_tex_announced_pixels == t->pixels &&
 	    shim_tex_announced_psm == t->psm &&
+	    shim_tex_announced_palette == (t->psm == GU_PSM_T8 ?
+	                                   (const void *)shim_palette_of(t) : NULL) &&
 	    shim_tex_announced_filter == t->filter &&
 	    shim_tex_announced_potw == t->potw &&
 	    shim_tex_announced_poth == t->poth &&
@@ -1559,6 +1773,12 @@ static void shim_upload_bound_texture (void)
 
 	/* Unswizzled: the engine's pictures are not power-of-two, and only
 	 * swizzled textures have to be. */
+	if (t->psm == GU_PSM_T8)
+	{
+		shim_guClutMode(GU_PSM_8888, 0, 0xFF, 0);
+		shim_guClutLoad(32, shim_palette_of(t));   /* 32 blocks of 8 = 256 */
+	}
+
 	shim_guTexMode(t->psm, 0, 0, 0);
 	shim_guTexImage(0, t->potw, t->poth, t->tbw, t->pixels);
 	shim_guTexFilter(t->filter, t->filter);
@@ -1580,6 +1800,8 @@ static void shim_upload_bound_texture (void)
 	shim_tex_announced_potw = t->potw;
 	shim_tex_announced_poth = t->poth;
 	shim_tex_announced_tbw = t->tbw;
+	shim_tex_announced_palette = (t->psm == GU_PSM_T8 ?
+	                              (const void *)shim_palette_of(t) : NULL);
 	shim_tex_state_valid = 1;
 }
 
@@ -3083,6 +3305,7 @@ void glTexImage2D (GLenum target, GLint level, GLint internalFormat,
 {
 	shim_texture_t *t;
 	int row_bytes;
+	int t8 = 0;
 
 	(void)internalFormat;
 	(void)border;
@@ -3127,8 +3350,20 @@ void glTexImage2D (GLenum target, GLint level, GLint internalFormat,
 	default:                          row_bytes = width * 4; break;
 	}
 
+	/* Can this picture be 8-bit?  Decided here, before a single byte is
+	 * taken from the arena: one pass over the texels answers both questions
+	 * -- is every one of them opaque, and how many distinct 15-bit colours
+	 * are there.  See the note above shim_put_pixels(). */
+	t8 = (!shim_texture_priority &&
+	      /* The palette costs a kilobyte, so the box has to be worth it:
+	       * below 1024 texels 8-bit is *larger* than 16-bit. */
+	      (size_t)shim_pot(width) * (size_t)shim_pot(height) >
+	          (size_t)SHIM_PALETTE_BYTES &&
+	      shim_picture_fits_8bit(pixels, row_bytes, width, height, format));
+
 	if (!shim_texture_alloc(t, width, height,
-	                        format == GL_RGB || format == GL_LUMINANCE))
+	                        format == GL_RGB || format == GL_LUMINANCE,
+	                        t8))
 	{
 		shim_texture_memory_short(width, height);
 		return;
@@ -3138,6 +3373,67 @@ void glTexImage2D (GLenum target, GLint level, GLint internalFormat,
 	                row_bytes, format);
 	shim_edge_extend(t);
 	shim_uv_scale_update();
+}
+
+/* Turn an 8-bit picture back into a 16-bit one.
+ *
+ * glTexSubImage2D() updates a rectangle of an existing texture from real
+ * colours.  The indices of a GU_PSM_T8 picture cannot be updated that way --
+ * a new colour would have to enter the palette and every other texel that
+ * shares its index would change with it -- so the picture is expanded through
+ * its own palette first and the update lands in the 16-bit copy.
+ *
+ * Nothing in the engine does this today: the only glTexSubImage2D() caller is
+ * the dynamic lightmap path (Quake/gl_texmgr.c), and lightmaps are marked with
+ * psp_gl_shim_priority_texture() and are never made 8-bit.  It exists so that
+ * a future caller degrades into a slower picture rather than a wrong one. */
+static int shim_texture_promote_to_16 (shim_texture_t *t)
+{
+	unsigned int pal[256];
+	unsigned short *copy;
+	size_t need;
+	int row, col;
+
+	if (!t || t->psm != GU_PSM_T8 || !t->pixels)
+		return 1;
+
+	need = (size_t)t->potw * (size_t)t->poth * 2;
+	copy = (unsigned short *)malloc(need);
+	if (!copy)
+		return 0;
+
+	memcpy(pal, shim_palette_of(t), sizeof(pal));
+
+	for (row = 0; row < t->poth; row++)
+	{
+		const unsigned char *s = (const unsigned char *)t->pixels +
+		                         (size_t)row * (size_t)t->tbw;
+		unsigned short *d = (unsigned short *)((unsigned char *)copy +
+		                     (size_t)row * (size_t)t->tbw * 2);
+
+		for (col = 0; col < t->tbw; col++)
+		{
+			unsigned int e = pal[s[col]];
+
+			d[col] = shim_px4444(e & 0xFF, (e >> 8) & 0xFF, (e >> 16) & 0xFF,
+			                     (e >> 24) & 0xFF);
+		}
+	}
+
+	if (!shim_texture_alloc(t, t->width, t->height, 1, 0) || !t->pixels)
+	{
+		free(copy);
+		psp_tracef("tex: an 8-bit picture received a subimage and the "
+		           "16-bit copy did not fit -- the picture is lost "
+		           "(see the arena report above)");
+		return 0;
+	}
+
+	memcpy(t->pixels, copy, need);
+	free(copy);
+	t->dirty = 1;
+	shim_tex_state_valid = 0;
+	return 1;
 }
 
 void glTexSubImage2D (GLenum target, GLint level, GLint xoffset, GLint yoffset,
@@ -3154,6 +3450,9 @@ void glTexSubImage2D (GLenum target, GLint level, GLint xoffset, GLint yoffset,
 
 	if (xoffset < 0 || yoffset < 0 ||
 	    xoffset + width > t->width || yoffset + height > t->height)
+		return;
+
+	if (!shim_texture_promote_to_16(t))
 		return;
 
 	switch (format)

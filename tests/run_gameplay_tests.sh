@@ -1845,6 +1845,71 @@ grep -q 'buf_owned = true;' Quake/gl_model.c && grep -q 'if (buf_owned)' Quake/g
 echo "PASS: an alias model's file bytes come off the hunk before the loader"
 echo "PASS: runs, so the peak is two copies of the model and not three."
 
+# ---- and the picture pool stops being twice the size it needs ------------
+#
+# The round-83 log spends every menu frame reading and decoding the same six
+# pictures off the card:
+#
+#   tex: 240x112 picture (64 KB box) does not fit the pool and would take
+#        2112 KB of the engine's heap (cap 2048 KB): drawn with the null texture
+#   img: gfx/a_mmenu/mainmenu1.png ok 240x112 (3343 bytes)
+#
+# 240 ms a frame, ge 0.1 ms.  The arena is full (6140 KB of 6144) with the
+# map's textures and the model skins; the menu art it cannot fit is 100 KB.
+# An 8-bit paletted texture is half the bytes, and for a Quake miptex it is
+# lossless (the source is an 8-bit image against a 256-colour palette).  What
+# must be checked is that the rule stays as narrow as it is claimed to be:
+# alpha art keeps its 16-bit path, pictures with too many colours are not
+# quantised, the CLUT really is sent before the draw, and the palette is part
+# of what "already announced" means.
+grep -q 'GU_PSM_T8' port/psp/gl_shim.c || {
+    echo "FAIL: pictures are still all 16-bit, so the arena cannot hold the"
+    echo "FAIL: map and the menu at once and the menu reloads from the card"
+    exit 1
+}
+grep -q 'shim_guClutLoad(32' port/psp/gl_shim.c &&
+  grep -q 'sceGuClutLoad(blocks, p)' port/psp/gl_shim.c || {
+    echo "FAIL: an 8-bit texture without its CLUT draws index numbers, not"
+    echo "FAIL: colours (sceGuClutLoad, 32 blocks of 8 = 256)"
+    exit 1
+}
+grep -q 'shim_guClutMode(GU_PSM_8888, 0, 0xFF, 0)' port/psp/gl_shim.c &&
+  grep -q 'sceGuClutMode(cpsm, shift, mask, csa)' port/psp/gl_shim.c || {
+    echo "FAIL: the CLUT format is not 8888 with all 256 indices and no base"
+    exit 1
+}
+grep -q 'if (a != 255)' port/psp/gl_shim.c || {
+    echo "FAIL: a picture with transparency can be made 8-bit, which changes"
+    echo "FAIL: every blending path that was just got right"
+    exit 1
+}
+grep -q 'SHIM_T8_MAX_COLORS' port/psp/gl_shim.c || {
+    echo "FAIL: pictures are quantised to 256 colours without checking that"
+    echo "FAIL: they already have that few -- the menu art would band"
+    exit 1
+}
+grep -q 'shim_texture_priority &&' port/psp/gl_shim.c || {
+    echo "FAIL: a lightmap can be made 8-bit, and its dynamic updates are"
+    echo "FAIL: glTexSubImage2D rectangles of colour"
+    exit 1
+}
+grep -q 'shim_texture_promote_to_16' port/psp/gl_shim.c || {
+    echo "FAIL: a subimage into an 8-bit picture would write indices"
+    exit 1
+}
+grep -q 'shim_tex_announced_palette' port/psp/gl_shim.c || {
+    echo "FAIL: the palette is not part of the announced texture state, so a"
+    echo "FAIL: picture can be drawn with the previous picture's colours"
+    exit 1
+}
+grep -q 'SHIM_PALETTE_BYTES &&' port/psp/gl_shim.c || {
+    echo "FAIL: small pictures pay a kilobyte of palette for nothing"
+    exit 1
+}
+echo "PASS: an opaque picture with at most 256 colours is uploaded as 8-bit"
+echo "PASS: indices plus a CLUT, half the pool; transparency, extra colours,"
+echo "PASS: lightmaps and tiny boxes keep the 16-bit path."
+
 # ---- and the status bar says which part of itself it died in ------------
 #
 # The round-77 log ends on "scr: tileclear done" with "scr: sbar done" never
