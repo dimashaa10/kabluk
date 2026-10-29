@@ -65,7 +65,36 @@ extern qboolean Curl_DownloadFile(const char* url, const char* filename, const c
 extern qboolean scr_disabled_for_loading;
 
 #if defined(PLATFORM_PSP) || defined(__psp__)
-static void Sky_TraceConfig (void);   /* once per map, see its own comment */
+/* Everything this file hands to the port, declared where the compiler sees it
+ * first.
+ *
+ * It used to sit further down, next to the code that calls it, and the real
+ * build stopped on it:
+ *
+ *     gl_sky.c:676: error: implicit declaration of function 'psp_tracef'
+ *     gl_sky.c:1687: warning: conflicting types for 'psp_tracef'
+ *
+ * Sky_TraceConfig() (once per map, ~line 670) calls psp_tracef and its
+ * declaration was at ~line 1690, next to Sky_DrawSky().  A C compiler is
+ * entitled to assume an implicitly declared function returns int, so the two
+ * declarations disagreed -- and gcc 14 and clang 16 make that an ERROR, not a
+ * warning like older gcc did.  A host -fsyntax-only check with an older
+ * compiler prints it as a warning and reports no errors, which is exactly how
+ * this got past the check and into the build. */
+static void Sky_TraceConfig (void);        /* once per map, see its comment  */
+static void Sky_DrawSkyInternal (void);
+
+/* psp_tracef() writes the port's log (port/psp/psp_console.c). */
+extern void psp_tracef (const char *fmt, ...);
+
+/* The shim's frame profiler (port/psp/gl_shim.c, SHIM_PROF_*): the frame is
+ * split into buckets and the sky gets one of its own, because Sky_DrawSky is
+ * the first thing a frame does and it can fill the whole panel twice over.
+ * The number has to match the SHIM_PROF_* enum in the shim -- gl_sky.c cannot
+ * include it -- and tests/run_gameplay_tests.sh checks that it does. */
+extern unsigned int sceKernelGetSystemTimeLow (void);
+extern void psp_gl_shim_prof_add (int bucket, unsigned int us);
+#define SKY_PROF_BUCKET 5
 #endif
 
 #ifndef ARRAY_COUNT
@@ -1672,20 +1701,6 @@ void Sky_DrawSkyLayers (void)
 	if (r_skyalpha.value < 1.0)
 		glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
 }
-
-#if defined(PLATFORM_PSP) || defined(__psp__)
-static void Sky_DrawSkyInternal (void);
-
-/* The shim's frame profiler (port/psp/gl_shim.c, SHIM_PROF_*) measures the
- * frame in five buckets, and the sky was one of the biggest unknown parts of
- * the 176 ms the round-84 log reports: Sky_DrawSky is the first thing a frame
- * does and it can fill the whole panel twice over.  This gives it its own
- * number.  The bucket index is SHIM_PROF_SKY. */
-extern unsigned int sceKernelGetSystemTimeLow (void);
-extern void psp_gl_shim_prof_add (int bucket, unsigned int us);
-#define SKY_PROF_BUCKET 5
-extern void psp_tracef (const char *fmt, ...);
-#endif
 
 /*
 ==============

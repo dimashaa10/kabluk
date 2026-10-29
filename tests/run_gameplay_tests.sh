@@ -2315,3 +2315,67 @@ echo "PASS: the sky's quads are grouped into one draw per layer per chunk on"
 echo "PASS: the console (same quads, same projection, same order per pixel),"
 echo "PASS: the cloud layer sets its own blend function, and the log says"
 echo "PASS: which sky path the map took and what the frame spends on it."
+
+# ---- every function is declared where the compiler sees it first --------
+#
+# The round-85 build stopped on
+#
+#     gl_sky.c:676: error: implicit declaration of function 'psp_tracef'
+#     gl_sky.c:1687: warning: conflicting types for 'psp_tracef'
+#
+# because the declaration had been written next to the code that calls it
+# (Sky_DrawSky, ~line 1690) while the first caller (Sky_TraceConfig, ~line
+# 670) is a thousand lines earlier.  Older gcc only warned about that; gcc 14
+# and clang 16 make it an error, which is what the real build runs.
+#
+# A host -fsyntax-only check does not catch it either: `-w` (which is what one
+# uses to get past the SDL/PSP header noise) also switches the diagnostic off.
+# So the ordering is asserted here, on the source.
+check_declared_before_use() {
+    _file=$1
+    _name=$2
+    # NOTE the variable is _name, not name: this script runs under `set -u`,
+    # and a bare $name is an unbound-variable error that leaves both greps
+    # empty -- which made an earlier version of this check pass on a source
+    # file that was, in fact, broken.
+    _decl=$(grep -n "^extern [a-z].* $_name *(" "$_file" | head -1 | cut -d: -f1)
+    # A "use" is a line that is not a declaration and not inside a comment:
+    # the prose in this very file's comments names these functions.
+    _use=$(grep -n -- "[^_a-zA-Z]$_name *(" "$_file" |
+           grep -v -E "^[0-9]+: *(extern |[/*])" |
+           head -1 | cut -d: -f1)
+    if [ -z "$_use" ]; then
+        return 0        # not used in this file at all
+    fi
+    if [ -z "$_decl" ]; then
+        echo "FAIL: $_file calls $_name() and never declares it, so the"
+        echo "FAIL: compiler assumes it returns int (an error, not a warning,"
+        echo "FAIL: on gcc 14 and clang 16)"
+        exit 1
+    fi
+    if [ "$_decl" -gt "$_use" ]; then
+        echo "FAIL: $_file declares $_name() on line $_decl but calls it on"
+        echo "FAIL: line $_use -- an implicit declaration, and a conflicting"
+        echo "FAIL: types error afterwards"
+        exit 1
+    fi
+}
+check_declared_before_use Quake/gl_sky.c psp_tracef
+check_declared_before_use Quake/gl_sky.c psp_gl_shim_prof_add
+check_declared_before_use Quake/gl_sky.c sceKernelGetSystemTimeLow
+check_declared_before_use Quake/gl_rmain.c psp_gl_shim_prof_add
+# Sky_TraceConfig() is a static of the same file and is called from
+# Sky_NewMap() a thousand lines above its body: its prototype has to be there
+# too, and it has to be inside a PSP block so the desktop build is unchanged.
+[ "$(grep -n '^static void Sky_TraceConfig (void);' Quake/gl_sky.c | head -1 | cut -d: -f1)" -lt \
+  "$(grep -n 'Sky_TraceConfig ();' Quake/gl_sky.c | head -1 | cut -d: -f1)" ] || {
+    echo "FAIL: Sky_TraceConfig is called before it is declared"
+    exit 1
+}
+grep -q '^#define Sky_TraceConfig()' Quake/gl_sky.c || {
+    echo "FAIL: the desktop build has no Sky_TraceConfig, so gl_sky.c does not"
+    echo "FAIL: compile on the PC at all"
+    exit 1
+}
+echo "PASS: everything the sky hands to the port is declared before its first"
+echo "PASS: use, which is what the real compiler stopped on."
