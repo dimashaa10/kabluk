@@ -2218,3 +2218,100 @@ awk '/^static void shim_emit_vertex/,/^}/' port/psp/gl_shim.c |
 echo "PASS: the world gets fractions (scaled by width/potw for the box) and"
 echo "PASS: through-mode pictures get texels -- two different units, as the"
 echo "PASS: GE documents them."
+
+# ---- and the sky is one draw per layer, not one per quad ----------------
+#
+# Sky_DrawFace() cuts a face into r_sky_quality x (quality*2) quads (12x24 on
+# the side faces with the shipped default) and Sky_DrawFaceQuad() draws each of
+# them as its own glBegin/glEnd pair -- twice, once for the solid picture and
+# once for the transparent cloud layer, with a GL_Bind between.  In
+# port/psp/gl_shim.c a texture change starts a new batch, and a batch is a
+# sceKernelDcacheWritebackRange + a sceGuDrawArray, so a two-face view is
+# several hundred GE draws for a background.  The console path draws the SAME
+# quads in chunks instead.
+grep -q 'SKY_PSP_QUADS_PER_DRAW' Quake/gl_sky.c || {
+    echo "FAIL: the sky is still drawn one quad at a time on the console"
+    exit 1
+}
+awk '/^static int Sky_DrawFaceLayer/,/^}/' Quake/gl_sky.c > /tmp/skylayer.txt
+grep -q 'glBegin (GL_QUADS);' /tmp/skylayer.txt || {
+    echo "FAIL: Sky_DrawFaceLayer does not open a primitive"
+    exit 1
+}
+grep -q 'in_batch == SKY_PSP_QUADS_PER_DRAW' /tmp/skylayer.txt || {
+    echo "FAIL: the chunk limit is not applied, so one glBegin can run past the"
+    echo "FAIL: shim's 1024-vertex array and lose the rest of the face"
+    exit 1
+}
+# The same sampling as the desktop path, or the sky would be projected
+# differently on the two builds.
+awk '/^static int Sky_DrawFaceLayer/,/^}/' Quake/gl_sky.c |
+    grep -q 'Sky_GetTexCoord (p.verts\[k\], speed, &s, &t)' || {
+    echo "FAIL: the batched sky does not use Sky_GetTexCoord, so the cloud"
+    echo "FAIL: layers are projected differently than the desktop's"
+    exit 1
+}
+grep -q 'solidskytexture, 8, 0' Quake/gl_sky.c || {
+    echo "FAIL: the solid sky layer is not drawn with its own scroll speed (8)"
+    exit 1
+}
+grep -q 'alphaskytexture, 16, 1' Quake/gl_sky.c || {
+    echo "FAIL: the cloud layer is not drawn with its own scroll speed (16)"
+    exit 1
+}
+# The cloud layer is transparent, and it used to blend with whatever
+# glBlendFunc() the previous frame's last pass left behind.
+grep -q 'glBlendFunc (GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);' /tmp/skylayer.txt || {
+    echo "FAIL: the cloud layer enables GL_BLEND without setting the blend"
+    echo "FAIL: function, so its brightness depends on the previous frame"
+    exit 1
+}
+# The same quad, from the same function, on both builds.
+grep -q 'Sky_FaceQuadAt' Quake/gl_sky.c || {
+    echo "FAIL: there is no shared quad builder"
+    exit 1
+}
+[ "$(grep -c 'Sky_FaceQuadAt (axis, verts, up, right, qi, qj' Quake/gl_sky.c)" -ge 2 ] || {
+    echo "FAIL: the console loop and the desktop loop do not both build their"
+    echo "FAIL: quads with Sky_FaceQuadAt -- two projections that will drift"
+    exit 1
+}
+grep -q 'Sky_DrawFaceQuad (p);' Quake/gl_sky.c || {
+    echo "FAIL: the desktop sky path was removed instead of kept"
+    exit 1
+}
+# And the frame now says how much of it the sky is.
+grep -q 'SHIM_PROF_SKY' port/psp/gl_shim.c || {
+    echo "FAIL: the profile has no sky bucket"
+    exit 1
+}
+grep -q '#define SHIM_PROF_BUCKETS   6' port/psp/gl_shim.c || {
+    echo "FAIL: the bucket array was not grown, so the sky's microseconds are"
+    echo "FAIL: written past the end of it"
+    exit 1
+}
+grep -q 'psp_gl_shim_prof_add (SKY_PROF_BUCKET' Quake/gl_sky.c || {
+    echo "FAIL: Sky_DrawSky is not timed"
+    exit 1
+}
+# The two files agree on the bucket by NUMBER, because gl_sky.c cannot see the
+# shim's enum: the sky's microseconds would silently land in another bucket.
+grep -q '#define SKY_PROF_BUCKET 5' Quake/gl_sky.c || {
+    echo "FAIL: the sky bucket is not 5, so its time is counted as something"
+    echo "FAIL: else (see the SHIM_PROF_* enum in port/psp/gl_shim.c)"
+    exit 1
+}
+[ "$(awk '/^enum \{$/,/^\};/' port/psp/gl_shim.c | grep -c '^	SHIM_PROF_')" -eq 6 ] || {
+    echo "FAIL: the bucket enum does not have the six entries the numbers assume"
+    exit 1
+}
+grep -q 'sky: this map has no external skybox' Quake/gl_sky.c &&
+grep -q 'sky: this map uses the external skybox' Quake/gl_sky.c || {
+    echo "FAIL: the log never says which sky path a map took, which is the"
+    echo "FAIL: first thing to know about a sky that costs too much"
+    exit 1
+}
+echo "PASS: the sky's quads are grouped into one draw per layer per chunk on"
+echo "PASS: the console (same quads, same projection, same order per pixel),"
+echo "PASS: the cloud layer sets its own blend function, and the log says"
+echo "PASS: which sky path the map took and what the frame spends on it."

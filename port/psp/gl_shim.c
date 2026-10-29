@@ -271,13 +271,14 @@ static unsigned int   shim_world_prims;
  * sceGuDrawArray() it is the GE pushing back through the FIFO and the answer is
  * fewer, bigger primitives; if it is in the scene the answer is in R_*; if it is
  * in textures it is the announce path.  The next log says which. */
-#define SHIM_PROF_BUCKETS   5
+#define SHIM_PROF_BUCKETS   6
 enum {
 	SHIM_PROF_SCENE = 0,     /* R_RenderScene, added by gl_rmain.c            */
 	SHIM_PROF_FLUSH,         /* shim_flush_3d: clip + emit for the world      */
 	SHIM_PROF_TEX,           /* shim_upload_bound_texture: GE texture state   */
 	SHIM_PROF_DRAW,          /* sceGuDrawArray + dcache writeback             */
-	SHIM_PROF_PIXELS         /* glTexImage2D/glTexSubImage2D: texel conversion */
+	SHIM_PROF_PIXELS,        /* glTexImage2D/glTexSubImage2D: texel conversion */
+	SHIM_PROF_SKY            /* Sky_DrawSky, added by gl_sky.c                 */
 };
 
 #if defined(PLATFORM_PSP) || defined(__psp__)
@@ -3730,11 +3731,14 @@ void psp_gl_shim_end_frame (void)
 	 * time, and the numbers are per frame, so it costs two clock reads per
 	 * bucket and no card traffic unless the line is printed. */
 	if (shim_frames <= 3 || (shim_frames % 120) == 0)
-		psp_tracef("prof: frame %u, scene %u.%u ms, world flush %u.%u, textures "
-		           "state %u.%u, draw %u.%u, texels %u.%u, %u texture flushes",
+		psp_tracef("prof: frame %u, scene %u.%u ms (sky %u.%u), world flush "
+		           "%u.%u, textures state %u.%u, draw %u.%u, texels %u.%u, "
+		           "%u texture flushes",
 		           shim_frames,
 		           shim_prof_us[SHIM_PROF_SCENE] / 1000,
 		           (shim_prof_us[SHIM_PROF_SCENE] % 1000) / 100,
+		           shim_prof_us[SHIM_PROF_SKY] / 1000,
+		           (shim_prof_us[SHIM_PROF_SKY] % 1000) / 100,
 		           shim_prof_us[SHIM_PROF_FLUSH] / 1000,
 		           (shim_prof_us[SHIM_PROF_FLUSH] % 1000) / 100,
 		           shim_prof_us[SHIM_PROF_TEX] / 1000,

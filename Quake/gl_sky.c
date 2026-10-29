@@ -64,6 +64,10 @@ static qboolean skybox_download_pending = false;
 extern qboolean Curl_DownloadFile(const char* url, const char* filename, const char* local_path, qboolean is_skybox, const char* display_name);
 extern qboolean scr_disabled_for_loading;
 
+#if defined(PLATFORM_PSP) || defined(__psp__)
+static void Sky_TraceConfig (void);   /* once per map, see its own comment */
+#endif
+
 #ifndef ARRAY_COUNT
 #define ARRAY_COUNT(arr)   (sizeof(arr) / sizeof((arr)[0]))
 #endif
@@ -635,7 +639,83 @@ void Sky_NewMap (void)
 			Sky_LoadSkyBoxAuto(value); // woods #skydownloads
 #endif
 	}
+
+	Sky_TraceConfig ();
 }
+
+#if defined(PLATFORM_PSP) || defined(__psp__)
+/*
+=================
+Sky_TraceConfig
+
+One line, once per map, saying WHICH sky this map got and what it costs.
+
+The hardware logs never said it.  A map either carries a "sky" key and gets six
+external pictures from gfx/env/<name>{rt,bk,lf,ft,up,dn}, or it has none and the
+engine draws the scrolling two-layer sky out of the BSP's own "sky" miptex --
+two completely different code paths with completely different costs, and nothing
+in a log distinguished them:
+
+  - the external skybox is six pictures held for the whole map, each up to the
+    GE's 512 limit, i.e. up to 512 KB apiece of the 6144 KB picture arena.  When
+    that does not fit, the map's own textures are the ones that do not fit, and
+    they are decoded from the memory stick again on every frame that needs them;
+  - the scrolling sky is up to 6 x 288 quads an axis with the default quality,
+    and on this port each quad used to be a separate GE draw.
+
+So the next log says which one it was, and the numbers to go with it.
+=================
+*/
+static void Sky_TraceConfig (void)
+{
+	int i, faces = 0;
+	unsigned int bytes = 0;
+
+	if (skybox_name[0])
+	{
+		psp_tracef("sky: this map uses the external skybox \"%s\"", skybox_name);
+
+		for (i = 0; i < 6; i++)
+		{
+			if (!skybox_textures[i] || skybox_textures[i] == notexture)
+				continue;
+
+			faces++;
+			bytes += (unsigned int)skybox_textures[i]->width *
+			         (unsigned int)skybox_textures[i]->height * 2;
+			psp_tracef("sky:   %s %dx%d", suf[i], skybox_textures[i]->width,
+			           skybox_textures[i]->height);
+		}
+
+		psp_tracef("sky: %d of the 6 faces loaded, %d KB of texels at 16 bits a "
+		           "texel (a face that is not there is drawn as the null "
+		           "texture)", faces, (int)(bytes / 1024));
+	}
+	else if (solidskytexture)
+	{
+		psp_tracef("sky: this map has no external skybox -- the scrolling "
+		           "two-layer sky from the BSP: solid %dx%d, clouds %dx%d, "
+		           "r_sky_quality %d -> up to %d quads a face",
+		           solidskytexture->width, solidskytexture->height,
+		           alphaskytexture ? alphaskytexture->width : 0,
+		           alphaskytexture ? alphaskytexture->height : 0,
+		           (int)r_sky_quality.value,
+		           q_max((int)r_sky_quality.value, 1) *
+		           q_max((int)r_sky_quality.value, 1) * 2);
+	}
+	else
+		psp_tracef("sky: this map has neither an external skybox nor a sky "
+		           "texture -- nothing is drawn for it");
+
+	if (skyroom_enabled)
+		psp_tracef("sky: a skyroom is set (%d %d %d, paralax %d): the world is "
+		           "drawn TWICE a frame, once from the skyroom camera",
+		           (int)skyroom_origin[0], (int)skyroom_origin[1],
+		           (int)skyroom_origin[2], (int)skyroom_origin[3]);
+}
+#else
+#define Sky_TraceConfig()
+#endif
 
 /*
 =================
@@ -1333,6 +1413,180 @@ void Sky_DrawFaceQuad (glpoly_t *p)
 
 /*
 ==============
+Sky_FaceQuadAt
+
+The (i,j) quad of a sky face: its four corners, in world space.
+
+Split out of Sky_DrawFace so that the desktop loop and the console's batched
+loop build the SAME quad -- the projection below is the only place that decides
+where a piece of the sky is, and two copies of it would drift apart.
+
+Returns 0 when the quad is outside the bounds the sky surfaces established
+(skymins/skymaxs, filled in by Sky_ClipPoly); those bounds are what keeps the
+subdivision from covering parts of the face that no sky surface can see.
+==============
+*/
+static int Sky_FaceQuadAt (int axis, vec3_t verts[4], vec3_t up, vec3_t right,
+                           float qi, float qj, int i, int j, glpoly_t *p)
+{
+	vec3_t	temp, temp2;
+
+	if (i*qi < skymins[0][axis]/2+0.5 - qi || i*qi > skymaxs[0][axis]/2+0.5 ||
+		j*qj < skymins[1][axis]/2+0.5 - qj || j*qj > skymaxs[1][axis]/2+0.5)
+		return 0;
+
+	VectorScale (right, qi*i, temp);
+	VectorScale (up, qj*j, temp2);
+	VectorAdd(temp,temp2,temp);
+	VectorAdd(verts[0],temp,p->verts[0]);
+
+	VectorScale (up, qj, temp);
+	VectorAdd (p->verts[0],temp,p->verts[1]);
+
+	VectorScale (right, qi, temp);
+	VectorAdd (p->verts[1],temp,p->verts[2]);
+
+	VectorAdd (p->verts[0],temp,p->verts[3]);
+
+	p->numverts = 4;
+	return 1;
+}
+
+#ifdef PLATFORM_PSP
+/*
+==============
+Sky_DrawFaceLayer
+
+The same quads the desktop path draws ONE AT A TIME, drawn in one primitive per
+SKY_PSP_QUADS_PER_DRAW of them.
+
+WHAT THE DESKTOP PATH COSTS HERE.  Sky_DrawFace() subdivides a face into
+r_sky_quality x (r_sky_quality*2) quads -- 12x24 on the side faces, with the
+shipped default of 12 -- and Sky_DrawFaceQuad() then draws every one of them as
+its own glBegin/glEnd pair, with a GL_Bind() between the solid layer and the
+cloud layer:
+
+	GL_Bind (solidskytexture);
+	glBegin (GL_QUADS); 4 x glTexCoord2f + glVertex3fv; glEnd ();
+	GL_Bind (alphaskytexture);
+	glEnable (GL_BLEND);
+	glBegin (GL_QUADS); 4 x ...; glEnd ();
+
+On a desktop that is a few hundred tiny draw calls nobody notices.  In
+port/psp/gl_shim.c each one is a separate BATCH: the bind changes the pending
+batch's texture, so the previous batch is flushed, and a flush is a
+sceKernelDcacheWritebackRange() plus a sceGuDrawArray() (see shim_batch_add and
+shim_batch_flush there).  A view showing two sky faces -- a normal outdoor view,
+and the sky is behind everything, so it is the whole upper half of the screen --
+becomes several hundred GE draws for a background.  The round-84 hardware log
+counts 2223 draws in 528 batches on its slow frames.
+
+NOTHING MOVES ON SCREEN.  The quads are cut exactly as before, with the same
+coefficients and the same Sky_GetTexCoord() sampling; only the grouping changes:
+all solid quads of a face, then all cloud quads of that face, then the fog pass.
+The three passes keep their order per pixel -- a pixel covered by quad q still
+gets q's solid layer, then q's cloud layer, then q's fog -- and the quads of one
+face do not overlap each other, so no pixel's result changes.
+
+THE CHUNK is bounded by the shim's vertex array: it holds four vertices per quad
+and drops what it cannot hold past SHIM_MAX_VERTICES (1024 in
+port/psp/gl_shim.c), so 128 quads = 512 vertices leaves half of it spare for the
+largest polygon the world can hand over.
+
+layer: 0 = the solid sky picture, 1 = the transparent cloud layer over it,
+2 = the skyfog tint laid over both.  Returns how many quads the face has.
+==============
+*/
+#define SKY_PSP_QUADS_PER_DRAW 128
+
+static int Sky_DrawFaceLayer (int axis, vec3_t verts[4], vec3_t up, vec3_t right,
+                              float qi, float qj, int di, int dj,
+                              gltexture_t *tex, float speed, int layer)
+{
+	glpoly_t	p;
+	int			i, j, k, drawn = 0, in_batch = 0;
+	float		s, t;
+
+	if (tex)
+		GL_Bind (tex);
+
+	if (layer == 1)
+	{
+		/* The cloud layer is transparent and blends over the solid one.
+		 * It used to enable GL_BLEND without ever saying WITH WHAT, i.e. it
+		 * inherited whatever glBlendFunc() the last pass before it left
+		 * behind.  A frame ends in the HUD, and the HUD, dlights and the
+		 * world's lightmap pass each set a different one (r_brush.c asks for
+		 * GL_ZERO/GL_SRC_COLOR for the lightmap, gl_rlight.c for GL_ONE/GL_ONE
+		 * for dlights, gl_draw.c for the additive sprites) -- so the sky's
+		 * brightness depended on what happened to be drawn last in the
+		 * previous frame.  Say it here instead. */
+		glBlendFunc (GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+		glEnable (GL_BLEND);
+
+		if (r_skyalpha.value < 1.0f)
+			glColor4f (1, 1, 1, r_skyalpha.value);
+	}
+	else if (layer == 2)
+	{
+		float *c = Fog_GetColor ();
+
+		glBlendFunc (GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+		glEnable (GL_BLEND);
+		glDisable (GL_TEXTURE_2D);
+		glColor4f (c[0], c[1], c[2], CLAMP(0.0f, skyfog, 1.0f));
+	}
+	else if (r_skyalpha.value < 1.0f)
+		glColor3f (1, 1, 1);
+
+	glBegin (GL_QUADS);
+
+	for (i = 0; i < di; i++)
+	{
+		for (j = 0; j < dj; j++)
+		{
+			if (!Sky_FaceQuadAt (axis, verts, up, right, qi, qj, i, j, &p))
+				continue;
+
+			if (in_batch == SKY_PSP_QUADS_PER_DRAW)
+			{
+				glEnd ();
+				glBegin (GL_QUADS);
+				in_batch = 0;
+			}
+
+			for (k = 0; k < 4; k++)
+			{
+				if (tex)
+				{
+					Sky_GetTexCoord (p.verts[k], speed, &s, &t);
+					glTexCoord2f (s, t);
+				}
+				glVertex3fv (p.verts[k]);
+			}
+
+			in_batch++;
+			drawn++;
+		}
+	}
+
+	glEnd ();
+
+	if (layer == 1)
+		glDisable (GL_BLEND);
+	else if (layer == 2)
+	{
+		glColor3f (1, 1, 1);
+		glEnable (GL_TEXTURE_2D);
+		glDisable (GL_BLEND);
+	}
+
+	return drawn;
+}
+#endif /* PLATFORM_PSP */
+
+/*
+==============
 Sky_DrawFace
 ==============
 */
@@ -1343,15 +1597,12 @@ void Sky_DrawFace (int axis)
 	vec3_t		verts[4];
 	int			i, j, start;
 	float		di,qi,dj,qj;
-	vec3_t		up, right, temp, temp2;
+	vec3_t		up, right;
 
 	Sky_SetBoxVert(-1.0, -1.0, axis, verts[0]);
 	Sky_SetBoxVert(-1.0,  1.0, axis, verts[1]);
 	Sky_SetBoxVert(1.0,   1.0, axis, verts[2]);
 	Sky_SetBoxVert(1.0,  -1.0, axis, verts[3]);
-
-	start = Hunk_LowMark ();
-	p = (glpoly_t *) Hunk_Alloc(sizeof(glpoly_t));
 
 	VectorSubtract(verts[2],verts[3],up);
 	VectorSubtract(verts[2],verts[1],right);
@@ -1361,27 +1612,38 @@ void Sky_DrawFace (int axis)
 	dj = (axis < 4) ? di*2 : di; //subdivide vertically more than horizontally on skybox sides
 	qj = 1.0 / dj;
 
+#ifdef PLATFORM_PSP
+	/* Same quads, three passes, a handful of draws -- see Sky_DrawFaceLayer. */
+	{
+		int n;
+
+		n = Sky_DrawFaceLayer (axis, verts, up, right, qi, qj, (int)di, (int)dj,
+		                       solidskytexture, 8, 0);
+		Sky_DrawFaceLayer (axis, verts, up, right, qi, qj, (int)di, (int)dj,
+		                   alphaskytexture, 16, 1);
+
+		rs_skypolys += n;
+		rs_skypasses += n * 2;
+
+		if (Fog_GetDensity() > 0 && skyfog > 0)
+		{
+			Sky_DrawFaceLayer (axis, verts, up, right, qi, qj, (int)di, (int)dj,
+			                   NULL, 0, 2);
+			rs_skypasses += n;
+		}
+	}
+	return;
+#endif
+
+	start = Hunk_LowMark ();
+	p = (glpoly_t *) Hunk_Alloc(sizeof(glpoly_t));
+
 	for (i=0; i<di; i++)
 	{
 		for (j=0; j<dj; j++)
 		{
-			if (i*qi < skymins[0][axis]/2+0.5 - qi || i*qi > skymaxs[0][axis]/2+0.5 ||
-				j*qj < skymins[1][axis]/2+0.5 - qj || j*qj > skymaxs[1][axis]/2+0.5)
+			if (!Sky_FaceQuadAt (axis, verts, up, right, qi, qj, i, j, p))
 				continue;
-
-			//if (i&1 ^ j&1) continue; //checkerboard test
-			VectorScale (right, qi*i, temp);
-			VectorScale (up, qj*j, temp2);
-			VectorAdd(temp,temp2,temp);
-			VectorAdd(verts[0],temp,p->verts[0]);
-
-			VectorScale (up, qj, temp);
-			VectorAdd (p->verts[0],temp,p->verts[1]);
-
-			VectorScale (right, qi, temp);
-			VectorAdd (p->verts[1],temp,p->verts[2]);
-
-			VectorAdd (p->verts[0],temp,p->verts[3]);
 
 			Sky_DrawFaceQuad (p);
 		}
@@ -1411,6 +1673,20 @@ void Sky_DrawSkyLayers (void)
 		glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
 }
 
+#if defined(PLATFORM_PSP) || defined(__psp__)
+static void Sky_DrawSkyInternal (void);
+
+/* The shim's frame profiler (port/psp/gl_shim.c, SHIM_PROF_*) measures the
+ * frame in five buckets, and the sky was one of the biggest unknown parts of
+ * the 176 ms the round-84 log reports: Sky_DrawSky is the first thing a frame
+ * does and it can fill the whole panel twice over.  This gives it its own
+ * number.  The bucket index is SHIM_PROF_SKY. */
+extern unsigned int sceKernelGetSystemTimeLow (void);
+extern void psp_gl_shim_prof_add (int bucket, unsigned int us);
+#define SKY_PROF_BUCKET 5
+extern void psp_tracef (const char *fmt, ...);
+#endif
+
 /*
 ==============
 Sky_DrawSky
@@ -1420,6 +1696,18 @@ called once per frame before drawing anything else
 */
 void Sky_DrawSky (void)
 {
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	unsigned int prof_t0 = sceKernelGetSystemTimeLow ();
+
+	Sky_DrawSkyInternal ();
+
+	psp_gl_shim_prof_add (SKY_PROF_BUCKET,
+	                      sceKernelGetSystemTimeLow () - prof_t0);
+}
+
+static void Sky_DrawSkyInternal (void)
+{
+#endif
 	int i;
 
 	//in these special render modes, the sky faces are handled in the normal world/brush renderer
