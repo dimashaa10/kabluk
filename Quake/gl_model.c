@@ -32,6 +32,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
  * frames), and a fault in any of them looks identical from the outside. */
 #if defined(PLATFORM_PSP) || defined(__psp__)
 extern void psp_mark (const char *what);
+extern void psp_tracef (const char *fmt, ...);
 #define MDL_MARK(x)	psp_mark(x)
 #else
 #define MDL_MARK(x)	do { } while (0)
@@ -409,6 +410,7 @@ static qmodel_t *Mod_LoadModel (qmodel_t *mod, qboolean crash)
 	byte	*buf;
 	byte	stackbuf[1024];		// avoid dirtying the cache heap
 	int	mod_type;
+	qboolean buf_owned = false;	// true when buf came from malloc (see below)
 
 	if (!mod->needload)
 	{
@@ -492,6 +494,55 @@ MDL_MARK(va("model %s", mod->name));
 	mod->needload = false;
 
 	mod_type = (buf[0] | (buf[1] << 8) | (buf[2] << 16) | (buf[3] << 24));
+
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	/* A model file that is bigger than the 1 KB stack buffer comes back from
+	 * COM_LoadStackFile() inside the hunk's *temp* block -- 3.4 MB of it for
+	 * progs/player.mdl -- and the loader below then builds a working copy in
+	 * the low hunk and finally asks the cache for a third copy of the same
+	 * size.  Three copies of one model in a 19 MB hunk is what ends the run:
+	 *
+	 *     hunk: Cache_Alloc 3536192 bytes does not fit: 19456 KB total,
+	 *           16074 KB used (low 12619 + cache 3454), 3381 KB free
+	 *     *** FATAL ERROR ***  Cache_TryAlloc: 3536192 is greater then free
+	 *                         hunk (3462928 free)
+	 *
+	 * -- 3462928 against 3536192, i.e. 72 KB short (round-81 build, first map
+	 * load: maps/PAVILION.bsp, then progs/player.mdl).
+	 *
+	 * The file bytes are only read here, never written, and the loader copies
+	 * what it keeps.  So for an alias model they are moved into the newlib
+	 * heap (10 MB free, 0 KB used at the time) and the temp block is given
+	 * back to the hunk before the loader runs.  Peak drops from file + 2 x
+	 * model to 2 x model, which is the 3.4 MB this console does not have.
+	 *
+	 * Brush models are left alone on purpose: their loader keeps pointers
+	 * into the file buffer for the length of the call and frees the temp
+	 * itself, and a .bsp is loaded through a different budget entirely. */
+	if ((mod_type == IDPOLYHEADER ||
+	     mod_type == (('M'<<0)+('D'<<8)+('1'<<16)+('6'<<24))) &&
+	    buf != stackbuf)
+	{
+		int filelen = COM_LastLoadFileLength ();
+		byte *owned = (byte *) malloc (filelen + 1);
+
+		if (owned)
+		{
+			memcpy (owned, buf, filelen + 1);
+			buf = owned;
+			buf_owned = true;
+
+			/* "Return space from the top of the hunk" -- Hunk_HighMark()
+			 * is what releases the temp block (zone.c, Hunk_TempAlloc). */
+			Hunk_HighMark ();
+
+			psp_tracef ("mdl: %s is %d KB; read into the heap, the hunk's "
+			            "temp copy released before the loader",
+			            mod->name, (filelen + 1) / 1024);
+		}
+	}
+#endif
+
 	switch (mod_type)
 	{
 	case IDPOLYHEADER:
@@ -548,6 +599,12 @@ MDL_MARK(va("model %s", mod->name));
 		Mod_LoadBrushModel (mod, buf);
 		break;
 	}
+
+	/* The heap copy, if there was one: the loader above copied what it keeps
+	 * (Mod_LoadAliasModel ends in Cache_Alloc + memcpy, and the working copy
+	 * in the hunk is freed with Hunk_FreeToLowMark). */
+	if (buf_owned)
+		free (buf);
 
 	if (crash && mod->type == mod_ext_invalid)
 	{	//any of those formats for a world map will be screwed up.

@@ -1800,6 +1800,51 @@ echo "PASS: the screen's breadcrumbs close after three frames of the run and"
 echo "PASS: three frames of world, are counted by the renderer itself, and are"
 echo "PASS: capped by a budget that cannot be left open."
 
+# ---- and a 3.4 MB model must not be in the hunk three times --------------
+#
+# The round-81 build dies entering maps/PAVILION.bsp:
+#
+#   hunk: Cache_Alloc 3536192 bytes does not fit: 19456 KB total,
+#         16074 KB used (low 12619 + cache 3454), 3381 KB free
+#   *** FATAL ERROR *** Cache_TryAlloc: 3536192 is greater then free hunk
+#
+# progs/player.mdl is 3.4 MB.  At that moment it was in the hunk twice -- the
+# file in the temp block that COM_LoadStackFile() allocates for anything over
+# 1 KB, and the loader's working copy -- and the model's cache block asked for
+# a third.  The file only has to be read, so it can live in the 10 MB heap the
+# engine is not using; what must be checked here is that the temp block is
+# really given back before the loader runs, or the peak is unchanged.
+grep -q 'int COM_LastLoadFileLength (void)' Quake/common.c || {
+    echo "FAIL: a loaded file's size is still not knowable from its buffer"
+    exit 1
+}
+grep -q 'loadfile_len = len;' Quake/common.c || {
+    echo "FAIL: COM_LoadFile does not record the size it read"
+    exit 1
+}
+awk '/A model file that is bigger than the 1 KB stack buffer/,/^#endif/' Quake/gl_model.c > /tmp/mdl_move.txt
+grep -q 'malloc (filelen + 1)' /tmp/mdl_move.txt || {
+    echo "FAIL: the model file is not moved out of the hunk, so it is resident"
+    echo "FAIL: twice while the cache block asks for a third copy"
+    exit 1
+}
+grep -q 'Hunk_HighMark ();' /tmp/mdl_move.txt || {
+    echo "FAIL: the temp block is copied but not released, so the peak is the"
+    echo "FAIL: same and the fatal Cache_TryAlloc stays"
+    exit 1
+}
+if grep -q 'Mod_LoadAliasModel' /tmp/mdl_move.txt; then
+    echo "FAIL: the move must not fire for every model type: a brush loader"
+    echo "FAIL: reads its file buffer for the whole call"
+    exit 1
+fi
+grep -q 'buf_owned = true;' Quake/gl_model.c && grep -q 'if (buf_owned)' Quake/gl_model.c || {
+    echo "FAIL: the heap copy leaks after the model is loaded"
+    exit 1
+}
+echo "PASS: an alias model's file bytes come off the hunk before the loader"
+echo "PASS: runs, so the peak is two copies of the model and not three."
+
 # ---- and the status bar says which part of itself it died in ------------
 #
 # The round-77 log ends on "scr: tileclear done" with "scr: sbar done" never

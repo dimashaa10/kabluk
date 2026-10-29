@@ -2810,6 +2810,19 @@ static byte	*loadbuf;
 static cache_user_t *loadcache;
 static int	loadsize;
 
+/* How big the file the last COM_LoadStackFile() read was.
+ *
+ * Mod_LoadModel() needs it to move a model's bytes out of the hunk and into
+ * the heap before the loader runs (see the PSP block there): the buffer it gets
+ * back is a pointer into the hunk's temp block, and a pointer does not carry a
+ * size.  Zero until a load has happened. */
+static int	loadfile_len;
+
+int COM_LastLoadFileLength (void)
+{
+	return loadfile_len;
+}
+
 byte *COM_LoadFile (const char *path, int usehunk, unsigned int *path_id)
 {
 	int		h;
@@ -2823,6 +2836,8 @@ byte *COM_LoadFile (const char *path, int usehunk, unsigned int *path_id)
 	len = COM_OpenFile (path, &h, path_id);
 	if (h == -1)
 		return NULL;
+
+	loadfile_len = len;
 
 // extract the filename base name for hunk tag
 	COM_FileBase (path, base, sizeof(base));

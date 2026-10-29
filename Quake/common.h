@@ -432,6 +432,11 @@ void COM_CloseFile (int h);
 // procedures differ by their buffer allocation method.
 byte *COM_LoadStackFile (const char *path, void *buffer, int bufsize,
 						unsigned int *path_id);
+
+/* The size of the file the last COM_LoadStackFile() (or any other
+ * COM_Load*) read, so a caller that has only the pointer can say how much
+ * memory it is holding.  See Mod_LoadModel(). */
+int COM_LastLoadFileLength (void);
 	// uses the specified stack stack buffer with the specified size
 	// of bufsize. if bufsize is too short, uses temp hunk. the bufsize
 	// must include the +1
