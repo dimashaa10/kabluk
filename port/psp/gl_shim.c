@@ -228,6 +228,16 @@ static unsigned int   shim_frame_draws;
 static unsigned int   shim_frame_verts;
 static unsigned int   shim_frame_batches;   /* sceGuDrawArray calls actually sent */
 
+/* Did this frame put a 3D polygon of the world into the draw list?
+ *
+ * Counted because the screen's breadcrumbs (Quake/gl_screen.c, SCR_MARK) have
+ * to know what a "world frame" is, and their old test was cls.state ==
+ * ca_connected -- which is false in the attract loop, where a demo world is
+ * drawn with the client disconnected.  The result was a gate that never
+ * closed and sixteen card writes per frame; this counter is the fact, taken
+ * from the draw itself rather than from client state. */
+static unsigned int   shim_world_prims;
+
 /* Draw tracer.
  *
  * The screen has been showing large pale wedges across the whole panel since
@@ -2261,6 +2271,7 @@ static void shim_flush_3d (void)
 	int i;
 
 	shim_frame_draws++;
+	shim_world_prims++;			/* see shim_world_prims: a world frame */
 	shim_trace_draw(n, shim_prim_name(shim_primitive), 0);
 
 	if (!shim_3d_logged)
@@ -3334,6 +3345,22 @@ void psp_gl_shim_set_frame_active (int active)
 	shim_frame_active = active;
 }
 
+/* Whether a 3D polygon has already gone into this frame's draw list.
+ *
+ * Used by quakedef-side breadcrumbs only (Quake/gl_screen.c, SCR_MARK).  It is
+ * deliberately a fact about the draw list and not about the client: at boot the
+ * engine plays a demo world with cls.state == ca_disconnected, and every test
+ * built on client state called that "no world" -- which is what kept the
+ * breadcrumb gate open for a whole session (round-81 log: 1105 "scr: begin"
+ * lines where three frames' worth were intended).
+ *
+ * The counter is cleared in psp_gl_shim_begin_frame() and NOT in end_frame(),
+ * because the screen reads it after GL_EndRendering() has run. */
+int psp_gl_world_drawn_this_frame (void)
+{
+	return shim_world_prims != 0;
+}
+
 /* Put the last accumulated batch into the draw list.
  *
  * The shim batches consecutive draws that only differ in position, and a batch
@@ -3353,6 +3380,7 @@ void psp_gl_shim_begin_frame (void)
 	shim_frame_draws = 0;
 	shim_frame_verts = 0;
 	shim_frame_batches = 0;
+	shim_world_prims = 0;
 
 	/* gu_psp.c synced the previous frame before it swapped, so the GE is
 	 * finished with every slice it was given last time. */

@@ -35,17 +35,73 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
  * an implicit function call and only shows up with -Werror. */
 #if defined(PLATFORM_PSP) || defined(__psp__)
 extern void psp_trace_mark (const char *step);
-static int psp_scr_frames;
-/* The marks below were gated on the first three calls of SCR_UpdateScreen,
- * which is right for a menu and wrong for a level: by the time a map is
- * entered this function has been called a few times already, so the gate was
- * shut exactly when the world's frames needed naming.  The round-74 log ends
- * on "view: polyblend" for that reason -- the mark after V_RenderView
- * ("scr: V_RenderView done") and the whole HUD/overlay path were silent.
- * So the gate is now "the first three frames that draw the world" as well. */
-static int psp_scr_world_frames;
-#define SCR_MARK(x)	do { if (psp_scr_frames < 3 || psp_scr_world_frames < 3) \
-		psp_trace_mark(x); } while (0)
+/* Whether a 3D polygon has already gone into this frame's draw list
+ * (port/psp/gl_shim.c).  Used below as the definition of a "world frame". */
+extern int psp_gl_world_drawn_this_frame (void);
+
+static int psp_scr_frames;		/* frames of the run, saturating at 100 */
+static int psp_scr_world_frames;	/* frames of the run that drew a world */
+
+/* Marks are printed for the first PSP_SCR_MARK_FRAMES frames of the run and
+ * for the first PSP_SCR_MARK_FRAMES frames that draw a 3D world -- and then
+ * never again.
+ *
+ * Round 81 is why this is a function with an explicit "and then never again".
+ * The old test was
+ *
+ *     if (psp_scr_frames < 3 || psp_scr_world_frames < 3)
+ *
+ * and it printed, in a 1500-frame session, 1105 "> scr: begin" lines where six
+ * frames' worth were intended: sixteen marks in every frame, each one ending in
+ * a Memory Stick round trip.  The heartbeat priced it exactly -- "card 23
+ * writes 681 ms" over 39 frames of 36.6 ms -- and that millisecond column sits
+ * inside the 15.4 ms the same line calls cpu.  The card was nearly half of
+ * every frame, and the diagnostic was the bill.
+ *
+ * The half that never closed was psp_scr_world_frames, which was incremented
+ * only when cls.state == ca_connected && r_refdef.drawworld && !con_forcedup.
+ * The log says why that describes the wrong thing: by frame 484 the heartbeat
+ * reads "state 1" -- ca_disconnected, the demo loop -- and that frame still
+ * draws 3D polygons ("draw: f 480 #1 ... proj m15 0.000").  A demo world is a
+ * world.  So is the CSQC path above (cl.qcvm.worldmodel), which draws through
+ * QuakeC and never sets r_refdef.drawworld at all.  A gate keyed on client
+ * state is a guess about the renderer; the shim knows.
+ *
+ * Now the shim answers: psp_gl_world_drawn_this_frame() is true when a 3D
+ * polygon has gone into this frame's draw list.  On the very first world frame
+ * the two marks before V_RenderView ("scr: begin", "scr: V_RenderView") are
+ * skipped -- there is no polygon yet when they are emitted -- and everything
+ * from "scr: set2d" to "frame: presented" is printed, which is the part that
+ * names the path after the renderer. */
+#define PSP_SCR_MARK_FRAMES	3
+
+/* And a budget that does not depend on any of the counters above: how many
+ * marks this run may print, full stop.
+ *
+ * Six frames of sixteen marks is under a hundred lines, so a hundred and a
+ * quarter is what it gets and the two windows cannot eat each other's share.
+ *
+ * The budget exists because the round-81 log is not the first log in which a
+ * gate that reads "the first three frames" printed one frame's marks per frame
+ * for the whole session.  A diagnostic that is *provably* quiet after a hundred
+ * lines is worth more here than one that is merely believed to be a counter:
+ * the worst case is then arithmetic in one file, whatever the rest does. */
+#define PSP_SCR_MARK_BUDGET	128
+static int psp_scr_budget = PSP_SCR_MARK_BUDGET;
+
+static qboolean psp_scr_mark_here (void)
+{
+	if (psp_scr_budget <= 0)
+		return false;			/* spent: silent for the rest of the run */
+	if (psp_scr_world_frames >= PSP_SCR_MARK_FRAMES)
+		return false;			/* both windows are spent: silence */
+	if (psp_scr_frames < PSP_SCR_MARK_FRAMES)
+		return true;			/* the run's first frames */
+	return psp_gl_world_drawn_this_frame () != 0;
+}
+
+#define SCR_MARK(x)	do { if (psp_scr_mark_here ()) { \
+		psp_scr_budget--; psp_trace_mark(x); } } while (0)
 #else
 #define SCR_MARK(x)	do { } while (0)
 #endif
@@ -5501,10 +5557,12 @@ void SCR_UpdateScreen (void)
 	if (psp_scr_frames < 100)
 		psp_scr_frames++;
 
-	/* Counted only when the 3D world was drawn, so the marks above stay open
-	 * for the first three frames that have one -- see SCR_MARK. */
-	if (cls.state == ca_connected && r_refdef.drawworld && !con_forcedup &&
-	    psp_scr_world_frames < 100)
+	/* Counted only when the renderer put a 3D polygon into this frame's
+	 * draw list -- see psp_scr_mark_here(), which is why this is asked of
+	 * the shim and not of cls.state.  Read after GL_EndRendering(): the
+	 * shim clears its counter in begin_frame, not in end_frame, so the
+	 * answer is still there. */
+	if (psp_scr_world_frames < 100 && psp_gl_world_drawn_this_frame ())
 		psp_scr_world_frames++;
 #endif
 }

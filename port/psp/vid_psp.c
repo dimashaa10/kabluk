@@ -273,24 +273,51 @@ void GL_BeginRendering (int *x, int *y, int *width, int *height)
 	psp_gu_frame_begin();
 }
 
+/* The two marks below name the only blocking pair in a frame: sceGuFinish()
+ * and sceGuSync() inside psp_gu_frame_end().  A frame that dies there has no
+ * line of its own otherwise, and a GE that never finishes looks exactly like a
+ * crash from the outside.
+ *
+ * They are for the first PSP_FRAME_MARKS_MAX frames of the run, and how that
+ * was decided is the round-81 finding.  The old gate asked
+ *
+ *     psp_view_frame_count () < 3        // a function in Quake/view.c
+ *
+ * and the round-81 log prints that mark 1112 times: the mark whose comment
+ * says "first three world frames" ran in every frame of a 1500-frame session.
+ * Two files, two counters, one of them in a function the other file calls --
+ * and the number that came back never left zero, so the gate never shut.  Each
+ * of the ~18 cards lines a frame cost a Memory Stick round trip, and the
+ * heartbeat measured it: "card 23 writes 681 ms" over 39 frames of 36 ms.
+ *
+ * A breadcrumb gate is now data the printing file owns: a counter next to the
+ * printf, incremented next to the printf.  Nothing else can leave it open. */
+#define PSP_FRAME_MARKS_MAX	3
+
+#if defined(PLATFORM_PSP) || defined(__psp__)
+static int psp_frame_marks;
+
+static int psp_frame_mark_here (void)
+{
+	return psp_frame_marks < PSP_FRAME_MARKS_MAX;
+}
+#endif
+
 void GL_EndRendering (void)
 {
 	/* Closes the list, waits for the GPU and presents with vsync.
 	 *
-	 * Named for the first three world frames, like the marks in view.c and
-	 * gl_screen.c: a frame that dies AFTER the renderer has returned has no
-	 * line of its own otherwise, and this is where it would die -- the only
-	 * two blocking calls in a frame are sceGuFinish() and sceGuSync() inside
-	 * psp_gu_frame_end(), and a GE that never finishes looks exactly like a
-	 * crash from the outside (the console stops; nothing is written).  The
-	 * difference matters: a crash is a bad pointer, a GE that never
+	 * The marks around psp_gu_frame_end() are the ones that name a death
+	 * here: sceGuFinish() and sceGuSync() are the only two blocking calls
+	 * in a frame, and a GE that never finishes looks exactly like a crash
+	 * from the outside (the console stops; nothing is written).  The
+	 * difference matters -- a crash is a bad pointer, a GE that never
 	 * finishes is a bad command, and they are fixed in different files. */
 #if defined(PLATFORM_PSP) || defined(__psp__)
 	{
-		extern int psp_view_frame_count (void);
 		extern void psp_trace_mark (const char *step);
 
-		if (psp_view_frame_count () < 3)
+		if (psp_frame_mark_here ())
 			psp_trace_mark ("frame: close the draw list and wait for the GE");
 	}
 #endif
@@ -299,13 +326,17 @@ void GL_EndRendering (void)
 
 #if defined(PLATFORM_PSP) || defined(__psp__)
 	{
-		extern int psp_view_frame_count (void);
 		extern void psp_trace_mark (const char *step);
 
 		/* Reached means the GE finished the list and the frame was
 		 * presented -- the list held nothing the hardware chokes on. */
-		if (psp_view_frame_count () < 3)
+		if (psp_frame_mark_here ())
 			psp_trace_mark ("frame: presented");
 	}
+
+	/* One frame, one count, and it is counted here -- see
+	 * psp_frame_mark_here(). */
+	if (psp_frame_marks < PSP_FRAME_MARKS_MAX)
+		psp_frame_marks++;
 #endif
 }

@@ -1744,8 +1744,8 @@ grep -q 'con_trace_step (step, 1)' port/psp/psp_console.c || {
     echo "FAIL: point of a boot breadcrumb"
     exit 1
 }
-grep -q 'psp_trace_mark(x); } while (0)' Quake/gl_screen.c || {
-    echo "FAIL: SCR_MARK still syncs the card per mark"
+grep -q 'if (psp_scr_mark_here ()) {' Quake/gl_screen.c || {
+    echo "FAIL: SCR_MARK is not behind a gate of its own"
     exit 1
 }
 grep -q 'psp_trace_mark(x); } while (0)' Quake/view.c || {
@@ -1763,6 +1763,42 @@ if grep -q 'if (psp_scr_frames < 3 || psp_scr_world_frames < 3) \\' Quake/gl_scr
 fi
 echo "PASS: the per-frame breadcrumbs reach the card at most once per 100 ms,"
 echo "PASS: so the trail costs a frame time, not sixteen."
+
+# ---- and the gate itself has to be able to close ------------------------
+#
+# The round-81 log prints "> scr: begin" 1105 times in a 1500-frame session,
+# sixteen marks a frame, and the heartbeat prices it: "card 23 writes 681 ms"
+# over 39 frames of 36.6 ms.  The gate that was supposed to shut after three
+# frames had two halves, and the half that never closed was the one incremented
+# from `cls.state == ca_connected && r_refdef.drawworld && !con_forcedup` --
+# client state rather than the draw list, which is wrong at boot (the demo loop
+# draws a world with cls.state == 1) and wrong on the CSQC path, which draws
+# through QuakeC and never sets drawworld.  So: the world frame is now asked of
+# the renderer, and there is a budget that no counter can extend.
+grep -q 'psp_gl_world_drawn_this_frame' Quake/gl_screen.c || {
+    echo "FAIL: SCR_MARK decides what a world frame is from client state again"
+    exit 1
+}
+grep -q 'int psp_gl_world_drawn_this_frame (void)' port/psp/gl_shim.c || {
+    echo "FAIL: the shim does not say whether it drew a world polygon this frame"
+    exit 1
+}
+grep -q 'shim_world_prims++;' port/psp/gl_shim.c || {
+    echo "FAIL: nothing counts the world polygons, so the answer is a guess"
+    exit 1
+}
+grep -q 'psp_scr_budget--' Quake/gl_screen.c || {
+    echo "FAIL: SCR_MARK has no budget, so one bad counter floods the card"
+    exit 1
+}
+grep -q 'static int psp_frame_marks;' port/psp/vid_psp.c &&
+  grep -q 'psp_frame_marks++' port/psp/vid_psp.c || {
+    echo "FAIL: the frame marks are still gated on a counter in another file"
+    exit 1
+}
+echo "PASS: the screen's breadcrumbs close after three frames of the run and"
+echo "PASS: three frames of world, are counted by the renderer itself, and are"
+echo "PASS: capped by a budget that cannot be left open."
 
 # ---- and the status bar says which part of itself it died in ------------
 #
