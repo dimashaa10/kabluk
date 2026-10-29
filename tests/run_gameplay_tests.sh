@@ -1876,3 +1876,99 @@ grep -q 'psp_trace_mark(x); } while (0)' Quake/r_alias.c || {
 }
 echo "PASS: the renderer and the alias-model marks use the batched trail: no"
 echo "PASS: memory-stick round trip on a mark that runs every frame."
+
+# ---- the world's lightmap pass is a multiply, not an alpha blend --------
+#
+# r_world.c R_DrawTextureChains(), case 6, draws every map surface a second
+# time with glBlendFunc(GL_ZERO, GL_SRC_COLOR) -- "modulate", the lightmap
+# multiplied into the picture.  shim_apply_blend() had no case for it, so it
+# fell through to the standard alpha blend: the lightmap was painted OVER the
+# surface (flat, pale walls) instead of shading it, and every surface paid a
+# second alpha-blended pass.  The GE's factor for "source*destination" is
+# GU_OTHER_COLOR (pspsdk src/gu/pspgu.h: "dstColor if used for source
+# operand"), and there is no "one"/"zero" factor at all -- GU_ZERO in that
+# header is a stencil operation.
+awk '/^static void shim_apply_blend/,/^}/' port/psp/gl_shim.c |
+    grep -q 'GL_ZERO && dst == GL_SRC_COLOR' || {
+    echo "FAIL: GL_ZERO/GL_SRC_COLOR still falls through to alpha blending,"
+    echo "FAIL: so the lightmap paints over the map instead of multiplying"
+    exit 1
+}
+awk '/^static void shim_apply_blend/,/^}/' port/psp/gl_shim.c |
+    grep -q 'GU_ADD, GU_OTHER_COLOR, GU_FIX, 0, 0' || {
+    echo "FAIL: the modulate case does not use GU_OTHER_COLOR as the source"
+    echo "FAIL: factor, which is the GE's only source*destination"
+    exit 1
+}
+awk '/^static void shim_apply_blend/,/^}/' port/psp/gl_shim.c |
+    grep -q 'GL_SRC_ALPHA && dst == GL_ONE' || {
+    echo "FAIL: additive sprites (GL_SRC_ALPHA, GL_ONE) are alpha blended"
+    exit 1
+}
+awk '/^static void shim_apply_blend/,/^}/' port/psp/gl_shim.c |
+    grep -q 'GU_ZERO' && {
+    echo "FAIL: GU_ZERO is a stencil operation, not a blend factor"
+    exit 1
+}
+echo "PASS: the lightmap pass multiplies (GU_OTHER_COLOR), additive sprites"
+echo "PASS: add, and no stencil operation is used as a blend factor."
+
+# ---- texture boxes are the picture, not four times the picture ----------
+#
+# A 1300x563 model skin was downscaled to 325x140 and then placed in a 512x256
+# power-of-two box: 256 KB of the picture arena for 44 KB of texels.  Three
+# such boxes were the difference between "the arena is full and every menu
+# picture is re-read from the card every frame" and having room.
+grep -q '^static unsigned int TexMgr_PspFloorPow2' Quake/gl_texmgr.c || {
+    echo "FAIL: TexMgr_PspFloorPow2 is gone"
+    exit 1
+}
+awk '/^static byte \*TexMgr_Downscale8/,/^}/' Quake/gl_texmgr.c |
+    grep -q 'nw = TexMgr_PspFloorPow2 (nw);' || {
+    echo "FAIL: the downscaled size is not rounded to the box the shim makes"
+    exit 1
+}
+awk '/^static unsigned int TexMgr_PspFloorPow2/,/^}/' Quake/gl_texmgr.c |
+    grep -q 'if (p \* 10 < n \* 7)' || {
+    echo "FAIL: the 30% guard is gone -- a long thin picture would lose a third"
+    echo "FAIL: of its height and keep the same wide box anyway"
+    exit 1
+}
+echo "PASS: a picture that is already being downscaled also loses the margin"
+echo "PASS: of its power-of-two box, so the arena keeps it."
+
+# ---- the between-frames eviction is a policy, not the safety floor ------
+#
+# Draw_EvictCachePics(2) is the GE-safety floor (a picture drawn two frames ago
+# is out of every submitted batch).  Using it as the POLICY in
+# gu_pictures_breathe() unloaded the menu pages that were on screen, every
+# frame, and every one of them came back from the Memory Stick on the next
+# frame: "img: gfx/a_mmenu/mainmenu1.png ok 240x112" once per frame for the
+# whole session.  Between frames the GE is synced, so the window is the
+# ten-second one.
+awk '/^static void gu_pictures_breathe/,/^}/' port/psp/gu_psp.c |
+    grep -q 'Draw_EvictCachePics(GU_TEX_IDLE_FRAMES);' || {
+    echo "FAIL: the between-frames pass is back to the two-frame safety floor,"
+    echo "FAIL: i.e. it unloads the pages the menu is drawing"
+    exit 1
+}
+awk '/^static void gu_pictures_breathe/,/^}/' port/psp/gu_psp.c |
+    grep -q 'Draw_EvictCachePics(2)' && {
+    echo "FAIL: the safety floor is still used as the eviction policy"
+    exit 1
+}
+awk '/^static int gu_pictures_wanted/,/^}/' port/psp/gu_psp.c |
+    grep -q 'Draw_EvictCachePics(2)' || {
+    echo "FAIL: the in-frame emergency path lost its two-frame safety floor"
+    exit 1
+}
+echo "PASS: only genuinely idle pictures are released between frames, while"
+echo "PASS: the in-frame emergency keeps the two-frame safety floor."
+
+# ---- a refusal is said a few times, not once per frame ------------------
+grep -q 'if (said >= 8)' port/psp/gl_shim.c || {
+    echo "FAIL: the 'no room for a picture' line can be printed on every frame"
+    exit 1
+}
+echo "PASS: the arena-shortage line is capped, so a full picture arena cannot"
+echo "PASS: make the log itself the cost of the frame."

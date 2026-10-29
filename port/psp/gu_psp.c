@@ -158,7 +158,36 @@ static void gu_pictures_breathe (void)
 	if (before >= GU_TEX_ROOM_MIN)
 		return;
 
-	released = Draw_EvictCachePics(2);
+	/* Two frames is the SAFETY floor (a picture drawn two frames ago is out
+	 * of every submitted batch), not a policy: asking for the floor here is
+	 * what turned into a treadmill.  The round-79 log, in game, has this
+	 * line every second frame:
+	 *
+	 *     tex: only 10 KB free in one piece: 3 idle pictures unloaded
+	 *          between frames, 10 KB free now
+	 *
+	 * -- the three released pictures are the pages of the menu that is on
+	 * screen, they are asked for again on the next frame, and asking for
+	 * them means Image_LoadImage() on the memory stick:
+	 *
+	 *     img: gfx/a_mmenu/mainmenu1.png ok 240x112 (3343 bytes)
+	 *     img: gfx/a_main/amain1.bmp ok 128x24 (9270 bytes)
+	 *     img: gfx/a_demos/ademos1.png ok 104x20 (531 bytes)
+	 *
+	 * four to seven of those per frame, every frame, for the whole session.
+	 * That is where the ~95 ms of CPU in "cpu 94.0, ge 57.2" goes: not in
+	 * the renderer, which draws thirty primitives a frame, but in reading
+	 * and decoding pictures that were released a frame ago and are wanted
+	 * again now.  It also explains the 10 KB: the arena is full of textures
+	 * that HAVE no file behind them (WAD lumps, model skins, world textures)
+	 * and can never be released, so the only pictures this loop can find are
+	 * the ones the menu is drawing.
+	 *
+	 * So the between-frames pass uses the same ten-second window as the timer
+	 * in psp_gu_frame_end: it releases what the interface has moved on from,
+	 * and never what it is drawing.  It is called with the GE idle and the
+	 * frame synced, so the safety floor does not apply here at all. */
+	released = Draw_EvictCachePics(GU_TEX_IDLE_FRAMES);
 
 	if (released > 0 && gu_room_logs < 20)
 	{

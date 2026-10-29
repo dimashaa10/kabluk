@@ -1614,6 +1614,62 @@ reason.
 */
 #define TEX_PSP_MAX 512
 
+/*
+================
+TexMgr_PspFloorPow2 -- the power of two gl_shim.c is going to put this picture
+in, or the size itself when using it would cost more than 30% of a side
+
+Downscaling alone is not enough on this hardware, because the GE's texture
+memory is addressed in powers of two and port/psp/gl_shim.c places every
+picture in the smallest power-of-two box that holds it (shim_pot()).  The
+round-79 hardware log shows what that costs for the mod's own artwork:
+
+    tex: progs/v_nail.mdl:frame0 is 1300x563, the GE takes 512 -- scaled to 325x140
+    tex: progs/v_nail.mdl:frame1 ... scaled to 325x140
+    tex: progs/v_shot2.mdl:frame0 is 680x256 ... scaled to 340x128
+    tex: gfx/conback2.lmp is 1280x720 ... scaled to 320x180
+
+325x140 is a 512x256 box: 256 KB of the picture arena for 44 KB of texels.
+340x128 is a 512x128 box.  320x180 is a 512x256 box.  Every one of those
+boxes was taken whole from an arena that then reported
+
+    tex: no room for a 240x112 picture (256x128 box = 64 KB);
+         6132 KB of 6144 KB arena in use, largest free 4 KB
+
+and the pictures that could not fit were decoded from the memory stick again
+on the next frame, and the frame after that -- which is what "6 frames a
+second" looks like from the inside.
+
+Rounding the *already reduced* size down to the power of two the box is made
+of costs one step of resolution (325 -> 256, 140 -> 128) and gives the whole
+margin of the box back to the pool.  Only sizes that lose less than 30% of a
+side are rounded, so a long thin picture (which would lose a third of its
+height) keeps its size and its wide box.
+
+The aspect ratio is not a consideration here and must not be "fixed": the
+engine gives the renderer texture coordinates as fractions of the picture
+(M_ alias skins use 0..1 of the atlas, world surfaces use
+CalcSurfaceExtents over the miptex size), so a smaller atlas is the same
+picture, only coarser.
+================
+*/
+static unsigned int TexMgr_PspFloorPow2 (unsigned int n)
+{
+	unsigned int p = 8;
+
+	if (n < 16)
+		return n;
+
+	while ((p << 1) <= n)
+		p <<= 1;
+
+	/* 7/10 of the size or better, otherwise leave it alone. */
+	if (p * 10 < n * 7)
+		return n;
+
+	return p;
+}
+
 static byte *TexMgr_Downscale8 (byte *data, unsigned int *width, unsigned int *height, int maxdim)
 {
 	unsigned int w = *width, h = *height;
@@ -1640,6 +1696,12 @@ static byte *TexMgr_Downscale8 (byte *data, unsigned int *width, unsigned int *h
 
 	if (nw == w && nh == h)
 		return data;		/* already small enough */
+
+	/* ...and then drop to the box the shim will make for it anyway.  Only
+	 * pictures that were over the GE's limit get here, so the interface's
+	 * own artwork is untouched -- see TexMgr_PspFloorPow2 above. */
+	nw = TexMgr_PspFloorPow2 (nw);
+	nh = TexMgr_PspFloorPow2 (nh);
 
 	out = (byte *)Hunk_AllocName ((int)(nw * nh), "tex_scale");
 	if (!out)

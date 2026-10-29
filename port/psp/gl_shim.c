@@ -1413,8 +1413,32 @@ static int shim_texture_alloc (shim_texture_t *t, int width, int height, int opa
 
 static void shim_texture_memory_short (int width, int height)
 {
-	static int warned;
+	static int warned, said;
 	int potw = shim_pot(width), poth = shim_pot(height);
+
+	/* Say it a few times, then stop.
+	 *
+	 * The picture arena being full is a *steady state* on this console, not
+	 * an event: once the map and its models are in, a picture that does not
+	 * fit is asked for again on the next frame, and the frame after that.
+	 * The round-79 log has this line twenty-two times in one second of play
+	 * -- each one a formatted string written to the memory stick, at a
+	 * moment when the frame is already 155 ms long.  The first eight carry
+	 * every number worth knowing (the box, the arena, the largest free run);
+	 * the ninth says how many followed it and then this stays quiet until
+	 * the run ends. */
+	if (said >= 8)
+	{
+		if (said == 8)
+		{
+			said++;
+			psp_tracef("tex: more pictures did not fit the arena; saying "
+			           "so once here and not again (see the numbers above)");
+		}
+		return;
+	}
+
+	said++;
 
 	/* sceKernelTotalFreeMemSize() is the SYSTEM partition, not our heap: it
 	 * says 752 KB whether we hold 1 MB of pictures or 6, so it explained
@@ -2736,19 +2760,72 @@ void glDisable (GLenum cap)
 	}
 }
 
+/* Turn GL's glBlendFunc() into a GE blend function.
+ *
+ * The GE computes     src * srcFactor  OP  dst * dstFactor
+ * and the factors it has are (src/gu/pspgu.h, "Blending Factor"):
+ *
+ *     GU_OTHER_COLOR (0)   -- the *other* operand's colour: the frame buffer
+ *                             when used as the source factor, the fragment's
+ *                             own colour when used as the destination factor.
+ *                             GU_SRC_COLOR and GU_DST_COLOR are both this same
+ *                             value (the header marks them deprecated).
+ *     GU_SRC_ALPHA / GU_ONE_MINUS_SRC_ALPHA
+ *     GU_DST_ALPHA / GU_ONE_MINUS_DST_ALPHA
+ *     GU_FIX             -- the constant passed as srcfix / destfix
+ *
+ * There is no "one" factor and no "zero" factor: one is GU_FIX 0xFFFFFFFF and
+ * zero is GU_FIX 0.  (GU_ZERO exists in that header, but it is a STENCIL
+ * operation, value 1 -- passing it here would ask for GU_ONE_MINUS_OTHER_COLOR.)
+ *
+ * THE BUG THIS FIXES.  Until round 79 the list below had no case for
+ * GL_ZERO/GL_SRC_COLOR, so the world's lightmap pass fell through to "the
+ * usual" and was drawn as ordinary alpha blending.  That pass is how the map
+ * gets its lighting: r_world.c R_DrawTextureChains(), case 6, draws every
+ * surface once with its miptex and then again like this --
+ *
+ *     glDepthMask (GL_FALSE);
+ *     glEnable (GL_BLEND);
+ *     glBlendFunc (GL_ZERO, GL_SRC_COLOR);        // modulate
+ *     R_DrawLightmapChains ();
+ *
+ * -- the lightmap *multiplied into* the picture.  Alpha-blended instead, a
+ * lightmap that should darken a corner paints a translucent grey over it and
+ * a bright one paints white over it: every surface washes out towards the
+ * lightmap's own colour, the map looks flat and pale, and the pattern of the
+ * lightmap is on screen as if it were a picture.  It also costs a second
+ * full-surface pass with a frame-buffer read for no visual gain.
+ *
+ * GU_OTHER_COLOR as the source factor is exactly GL_SRC_COLOR as the
+ * destination factor: src * dst.  The overbright variant
+ * (GL_DST_COLOR/GL_SRC_COLOR, "2x modulate") cannot be doubled by the GE --
+ * there is no times-two factor -- so it is drawn as one modulate pass, which
+ * is what the non-overbright path above does anyway. */
 static void shim_apply_blend (void)
 {
 	int src = shim_blend_src;
 	int dst = shim_blend_dst;
 
-	/* The handful of combinations the engine actually asks for. */
 	if (src == GL_ONE && dst == GL_ONE)
+		/* additive: src + dst */
 		shim_guBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xFFFFFFFF, 0xFFFFFFFF);
-	else if (src == GL_ONE && dst == GL_ONE_MINUS_SRC_ALPHA)   /* premultiplied */
+	else if (src == GL_ONE && dst == GL_ONE_MINUS_SRC_ALPHA)
+		/* premultiplied: src + dst*(1-a) */
 		shim_guBlendFunc(GU_ADD, GU_FIX, GU_ONE_MINUS_SRC_ALPHA, 0xFFFFFFFF, 0);
-	else if (src == GL_ZERO && dst == GL_SRC_ALPHA)             /* modulate */
-		shim_guBlendFunc(GU_ADD, GU_FIX, GU_SRC_ALPHA, 0xFFFFFFFF, 0);
-	else                                                        /* the usual */
+	else if (src == GL_SRC_ALPHA && dst == GL_ONE)
+		/* additive, scaled by the fragment's alpha: src*a + dst.
+		 * Sprites and particles ask for this and it used to land in
+		 * "the usual" as well, i.e. they were alpha blended. */
+		shim_guBlendFunc(GU_ADD, GU_SRC_ALPHA, GU_FIX, 0, 0xFFFFFFFF);
+	else if ((src == GL_ZERO && dst == GL_SRC_COLOR) ||
+	         (src == GL_DST_COLOR && dst == GL_SRC_COLOR))
+		/* modulate: src * dst  (the world's lightmap pass) */
+		shim_guBlendFunc(GU_ADD, GU_OTHER_COLOR, GU_FIX, 0, 0);
+	else if (src == GL_ZERO && dst == GL_SRC_ALPHA)
+		/* dst * a */
+		shim_guBlendFunc(GU_ADD, GU_FIX, GU_SRC_ALPHA, 0, 0);
+	else
+		/* the usual: src*a + dst*(1-a) */
 		shim_guBlendFunc(GU_ADD, GU_SRC_ALPHA, GU_ONE_MINUS_SRC_ALPHA, 0, 0);
 }
 
