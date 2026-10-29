@@ -1972,3 +1972,50 @@ grep -q 'if (said >= 8)' port/psp/gl_shim.c || {
 }
 echo "PASS: the arena-shortage line is capped, so a full picture arena cannot"
 echo "PASS: make the log itself the cost of the frame."
+
+# ---- the world's texture coordinates are fractions, not texels ----------
+#
+# The engine divides every world surface's texture coordinates by the miptex
+# size (r_brush.c: `s /= fa->texinfo->texture->width`) and hands glTexCoord2f
+# a fraction.  GL takes that as it is.  The GE's transform pipe takes it as it
+# is too -- pspsdk src/gu/pspgu.h, sceGuTexScale: "Only used by the 3D T&L
+# pipe, renders with GU_TRANSFORM_2D are not affected by this", i.e. the 3D
+# pipe's unit is the same 0..1 and the multiplier exists to turn TEXELS into
+# it.  Through mode (2D) has no multiplier and takes texels.
+#
+# The shim multiplied BOTH by the picture size, so a 128-wide miptex was
+# shown tiled 128 times across every wall -- "the textures have the wrong
+# scale" -- and at that minification a map is a moire, not a picture.
+# Interstice-ProQuake does the same as the fix: map polys go to the GE with
+# the engine's own fractions (source/psp/gu_surface.cpp, DrawGLPoly,
+# GU_TEXTURE_32BITF with poly->verts and no scaling).
+grep -q 'shim_u_scale3d' port/psp/gl_shim.c || {
+    echo "FAIL: there is no separate 3D texture-coordinate scale"
+    exit 1
+}
+awk '/^static void shim_emit_world/,/^}/' port/psp/gl_shim.c |
+    grep -q 'cv->u \* shim_u_scale3d' || {
+    echo "FAIL: shim_emit_world still uses the 2D (texel) scale, so every"
+    echo "FAIL: world texture is tiled width times across its surface"
+    exit 1
+}
+awk '/^static void shim_emit_world/,/^}/' port/psp/gl_shim.c |
+    grep -q 'cv->u \* shim_u_scale;' && {
+    echo "FAIL: the texel scale is still applied to world coordinates"
+    exit 1
+}
+awk '/^static void shim_uv_scale_update/,/^}/' port/psp/gl_shim.c |
+    grep -q '(float)t->width / (float)t->potw' || {
+    echo "FAIL: the 3D scale is not width/potw, so a non-power-of-two picture"
+    echo "FAIL: is sampled as if it filled its whole box"
+    exit 1
+}
+awk '/^static void shim_emit_vertex/,/^}/' port/psp/gl_shim.c |
+    grep -q 'shim_current_u \* shim_u_scale' || {
+    echo "FAIL: the 2D path lost its TEXEL coordinates, which is what through"
+    echo "FAIL: mode takes"
+    exit 1
+}
+echo "PASS: the world gets fractions (scaled by width/potw for the box) and"
+echo "PASS: through-mode pictures get texels -- two different units, as the"
+echo "PASS: GE documents them."

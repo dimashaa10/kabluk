@@ -194,7 +194,11 @@ static float          shim_current_u, shim_current_v;
  * picture lives in a 256x128 texture, so the vertex's u is multiplied by
  * 240/256 and its v by 112/128 on the way out.  Kept up to date by
  * shim_uv_scale_update() whenever the bound texture (or its size) changes. */
-static float          shim_u_scale = 1.0f, shim_v_scale = 1.0f;
+/* Texture-coordinate scale, per path.  The two paths need DIFFERENT units and
+ * that difference cost the map its textures for several rounds -- see
+ * shim_uv_scale_update(). */
+static float          shim_u_scale = 1.0f, shim_v_scale = 1.0f;      /* 2D: texels */
+static float          shim_u_scale3d = 1.0f, shim_v_scale3d = 1.0f;  /* 3D: fraction of the box */
 static unsigned int   shim_current_color = 0xFFFFFFFFu;
 
 /* pipeline switches */
@@ -613,11 +617,53 @@ static void shim_uv_scale_update (void)
 	{
 		shim_u_scale = (float)t->width;
 		shim_v_scale = (float)t->height;
+
+		/* ---- and the 3D path needs the OPPOSITE unit ----------------
+		 *
+		 * Every world surface the engine draws divides its own texture
+		 * coordinates by the miptex size (r_brush.c, Mod_PolyForUnlit/
+		 * CalcSurfaceExtents: `s /= tex->width`), i.e. it hands
+		 * glTexCoord2f a FRACTION of the picture.  GL takes fractions
+		 * and the GE's transform pipe takes fractions too -- pspsdk
+		 * src/gu/pspgu.h, sceGuTexScale():
+		 *
+		 *     Set texture scale
+		 *     @note Only used by the 3D T&L pipe, renders with
+		 *           GU_TRANSFORM_2D are not affected by this.
+		 *     @param u - Scalar to multiply U coordinate with
+		 *
+		 * A *multiplier* of one and only for the 3D pipe means the 3D
+		 * pipe's native unit is the same as GL's: 0..1 across the
+		 * texture.  Through mode (2D) has no such multiplier and takes
+		 * texels.  Passing the 2D scale to the 3D pipe is what the map
+		 * showed for two rounds: u = 1.0 became u = 128.0 for a 128-wide
+		 * miptex, so every wall showed the texture repeated 128 times
+		 * -- "the textures have the wrong scale" -- and at that
+		 * minification the result is a moire of texels, not a picture.
+		 *
+		 * Interstice-ProQuake draws map polys with the engine's own
+		 * fractions and no scaling at all (source/psp/gu_surface.cpp,
+		 * DrawGLPoly: GU_TEXTURE_32BITF | GU_VERTEX_32BITF over
+		 * poly->verts), which is the same statement from the reference
+		 * side.
+		 *
+		 * The one adjustment the 3D path does need is the box: a
+		 * non-power-of-two picture lives in the top-left corner of a
+		 * larger box, and 0..1 means the WHOLE box.  So the 3D scale is
+		 * width/potw -- the same ratio the engine's own TEXPREF_PAD code
+		 * uses for pictures (gl_draw.c: gl.sh = width /
+		 * TexMgr_PadConditional(width)).  For a power-of-two texture,
+		 * which is every miptex the GE will meet, that ratio is 1.0 and
+		 * nothing changes. */
+		shim_u_scale3d = (float)t->width / (float)t->potw;
+		shim_v_scale3d = (float)t->height / (float)t->poth;
 	}
 	else
 	{
 		shim_u_scale = 1.0f;
 		shim_v_scale = 1.0f;
+		shim_u_scale3d = 1.0f;
+		shim_v_scale3d = 1.0f;
 	}
 }
 
@@ -2058,8 +2104,12 @@ static int          shim_3d_logged;
  * edge AND on the plane.  Clip, then let the GE transform and rasterise. */
 static void shim_emit_world (shim_vertex_t *out, const r_clip_vertex_t *cv)
 {
-	out->u = cv->u * shim_u_scale;
-	out->v = cv->v * shim_v_scale;
+	/* The 3D scale, not the 2D one: the GE's transform pipe takes texture
+	 * coordinates as a fraction of the picture (pspsdk sceGuTexScale is the
+	 * multiplier that would convert texels into that unit, and it says it
+	 * only applies to the 3D pipe).  See shim_uv_scale_update(). */
+	out->u = cv->u * shim_u_scale3d;
+	out->v = cv->v * shim_v_scale3d;
 	out->color = cv->color;
 	out->x = cv->x;
 	out->y = cv->y;
