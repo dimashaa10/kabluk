@@ -1910,6 +1910,59 @@ echo "PASS: an opaque picture with at most 256 colours is uploaded as 8-bit"
 echo "PASS: indices plus a CLUT, half the pool; transparency, extra colours,"
 echo "PASS: lightmaps and tiny boxes keep the 16-bit path."
 
+# ---- and the frame says where its own time went ------------------------
+#
+# The round-84 log has frames of the loaded map at 185 ms with "ge 0.1" and
+# 2223 draws submitted.  gu_t_cpu_us runs from psp_gu_frame_begin() to
+# sceGuFinish(), and in GU_DIRECT mode a command write blocks when the GE's
+# FIFO is full -- so a slow GE is counted as cpu, and "cpu 176, ge 0.1" cannot
+# say whether the time is in the engine, in the shim or in a GE that pushes
+# back.  The answer has to be measured, not guessed: buckets, printed.
+grep -q 'SHIM_PROF_SCENE' port/psp/gl_shim.c || {
+    echo "FAIL: the frame is still one number, so the next log cannot say where"
+    echo "FAIL: the 176 ms goes"
+    exit 1
+}
+grep -q 'psp_gl_shim_prof_add (SHIM_PROF_SCENE_BUCKET' Quake/gl_rmain.c || {
+    echo "FAIL: R_RenderScene is not in the profile, so the engine's own share"
+    echo "FAIL: of the frame is invisible"
+    exit 1
+}
+grep -q 'shim_prof_us\[SHIM_PROF_DRAW\] += SHIM_PROF_NOW () - prof_t0' port/psp/gl_shim.c || {
+    echo "FAIL: sceGuDrawArray is not timed, so GE back-pressure through the"
+    echo "FAIL: command FIFO cannot be told apart from CPU work"
+    exit 1
+}
+grep -q 'prof: frame %u, scene' port/psp/gl_shim.c || {
+    echo "FAIL: the profile is collected and never printed"
+    exit 1
+}
+# And the texture cache is not thrown away on every picture switch.
+grep -q 'if (data_changed)' port/psp/gl_shim.c || {
+    echo "FAIL: TEX_FLUSH is still sent on every bind, which invalidates the"
+    echo "FAIL: GE's texture cache on every picture switch"
+    exit 1
+}
+awk '/static void shim_upload_bound_texture/,/^}/' port/psp/gl_shim.c > /tmp/upl.txt
+grep -q 'shim_guTexFlush' /tmp/upl.txt || {
+    echo "FAIL: the flush is gone even for a texture whose texels just changed"
+    exit 1
+}
+grep -q 't->dirty = 1;' /tmp/upl.txt && {
+    echo "FAIL: the upload path clears dirty again, so a re-uploaded picture"
+    echo "FAIL: is never written back to memory"
+    exit 1
+}
+awk '/^void glTexImage2D/,/^}/' port/psp/gl_shim.c > /tmp/teximg.txt
+grep -q 't->dirty = 1;' /tmp/teximg.txt || {
+    echo "FAIL: a picture re-uploaded into a reused block does not mark itself"
+    echo "FAIL: dirty, so its texels may never reach memory"
+    exit 1
+}
+echo "PASS: the frame is split into scene / world flush / texture state / draw"
+echo "PASS: / texels buckets, and the GE's texture cache is only invalidated"
+echo "PASS: when a picture's texels actually changed."
+
 # ---- and the status bar says which part of itself it died in ------------
 #
 # The round-77 log ends on "scr: tileclear done" with "scr: sbar done" never

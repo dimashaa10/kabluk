@@ -1902,8 +1902,25 @@ void R_DrawTracers(void)
 R_RenderScene
 ================
 */
+/* The engine's own bucket in the shim's frame profiler (port/psp/gl_shim.c,
+ * SHIM_PROF_SCENE).
+ *
+ * The round-84 log says a frame of the loaded map is 176 ms of "cpu" with
+ * "ge 0.1", and the heartbeat cannot say whether that is the engine, the shim
+ * or a GE that pushes back through the command FIFO.  R_RenderScene is the
+ * whole world: setup, sky, surfaces, entities, water, dlights.  Timing it here
+ * splits the frame in one number, and the next log answers the question. */
+#if defined(PLATFORM_PSP) || defined(__psp__)
+extern unsigned int sceKernelGetSystemTimeLow (void);
+extern void psp_gl_shim_prof_add (int bucket, unsigned int us);
+#define SHIM_PROF_SCENE_BUCKET 0
+#endif
+
 void R_RenderScene (void)
 {
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	unsigned int prof_t0 = sceKernelGetSystemTimeLow ();
+#endif
 	currententity = &r_worldentity;
 	RENDER_MARK("scene: setup");
 	R_SetupScene (); //johnfitz -- this does everything that should be done once per call to RenderScene
@@ -1959,6 +1976,11 @@ void R_RenderScene (void)
 
 	TP_DrawLocsWithWirePoints(); // woods #locext
 	LOC_ShowLocs(); // woods #locext
+
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	psp_gl_shim_prof_add (SHIM_PROF_SCENE_BUCKET,
+	                       sceKernelGetSystemTimeLow () - prof_t0);
+#endif
 }
 
 static GLuint r_scaleview_texture;

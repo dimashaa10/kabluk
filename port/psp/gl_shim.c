@@ -246,6 +246,58 @@ static unsigned int   shim_frame_batches;   /* sceGuDrawArray calls actually sen
  * from the draw itself rather than from client state. */
 static unsigned int   shim_world_prims;
 
+/* ---- where the frame's CPU time goes ------------------------------------
+ *
+ * The round-84 log leaves one number unexplained, and it is the only one that
+ * matters:
+ *
+ *     gl: frame 600, 2223 draws in 528 batches, 11634 vertices ...
+ *     run: f 640 state 2, ..., 185.5 ms/frame over 11
+ *          (cpu 176.0, ge 0.1, vblank 9.4)
+ *
+ * 176 ms of "cpu" against 0.1 ms of "ge" cannot both be true of a frame that
+ * submitted 2223 primitives: gu_t_cpu_us is measured from psp_gu_frame_begin()
+ * to sceGuFinish(), and in GU_DIRECT mode a command write blocks when the GE's
+ * FIFO is full -- so a slow GE shows up as cpu, not as ge.  "cpu 176" therefore
+ * means "the frame took 176 ms somewhere between opening the list and finishing
+ * it", and the heartbeat cannot say where.
+ *
+ * So each frame is now split into buckets, in microseconds.  Two of them are
+ * ours (the shim's world flush and its draw array), two are the engine's
+ * (R_RenderScene), and one is picture uploads.  Reset in psp_gl_shim_begin_frame,
+ * printed once every 120 frames next to the draw counts.
+ *
+ * This is a measurement, not a guess about a fix: if the time is inside
+ * sceGuDrawArray() it is the GE pushing back through the FIFO and the answer is
+ * fewer, bigger primitives; if it is in the scene the answer is in R_*; if it is
+ * in textures it is the announce path.  The next log says which. */
+#define SHIM_PROF_BUCKETS   5
+enum {
+	SHIM_PROF_SCENE = 0,     /* R_RenderScene, added by gl_rmain.c            */
+	SHIM_PROF_FLUSH,         /* shim_flush_3d: clip + emit for the world      */
+	SHIM_PROF_TEX,           /* shim_upload_bound_texture: GE texture state   */
+	SHIM_PROF_DRAW,          /* sceGuDrawArray + dcache writeback             */
+	SHIM_PROF_PIXELS         /* glTexImage2D/glTexSubImage2D: texel conversion */
+};
+
+#if defined(PLATFORM_PSP) || defined(__psp__)
+extern unsigned int sceKernelGetSystemTimeLow (void);
+#define SHIM_PROF_NOW()	sceKernelGetSystemTimeLow ()
+#else
+#define SHIM_PROF_NOW()	0u
+#endif
+
+static unsigned int   shim_prof_us[SHIM_PROF_BUCKETS];
+static unsigned int   shim_prof_texflush;   /* TEX_FLUSH+TEX_SYNC pairs a frame */
+
+/* For the engine's own bucket: R_RenderScene cannot time itself into a static
+ * of this file, so it hands the microseconds over. */
+void psp_gl_shim_prof_add (int bucket, unsigned int us)
+{
+	if (bucket >= 0 && bucket < SHIM_PROF_BUCKETS)
+		shim_prof_us[bucket] += us;
+}
+
 /* Draw tracer.
  *
  * The screen has been showing large pale wedges across the whole panel since
@@ -483,6 +535,8 @@ static void shim_batch_add (int prim, unsigned int texture, shim_vertex_t *v,
 
 static void shim_batch_flush (void)
 {
+	unsigned int prof_t0 = SHIM_PROF_NOW ();
+
 	if (shim_batch_n > 0 && shim_batch_v)
 	{
 		/* THE LINE THAT WAS MISSING.
@@ -529,6 +583,10 @@ static void shim_batch_flush (void)
 
 	shim_batch_n = 0;
 	shim_batch_v = NULL;
+
+	/* Everything above -- the writeback, the matrices, the draw itself.  A
+	 * batch that was empty costs the two clock reads and nothing else. */
+	shim_prof_us[SHIM_PROF_DRAW] += SHIM_PROF_NOW () - prof_t0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1741,9 +1799,14 @@ static void shim_texture_memory_short (int width, int height)
 static void shim_upload_bound_texture (void)
 {
 	shim_texture_t *t = shim_texture_for(shim_texture_bound, 1);
+	unsigned int prof_t0 = SHIM_PROF_NOW ();
+	int data_changed = 0;
 
 	if (!t || !t->pixels)
+	{
+		shim_prof_us[SHIM_PROF_TEX] += SHIM_PROF_NOW () - prof_t0;
 		return;
+	}
 
 	if (t->dirty)
 	{
@@ -1751,6 +1814,7 @@ static void shim_upload_bound_texture (void)
 		 * without the writeback it samples stale bytes. */
 		sceKernelDcacheWritebackRange(t->pixels, (unsigned int)t->bytes);
 		t->dirty = 0;
+		data_changed = 1;
 
 		/* The bytes behind the address the GE is holding just changed,
 		 * so whatever it cached about this texture is worthless. */
@@ -1769,7 +1833,10 @@ static void shim_upload_bound_texture (void)
 	    shim_tex_announced_potw == t->potw &&
 	    shim_tex_announced_poth == t->poth &&
 	    shim_tex_announced_tbw == t->tbw)
+	{
+		shim_prof_us[SHIM_PROF_TEX] += SHIM_PROF_NOW () - prof_t0;
 		return;
+	}
 
 	/* Unswizzled: the engine's pictures are not power-of-two, and only
 	 * swizzled textures have to be. */
@@ -1789,9 +1856,24 @@ static void shim_upload_bound_texture (void)
 	 * (pspsdk src/gu/sceGuTexFlush.c: one TEX_FLUSH command).  Without it
 	 * the GE keeps sampling whatever it cached from that address, which is
 	 * at least a frame of the previous picture and at worst the zeroes the
-	 * block was allocated with. */
-	shim_guTexFlush();
-	shim_guTexSync();
+	 * block was allocated with.
+	 *
+	 * It is sent only when the texels really changed, and that is a
+	 * correction of its own (round 84).  pspgu.h documents TEX_FLUSH as the
+	 * command that invalidates the texture CACHE, and a frame of a map binds
+	 * its textures several hundred times: the round-84 log counts 528
+	 * batches for 2223 draws.  Sending it on every announcement threw the
+	 * GE's texture cache away on every picture switch, so every surface
+	 * refetched its texture from main memory.  A bind of a different
+	 * picture needs TexMode/TexImage/TexFilter (the address and the format
+	 * changed, which the pipeline already knows); it does not need the cache
+	 * thrown away. */
+	if (data_changed)
+	{
+		shim_guTexFlush();
+		shim_guTexSync();
+		shim_prof_texflush++;
+	}
 
 	shim_tex_announced_id = shim_texture_bound;
 	shim_tex_announced_pixels = t->pixels;
@@ -1803,6 +1885,8 @@ static void shim_upload_bound_texture (void)
 	shim_tex_announced_palette = (t->psm == GU_PSM_T8 ?
 	                              (const void *)shim_palette_of(t) : NULL);
 	shim_tex_state_valid = 1;
+
+	shim_prof_us[SHIM_PROF_TEX] += SHIM_PROF_NOW () - prof_t0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -2629,7 +2713,14 @@ void glEnd (void)
 
 	if (shim_clipping)
 	{
+		/* The engine's own polygon work for the world, from the shim's
+		 * side: clipping, emitting and the batch append.  See the note on
+		 * SHIM_PROF_* -- a frame of this map is 176 ms of somebody's time
+		 * and this bucket is one of the candidates. */
+		unsigned int prof_t0 = SHIM_PROF_NOW ();
+
 		shim_flush_3d();
+		shim_prof_us[SHIM_PROF_FLUSH] += SHIM_PROF_NOW () - prof_t0;
 		shim_vertex_count = 0;
 		return;
 	}
@@ -3304,6 +3395,7 @@ void glTexImage2D (GLenum target, GLint level, GLint internalFormat,
                    GLenum format, GLenum type, const GLvoid *pixels)
 {
 	shim_texture_t *t;
+	unsigned int prof_t0 = SHIM_PROF_NOW ();
 	int row_bytes;
 	int t8 = 0;
 
@@ -3373,6 +3465,20 @@ void glTexImage2D (GLenum target, GLint level, GLint internalFormat,
 	                row_bytes, format);
 	shim_edge_extend(t);
 	shim_uv_scale_update();
+
+	/* The texels just changed, whether or not the block was reused: this is
+	 * what makes the next bind write the CPU cache back and invalidate the
+	 * GE's texture cache.  It used to be set only by the allocation path,
+	 * which is enough for a block that is allocated fresh and wrong for one
+	 * that is reused at the same size -- a reloaded picture or a lightmap
+	 * block would have kept whatever the GE had cached. */
+	t->dirty = 1;
+
+	/* Converting texels is real work -- the 8-bit scan and the write of the
+	 * box -- and it happens inside the frame when a lightmap or a menu page
+	 * is reloaded.  Counted here so the next log can tell it apart from the
+	 * drawing. */
+	shim_prof_us[SHIM_PROF_PIXELS] += SHIM_PROF_NOW () - prof_t0;
 }
 
 /* Turn an 8-bit picture back into a 16-bit one.
@@ -3619,6 +3725,26 @@ void psp_gl_shim_end_frame (void)
 	if (shim_frames == 60 || (shim_frames % 600) == 0)
 		psp_gl_shim_texture_report();
 
+	/* Where the frame went, in tenths of a millisecond -- see SHIM_PROF_*.
+	 * Every frame of this port writes one of these lines only every 120th
+	 * time, and the numbers are per frame, so it costs two clock reads per
+	 * bucket and no card traffic unless the line is printed. */
+	if (shim_frames <= 3 || (shim_frames % 120) == 0)
+		psp_tracef("prof: frame %u, scene %u.%u ms, world flush %u.%u, textures "
+		           "state %u.%u, draw %u.%u, texels %u.%u, %u texture flushes",
+		           shim_frames,
+		           shim_prof_us[SHIM_PROF_SCENE] / 1000,
+		           (shim_prof_us[SHIM_PROF_SCENE] % 1000) / 100,
+		           shim_prof_us[SHIM_PROF_FLUSH] / 1000,
+		           (shim_prof_us[SHIM_PROF_FLUSH] % 1000) / 100,
+		           shim_prof_us[SHIM_PROF_TEX] / 1000,
+		           (shim_prof_us[SHIM_PROF_TEX] % 1000) / 100,
+		           shim_prof_us[SHIM_PROF_DRAW] / 1000,
+		           (shim_prof_us[SHIM_PROF_DRAW] % 1000) / 100,
+		           shim_prof_us[SHIM_PROF_PIXELS] / 1000,
+		           (shim_prof_us[SHIM_PROF_PIXELS] % 1000) / 100,
+		           shim_prof_texflush);
+
 	if (shim_frames <= 3 || (shim_frames % 120) == 0)
 		psp_tracef("gl: frame %u, %u draws in %u batches, %u vertices, %u screen-size draws, "
 		           "%d KB of textures, ring %u of %d, scissor %s %d,%d %dx%d, "
@@ -3680,6 +3806,14 @@ void psp_gl_shim_begin_frame (void)
 	shim_frame_verts = 0;
 	shim_frame_batches = 0;
 	shim_world_prims = 0;
+
+	{
+		int i;
+
+		for (i = 0; i < SHIM_PROF_BUCKETS; i++)
+			shim_prof_us[i] = 0;
+		shim_prof_texflush = 0;
+	}
 
 	/* gu_psp.c synced the previous frame before it swapped, so the GE is
 	 * finished with every slice it was given last time. */
