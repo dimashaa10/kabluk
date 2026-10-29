@@ -2285,7 +2285,7 @@ grep -q 'SHIM_PROF_SKY' port/psp/gl_shim.c || {
     echo "FAIL: the profile has no sky bucket"
     exit 1
 }
-grep -q '#define SHIM_PROF_BUCKETS   6' port/psp/gl_shim.c || {
+grep -q '#define SHIM_PROF_BUCKETS   7' port/psp/gl_shim.c || {
     echo "FAIL: the bucket array was not grown, so the sky's microseconds are"
     echo "FAIL: written past the end of it"
     exit 1
@@ -2301,7 +2301,7 @@ grep -q '#define SKY_PROF_BUCKET 5' Quake/gl_sky.c || {
     echo "FAIL: else (see the SHIM_PROF_* enum in port/psp/gl_shim.c)"
     exit 1
 }
-[ "$(awk '/^enum \{$/,/^\};/' port/psp/gl_shim.c | grep -c '^	SHIM_PROF_')" -eq 6 ] || {
+[ "$(awk '/^enum \{$/,/^\};/' port/psp/gl_shim.c | grep -c '^	SHIM_PROF_')" -eq 7 ] || {
     echo "FAIL: the bucket enum does not have the six entries the numbers assume"
     exit 1
 }
@@ -2379,3 +2379,116 @@ grep -q '^#define Sky_TraceConfig()' Quake/gl_sky.c || {
 }
 echo "PASS: everything the sky hands to the port is declared before its first"
 echo "PASS: use, which is what the real compiler stopped on."
+
+# ---- the composed matrix is built per matrix change, not per vertex ------
+#
+# shim_emit_vertex() needs modelview*projection: the whole of it for the 2D
+# path, one row of it for the world (w, the near-plane distance).  It used to
+# compose the two matrices INSIDE the per-vertex function -- sixty-four
+# multiply-adds for every vertex the engine drew, thousands of them a frame
+# once the scrolling sky is on screen (round-85 log: "sky 135.2 ms" of a
+# 147.1 ms scene).
+grep -q 'static const shim_matrix_t \*shim_mvp_get (void)' port/psp/gl_shim.c || {
+    echo "FAIL: there is no cached modelview*projection"
+    exit 1
+}
+awk '/^static void shim_emit_vertex/,/^}/' port/psp/gl_shim.c > /tmp/emit.txt
+grep -q 'shim_mvp_get ();' /tmp/emit.txt || {
+    echo "FAIL: the vertex path does not use the cached matrix"
+    exit 1
+}
+grep -q 'shim_multiply(&mvp, &shim_projection, &shim_modelview)' /tmp/emit.txt && {
+    echo "FAIL: the vertex path still composes the matrix per vertex"
+    exit 1
+}
+# Every writer of a matrix has to invalidate the cache, or geometry is placed
+# with the matrix of an earlier frame.  The list is the eight gl*() entry
+# points that write one; glPushMatrix only touches the stack.
+for fn in glLoadIdentity glLoadMatrixf glMultMatrixf glPopMatrix glOrtho glTranslatef glScalef glRotatef; do
+    awk "/^void $fn /,/^}/" port/psp/gl_shim.c > /tmp/mw.txt
+    grep -q 'shim_matrix_touch ();' /tmp/mw.txt || {
+        echo "FAIL: $fn writes a matrix without invalidating the cached"
+        echo "FAIL: modelview*projection, so the next vertex is placed with a"
+        echo "FAIL: stale matrix"
+        exit 1
+    }
+done
+echo "PASS: modelview*projection is composed once per matrix change instead of"
+echo "PASS: once per vertex, and every function that writes a matrix says so."
+
+# ---- and the sky says how much of it there is --------------------------
+grep -q 'SHIM_PROF_SKY_FLAT' port/psp/gl_shim.c || {
+    echo "FAIL: the sky is still one number, with no split between the flat"
+    echo "FAIL: fill and the textured layers"
+    exit 1
+}
+grep -q 'psp_tracef("prof: frame %u, scene %u.%u ms (sky %u.%u: flat %u.%u, ' port/psp/gl_shim.c || {
+    echo "FAIL: the profile line does not print the sky's counters"
+    exit 1
+}
+for c in psp_sky_faces psp_sky_quads psp_sky_draws; do
+    grep -q "^int $c;" port/psp/gl_shim.c || {
+        echo "FAIL: $c is not defined in the shim"
+        exit 1
+    }
+    grep -q "extern int $c;" Quake/gl_sky.c || {
+        echo "FAIL: $c is not declared in gl_sky.c"
+        exit 1
+    }
+    awk '/^void psp_gl_shim_begin_frame/,/^}/' port/psp/gl_shim.c |
+        grep -q "$c = 0;" || {
+        echo "FAIL: $c is never reset, so every frame reports the sum of all"
+        echo "FAIL: the frames before it"
+        exit 1
+    }
+done
+awk '/^static int Sky_DrawFaceLayer/,/^}/' Quake/gl_sky.c | grep -q 'psp_sky_quads += drawn;' || {
+    echo "FAIL: the sky does not count the quads it hands to the GE"
+    exit 1
+}
+# The subdivision is NOT reduced for the console: the log's vertex count says
+# the sky's quads are not the cost (see the comment on r_sky_quality), and
+# changing how the clouds look on a guess is how a port starts looking wrong.
+grep -q 'cvar_t r_sky_quality = {"r_sky_quality", "12", CVAR_NONE};' Quake/gl_sky.c || {
+    echo "FAIL: someone changed the sky subdivision on a guess -- see the"
+    echo "FAIL: comment above r_sky_quality for the arithmetic that rules the"
+    echo "FAIL: quads out as the cost"
+    exit 1
+}
+echo "PASS: the sky reports its faces, quads and draws next to its milliseconds,"
+echo "PASS: the flat fill is separated from the layers, and the subdivision was"
+echo "PASS: left alone because the vertex count rules it out."
+
+# ---- the sky's clipper does not copy its work arrays onto the stack -----
+#
+# Sky_ClipPoly recursed with ~2 KB of arrays per call (dists[64], sides[64],
+# newv[2][64]), once per sky SURFACE of the map and up to six levels deep:
+# several megabytes of stack traffic per frame on a map with a few hundred sky
+# surfaces, through the 249 KB of stack the log reports.  Same algorithm now,
+# but one scratch set per recursion level, outside the frame.
+grep -q 'static sky_clip_scratch_t sky_clip_scratch\[SKY_CLIP_STAGES\];' Quake/gl_sky.c || {
+    echo "FAIL: Sky_ClipPoly is back to ~2 KB of arrays per call"
+    exit 1
+}
+awk '/^void Sky_ClipPoly/,/^}/' Quake/gl_sky.c > /tmp/clip.txt
+grep -q 'sky_clip_scratch_t \*scratch' /tmp/clip.txt || {
+    echo "FAIL: Sky_ClipPoly does not take its arrays from the scratch"
+    exit 1
+}
+grep -E '^\t(float|int|vec3_t)\s+(dists|sides|newv)' /tmp/clip.txt && {
+    echo "FAIL: Sky_ClipPoly still declares its work arrays on the stack"
+    exit 1
+}
+# The scratch is indexed by recursion level, so a level cannot see the buffer
+# of the level below it.
+grep -q 'stage < SKY_CLIP_STAGES ?' /tmp/clip.txt || {
+    echo "FAIL: the scratch is not per recursion level (or is not bounds"
+    echo "FAIL: checked), so one level can overwrite another's polygon"
+    exit 1
+}
+grep -q 'Sky_ClipPoly (newc\[0\], newv\[0\]\[0\], stage+1);' /tmp/clip.txt || {
+    echo "FAIL: the recursion changed shape"
+    exit 1
+}
+echo "PASS: the sky's clipper no longer walks the stack once per surface with"
+echo "PASS: 2 KB of work arrays per level."

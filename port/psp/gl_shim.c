@@ -271,15 +271,25 @@ static unsigned int   shim_world_prims;
  * sceGuDrawArray() it is the GE pushing back through the FIFO and the answer is
  * fewer, bigger primitives; if it is in the scene the answer is in R_*; if it is
  * in textures it is the announce path.  The next log says which. */
-#define SHIM_PROF_BUCKETS   6
+#define SHIM_PROF_BUCKETS   7
 enum {
 	SHIM_PROF_SCENE = 0,     /* R_RenderScene, added by gl_rmain.c            */
 	SHIM_PROF_FLUSH,         /* shim_flush_3d: clip + emit for the world      */
 	SHIM_PROF_TEX,           /* shim_upload_bound_texture: GE texture state   */
 	SHIM_PROF_DRAW,          /* sceGuDrawArray + dcache writeback             */
 	SHIM_PROF_PIXELS,        /* glTexImage2D/glTexSubImage2D: texel conversion */
-	SHIM_PROF_SKY            /* Sky_DrawSky, added by gl_sky.c                 */
+	SHIM_PROF_SKY,           /* Sky_DrawSky, added by gl_sky.c                 */
+	SHIM_PROF_SKY_FLAT       /* ... of which: the flat fill and the sky bounds */
 };
+
+/* The sky's own counters, filled in by Quake/gl_sky.c and printed below: the
+ * round-85 log could only say "sky 135.2 ms", and 135 ms is either a few
+ * hundred thousand vertices or a handful drawn very badly.  These three
+ * numbers say which without another guess: quads of a face that passed the
+ * bounds test, faces drawn, glBegin/glEnd pairs. */
+int psp_sky_faces;
+int psp_sky_quads;
+int psp_sky_draws;
 
 #if defined(PLATFORM_PSP) || defined(__psp__)
 extern unsigned int sceKernelGetSystemTimeLow (void);
@@ -618,6 +628,43 @@ static void shim_multiply (shim_matrix_t *out, const shim_matrix_t *a, const shi
 static shim_matrix_t *shim_current_matrix (void)
 {
 	return (shim_matrix_mode == GL_PROJECTION) ? &shim_projection : &shim_modelview;
+}
+
+/* ---- the composed matrix, computed when the matrices change --------------
+ *
+ * shim_emit_vertex() needs modelview*projection -- the whole of it for the 2D
+ * path (x and y), one row of it for the world (w, the near-plane distance).
+ * It used to compose the two matrices *per vertex*: sixteen multiply-adds per
+ * output element, sixty-four in all, for every vertex the engine drew, and a
+ * frame of the round-85 log has thousands of them (the scrolling sky alone
+ * hands over a few thousand).  The matrices themselves change once a frame in
+ * R_SetupGL and once per entity -- not per vertex -- so the composition is
+ * cached and rebuilt only when one of its inputs is written.
+ *
+ * The version counter is bumped by every gl*() entry point that writes a
+ * matrix (they all close the pending batch first, so the bump sits next to
+ * that).  Missing one would mean vertices transformed by a stale matrix, i.e.
+ * geometry in the wrong place, so this is a list to keep exhaustive rather
+ * than a heuristic. */
+static unsigned int  shim_matrix_ver;      /* bumped on every matrix write */
+static shim_matrix_t shim_mvp;             /* projection * modelview       */
+static int           shim_mvp_ver = -1;    /* -1: never built              */
+
+static void shim_matrix_touch (void)
+{
+	shim_matrix_ver++;
+}
+
+static const shim_matrix_t *shim_mvp_get (void)
+{
+	if (shim_mvp_ver != (int)shim_matrix_ver)
+	{
+		shim_mvp = shim_modelview;
+		shim_multiply(&shim_mvp, &shim_projection, &shim_modelview);
+		shim_mvp_ver = (int)shim_matrix_ver;
+	}
+
+	return &shim_mvp;
 }
 
 /* ---- the GE vertex ring ----
@@ -1909,7 +1956,7 @@ static int shim_perspective (void)
 
 static void shim_emit_vertex (float x, float y, float z)
 {
-	shim_matrix_t mvp;
+	const shim_matrix_t *mvp;
 	float cx, cy, cw, sx, sy;
 
 	if (shim_vertex_count >= SHIM_MAX_VERTICES)
@@ -1922,10 +1969,9 @@ static void shim_emit_vertex (float x, float y, float z)
 		 * pipeline used to do here -- the full transform, the clip
 		 * test on four components, the divide, the viewport map -- is
 		 * the GE's job now (shim_emit_world, shim_ge3d_matrices). */
-		mvp = shim_modelview;
-		shim_multiply(&mvp, &shim_projection, &shim_modelview);
+		mvp = shim_mvp_get ();
 
-		cw = mvp.m[3] * x + mvp.m[7] * y + mvp.m[11] * z + mvp.m[15];
+		cw = mvp->m[3] * x + mvp->m[7] * y + mvp->m[11] * z + mvp->m[15];
 
 		/* Perspective: the vertex is parked as the WORLD coordinate the
 		 * engine gave us, plus the one number the near-plane clipper
@@ -1950,11 +1996,10 @@ static void shim_emit_vertex (float x, float y, float z)
 		return;
 	}
 
-	mvp = shim_modelview;
-	shim_multiply(&mvp, &shim_projection, &shim_modelview);
+	mvp = shim_mvp_get ();
 
-	cx = mvp.m[0] * x + mvp.m[4] * y + mvp.m[8]  * z + mvp.m[12];
-	cy = mvp.m[1] * x + mvp.m[5] * y + mvp.m[9]  * z + mvp.m[13];
+	cx = mvp->m[0] * x + mvp->m[4] * y + mvp->m[8]  * z + mvp->m[12];
+	cy = mvp->m[1] * x + mvp->m[5] * y + mvp->m[9]  * z + mvp->m[13];
 
 	/* Orthogonal: w is 1, and the depth of a 2D canvas is whatever the
 	 * engine put in z (all of it is at the same depth, so the GE compares
@@ -2463,12 +2508,11 @@ static r_clip_plane_t shim_clip_planes[SHIM_CLIP_PLANES];
  * glBegin/glEnd pair, so once per primitive is once per matrix. */
 static void shim_clip_planes_update (void)
 {
-	shim_matrix_t mvp;
+	const shim_matrix_t *mvp;
 	float *m;
 
-	mvp = shim_modelview;
-	shim_multiply(&mvp, &shim_projection, &shim_modelview);
-	m = mvp.m;
+	mvp = shim_mvp_get ();
+	m = mvp->m;
 
 	/* left: w + x >= 0, right: w - x >= 0, bottom: w + y, top: w - y.
 	 * Column-major, so the row whose elements are used for the x coordinate
@@ -2838,6 +2882,8 @@ void glMatrixMode (GLenum mode)
 
 void glLoadIdentity (void)
 {
+	shim_matrix_touch ();
+
 	/* A queued 3D batch belongs to the matrices that were in force when its
 	 * vertices were produced, and the GE reads them from its own registers
 	 * at draw time -- so changing a matrix has to close the batch.  Cheap:
@@ -2849,6 +2895,7 @@ void glLoadIdentity (void)
 
 void glLoadMatrixf (const GLfloat *m)
 {
+	shim_matrix_touch ();
 	shim_batch_flush();
 	memcpy(shim_current_matrix()->m, m, sizeof(float) * 16);
 }
@@ -2857,6 +2904,7 @@ void glMultMatrixf (const GLfloat *m)
 {
 	shim_matrix_t t, *cur = shim_current_matrix();
 
+	shim_matrix_touch ();
 	shim_batch_flush();
 	memcpy(t.m, m, sizeof(t.m));
 	shim_multiply(cur, cur, &t);
@@ -2876,6 +2924,7 @@ void glPushMatrix (void)
 
 void glPopMatrix (void)
 {
+	shim_matrix_touch ();
 	shim_batch_flush();
 	if (shim_matrix_mode == GL_PROJECTION)
 	{
@@ -2891,6 +2940,7 @@ void glOrtho (GLdouble left, GLdouble right, GLdouble bottom, GLdouble top,
 {
 	shim_matrix_t ortho, *cur = shim_current_matrix();
 
+	shim_matrix_touch ();
 	shim_batch_flush();
 
 	memset(ortho.m, 0, sizeof(ortho.m));
@@ -2907,6 +2957,7 @@ void glOrtho (GLdouble left, GLdouble right, GLdouble bottom, GLdouble top,
 
 void glTranslatef (GLfloat x, GLfloat y, GLfloat z)
 {
+	shim_matrix_touch ();
 	shim_batch_flush();
 	shim_matrix_t t, *cur = shim_current_matrix();
 
@@ -2919,6 +2970,7 @@ void glTranslatef (GLfloat x, GLfloat y, GLfloat z)
 
 void glScalef (GLfloat x, GLfloat y, GLfloat z)
 {
+	shim_matrix_touch ();
 	shim_batch_flush();
 	shim_matrix_t t, *cur = shim_current_matrix();
 
@@ -2931,6 +2983,7 @@ void glScalef (GLfloat x, GLfloat y, GLfloat z)
 
 void glRotatef (GLfloat angle, GLfloat x, GLfloat y, GLfloat z)
 {
+	shim_matrix_touch ();
 	shim_batch_flush();
 	shim_matrix_t t, *cur = shim_current_matrix();
 	float r = angle * (float)M_PI / 180.0f;
@@ -3731,7 +3784,8 @@ void psp_gl_shim_end_frame (void)
 	 * time, and the numbers are per frame, so it costs two clock reads per
 	 * bucket and no card traffic unless the line is printed. */
 	if (shim_frames <= 3 || (shim_frames % 120) == 0)
-		psp_tracef("prof: frame %u, scene %u.%u ms (sky %u.%u), world flush "
+		psp_tracef("prof: frame %u, scene %u.%u ms (sky %u.%u: flat %u.%u, "
+		           "%d faces %d quads %d draws), world flush "
 		           "%u.%u, textures state %u.%u, draw %u.%u, texels %u.%u, "
 		           "%u texture flushes",
 		           shim_frames,
@@ -3739,6 +3793,9 @@ void psp_gl_shim_end_frame (void)
 		           (shim_prof_us[SHIM_PROF_SCENE] % 1000) / 100,
 		           shim_prof_us[SHIM_PROF_SKY] / 1000,
 		           (shim_prof_us[SHIM_PROF_SKY] % 1000) / 100,
+		           shim_prof_us[SHIM_PROF_SKY_FLAT] / 1000,
+		           (shim_prof_us[SHIM_PROF_SKY_FLAT] % 1000) / 100,
+		           psp_sky_faces, psp_sky_quads, psp_sky_draws,
 		           shim_prof_us[SHIM_PROF_FLUSH] / 1000,
 		           (shim_prof_us[SHIM_PROF_FLUSH] % 1000) / 100,
 		           shim_prof_us[SHIM_PROF_TEX] / 1000,
@@ -3817,6 +3874,10 @@ void psp_gl_shim_begin_frame (void)
 		for (i = 0; i < SHIM_PROF_BUCKETS; i++)
 			shim_prof_us[i] = 0;
 		shim_prof_texflush = 0;
+
+		psp_sky_faces = 0;
+		psp_sky_quads = 0;
+		psp_sky_draws = 0;
 	}
 
 	/* gu_psp.c synced the previous frame before it swapped, so the GE is

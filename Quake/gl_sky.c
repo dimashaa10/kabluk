@@ -49,6 +49,21 @@ gltexture_t	*solidskytexture, *alphaskytexture;
 
 cvar_t r_fastsky = {"r_fastsky", "0", CVAR_ARCHIVE};
 cvar_t r_fastskycolor = {"r_fastskycolor", "", CVAR_ARCHIVE}; // woods #fastskycolor
+/* A face of the sky box is cut into r_sky_quality x (quality*2) quads on the
+ * sides, and each quad is projected separately (Sky_GetTexCoord: a radial
+ * projection, so a big quad is a wrong quad).  The subdivision is what keeps
+ * the scrolled clouds from smearing at the corners of a face.
+ *
+ * It is NOT reduced here on purpose.  Round 86 first cut it to 6 for the
+ * console -- 288 quads a face looked like a lot -- and the round-85 log says
+ * the sky's own quads cannot be what costs 135 ms of a 147 ms scene: that
+ * frame reports 5658 vertices FOR THE WHOLE FRAME (port/psp/gl_shim.c counts
+ * every vertex it hands the GE, world and sky alike), so the sky drew a few
+ * thousand at most, and a few thousand vertices are a millisecond of
+ * arithmetic, not a hundred.  Cutting the subdivision would have bought
+ * nothing and changed how the clouds look.  The next log says where the time
+ * really is (the "prof:" line now splits the sky into "flat" -- the bounds and
+ * the flat fill -- and the textured layers). */
 cvar_t r_sky_quality = {"r_sky_quality", "12", CVAR_NONE};
 cvar_t r_skyalpha = {"r_skyalpha", "1", CVAR_NONE};
 cvar_t r_skyfog = {"r_skyfog","0.5",CVAR_ARCHIVE};
@@ -95,6 +110,14 @@ extern void psp_tracef (const char *fmt, ...);
 extern unsigned int sceKernelGetSystemTimeLow (void);
 extern void psp_gl_shim_prof_add (int bucket, unsigned int us);
 #define SKY_PROF_BUCKET 5
+#define SKY_PROF_FLAT_BUCKET 6
+
+/* The sky's own counters, printed by name in the shim's "prof:" line.  The
+ * round-85 log had one number for the whole sky -- "sky 135.2 ms" -- and one
+ * number cannot tell "four thousand quads" from "six quads drawn very badly". */
+extern int psp_sky_faces;
+extern int psp_sky_quads;
+extern int psp_sky_draws;
 #endif
 
 #ifndef ARRAY_COUNT
@@ -955,15 +978,50 @@ void Sky_ProjectPoly (int nump, vec3_t vecs)
 Sky_ClipPoly
 =================
 */
+/* The six clip planes are applied by recursion, and until round 86 every call
+ * carried its own copy of the work arrays on the STACK:
+ *
+ *     float dists[64];                  256 bytes
+ *     int   sides[64];                  260 bytes
+ *     vec3_t newv[2][64];              1536 bytes
+ *                                     ------------
+ *                                      ~2 KB a call
+ *
+ * Sky_ClipPoly is called once per sky SURFACE of the map (Sky_ProcessTextureChains
+ * walks every texture and every surface chained to it), and each call recurses
+ * up to six levels deep.  A map with a few hundred sky surfaces therefore
+ * writes several megabytes through a 249 KB stack every frame -- the log's own
+ * "stack free 249 KB" line -- and that is pure memory traffic for buffers that
+ * are written once and read once.
+ *
+ * One scratch set per recursion level, static: the same arrays, the same
+ * algorithm, the same order of operations, but they do not move.  The level is
+ * the `stage` argument, so the storage is exactly as private as a stack frame
+ * was -- level N never sees level N+1's buffer -- and it cannot grow with the
+ * map.  (Sky_ClipPoly has one caller, the sky, so this scratch is not shared
+ * with anything else that could recurse into it.) */
+#define SKY_CLIP_STAGES 7
+
+typedef struct
+{
+	float	dists[MAX_CLIP_VERTS + 1];
+	int		sides[MAX_CLIP_VERTS + 1];
+	vec3_t	newv[2][MAX_CLIP_VERTS + 1];
+} sky_clip_scratch_t;
+
+static sky_clip_scratch_t sky_clip_scratch[SKY_CLIP_STAGES];
+
 void Sky_ClipPoly (int nump, vec3_t vecs, int stage)
 {
+	sky_clip_scratch_t *scratch = &sky_clip_scratch[stage < SKY_CLIP_STAGES ?
+	                                                   stage : SKY_CLIP_STAGES - 1];
 	float	*norm;
 	float	*v;
 	qboolean	front, back;
 	float	d, e;
-	float	dists[MAX_CLIP_VERTS];
-	int		sides[MAX_CLIP_VERTS];
-	vec3_t	newv[2][MAX_CLIP_VERTS];
+	float	*dists = scratch->dists;
+	int		*sides = scratch->sides;
+	vec3_t	(*newv)[MAX_CLIP_VERTS + 1] = scratch->newv;
 	int		newc[2];
 	int		i, j;
 
@@ -1580,6 +1638,7 @@ static int Sky_DrawFaceLayer (int axis, vec3_t verts[4], vec3_t up, vec3_t right
 			if (in_batch == SKY_PSP_QUADS_PER_DRAW)
 			{
 				glEnd ();
+				psp_sky_draws++;
 				glBegin (GL_QUADS);
 				in_batch = 0;
 			}
@@ -1600,6 +1659,9 @@ static int Sky_DrawFaceLayer (int axis, vec3_t verts[4], vec3_t up, vec3_t right
 	}
 
 	glEnd ();
+	psp_sky_draws++;
+
+	psp_sky_quads += drawn;
 
 	if (layer == 1)
 		glDisable (GL_BLEND);
@@ -1648,6 +1710,9 @@ void Sky_DrawFace (int axis)
 
 		n = Sky_DrawFaceLayer (axis, verts, up, right, qi, qj, (int)di, (int)dj,
 		                       solidskytexture, 8, 0);
+
+		if (n)
+			psp_sky_faces++;
 		Sky_DrawFaceLayer (axis, verts, up, right, qi, qj, (int)di, (int)dj,
 		                   alphaskytexture, 16, 1);
 
@@ -1724,6 +1789,9 @@ static void Sky_DrawSkyInternal (void)
 {
 #endif
 	int i;
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	unsigned int flat_t0;
+#endif
 
 	//in these special render modes, the sky faces are handled in the normal world/brush renderer
 	if (r_drawflat_cheatsafe|| r_lightmap_cheatsafe)
@@ -1770,6 +1838,13 @@ static void Sky_DrawSkyInternal (void)
 	//
 	// process world and bmodels: draw flat-shaded sky surfs, and update skybounds
 	//
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	/* Everything above is the flat fill and the bookkeeping; everything below
+	 * is the textured layers.  The two are split because they can be fixed in
+	 * completely different ways: the first is per sky SURFACE the BSP found
+	 * (and its six-stage clipping), the second is per QUAD of the box. */
+	flat_t0 = sceKernelGetSystemTimeLow ();
+#endif
 	Fog_DisableGFog ();
 	glDisable (GL_TEXTURE_2D);
 	if (Fog_GetDensity() > 0)
@@ -1792,6 +1867,11 @@ static void Sky_DrawSkyInternal (void)
 	Sky_ProcessEntities ();
 	glColor3f (1, 1, 1);
 	glEnable (GL_TEXTURE_2D);
+
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	psp_gl_shim_prof_add (SKY_PROF_FLAT_BUCKET,
+	                      sceKernelGetSystemTimeLow () - flat_t0);
+#endif
 
 	//
 	// render slow sky: cloud layers or skybox
