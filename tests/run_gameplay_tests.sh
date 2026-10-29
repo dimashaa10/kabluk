@@ -1789,3 +1789,90 @@ grep -q 'if (psp_sbar_marks < 3) psp_trace_mark' Quake/sbar.c || {
 }
 echo "PASS: Sbar_Draw() splits itself into named steps -- enter, voice,"
 echo "PASS: tileclear, inventory, numbers, extras -- on the batched trail."
+
+# ---- a WAD picture is not a file, and must not be reloaded as one -------
+#
+# Round 77's second log (build 08:28, with the batched marks) finally names the
+# step the run dies in:
+#
+#   > sbar: enter
+#   > sbar: voice
+#   > sbar: tileclear
+#   > sbar: inventory      <-- and nothing after it
+#
+# and, three lines earlier, the breadcrumb the watchdog echoed:
+#
+#   mark: sbar.jpg
+#
+# `sbar` is a WAD lump (sbar.c: Draw_PicFromWad2("sbar")), it is held in a
+# static pointer by the status bar, and the picture cache had released its
+# texture -- so Draw_RevivePic() "revived" it by its lump name, which is not a
+# path.  That sent Image_LoadImage() through twenty-one file names on the
+# Memory Stick in the middle of a frame, found a stray sbar.jpg, and decoded
+# that into a picture whose size came back 0x0.  An entry now remembers the file
+# it came from; no file means never released and never revived through the
+# filesystem.
+grep -qE '^[[:space:]]*char[[:space:]]+source\[MAX_QPATH\];' Quake/gl_draw.c || {
+    echo "FAIL: a cached picture does not remember the file it came from, so"
+    echo "FAIL: the cache cannot tell a menu picture from a WAD lump"
+    exit 1
+}
+awk '/static void Draw_EvictCachePics|^int Draw_EvictCachePics/,/^}/' Quake/gl_draw.c |
+    grep -q 'if (!pic->source\[0\])' || {
+    echo "FAIL: the cache still releases pictures that have no file to reload"
+    echo "FAIL: from -- the status bar's own pictures are exactly those"
+    exit 1
+}
+awk '/^qpic_t \*Draw_RevivePic/,/^}/' Quake/gl_draw.c | grep -q 'Draw_CachePic(entry->name)' && {
+    echo "FAIL: Draw_RevivePic still asks the filesystem for a lump name"
+    exit 1
+}
+awk '/^qpic_t \*Draw_RevivePic/,/^}/' Quake/gl_draw.c |
+    grep -q 'Draw_PicFromWad2 (entry->name' || {
+    echo "FAIL: a released WAD picture has no way back out of the WAD"
+    exit 1
+}
+echo "PASS: a picture that came out of the WAD is never released, and a"
+echo "PASS: released one is loaded from the WAD again, not from the card."
+
+# ---- a failed load must not replace a picture with a 0x0 one ------------
+#
+# TexMgr_LoadImage() builds a 1x1 placeholder for an image it could not read and
+# then sets width and height back to 0.  That zero was copied into the cache
+# entry as the picture's size, which makes gl.sh = 0 / TexMgr_PadConditional(0)
+# -- a NaN texture coordinate, and the one value the GE must never be given: it
+# either drops the primitive or stalls on the panel.
+awk '/^qpic_t\t\*Draw_TryCachePic|^static qpic_t \*Draw_TryCachePic/,/^}/' Quake/gl_draw.c |
+    grep -q 'gl.gltexture->width <= 0' || {
+    echo "FAIL: Draw_TryCachePic still accepts a zero-size texture as a load"
+    exit 1
+}
+grep -qE '^[[:space:]]*qboolean[[:space:]]+unloadable;' Quake/gl_draw.c || {
+    echo "FAIL: a reload that failed is retried every frame, i.e. twenty-one"
+    echo "FAIL: more opens on the card inside every frame"
+    exit 1
+}
+awk '/^void Draw_ForgetTextures/,/^}/' Quake/gl_draw.c | grep -q 'pic->unloadable = false;' || {
+    echo "FAIL: after a video or new-game reload the pictures that failed once"
+    echo "FAIL: are never tried again"
+    exit 1
+}
+echo "PASS: a load that produced nothing leaves the entry as it was, and a"
+echo "PASS: failure is remembered instead of re-searched every frame."
+
+# ---- every per-frame breadcrumb is on the batched trail ----------------
+#
+# The six frames per second in the menu were psp_trace(): one open-write-close
+# on the Memory Stick per mark.  The renderer and the model code kept the same
+# mistake after SCR_MARK was fixed, and those are the frames a level is loaded
+# in -- the exact frames that were slow.  Same rule for all of them.
+grep -q 'psp_trace_mark(x); } while (0)' Quake/gl_rmain.c || {
+    echo "FAIL: RENDER_MARK still syncs the card per mark"
+    exit 1
+}
+grep -q 'psp_trace_mark(x); } while (0)' Quake/r_alias.c || {
+    echo "FAIL: ALIAS_MARK still syncs the card per mark"
+    exit 1
+}
+echo "PASS: the renderer and the alias-model marks use the batched trail: no"
+echo "PASS: memory-stick round trip on a mark that runs every frame."

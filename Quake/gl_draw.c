@@ -155,11 +155,34 @@ canvastype currentcanvas = CANVAS_NONE; //johnfitz -- for GL_SetCanvas
 typedef struct cachepic_s
 {
 	char		name[MAX_QPATH];
+	/* The FILE this picture was loaded from -- empty when there is no such file,
+	 * and a picture without a file can never be loaded again.
+	 *
+	 * This is the difference between a picture the cache may release and one it
+	 * may not.  Round 77's log ends on exactly the case that was missing:
+	 *
+	 *     mark: sbar.jpg
+	 *
+	 * `sbar` is a lump in the WAD (sbar.c: Sbar_LoadPics -> Draw_PicFromWad2) and
+	 * the status bar keeps its qpic_t in a static pointer.  The cache released
+	 * its texture anyway; the HUD then drew it, and Draw_RevivePic() "revived" a
+	 * WAD lump by its lump name -- which is not a path -- so the engine walked
+	 * twenty-one file names (sbar.dds, sbar.tga, ... sbar.jpg) on the Memory
+	 * Stick in the middle of a frame, found the stray sbar.jpg the game
+	 * directory happened to contain, and decoded that.
+	 *
+	 * A WAD picture cannot survive that: TexMgr_LoadImage() answers a missing
+	 * image with its zero-size placeholder, the entry's width and height become
+	 * 0, the texcoords become 0/0 -- and a NaN texcoord is the one thing the GE
+	 * must never be handed. */
+	char		source[MAX_QPATH];
 	qpic_t		pic;
 	byte		padding[32];	// for appended glpic
 	int			lastframe;	// host_framecount when it was last asked for or drawn
 	int			requests;	// how often it has been asked for (capped at 8)
 	qboolean	evicted;	// texture released, reload on the next request
+	qboolean	unloadable;	// a reload was tried and failed: do not try again
+	unsigned int wad_flags;	// the texflags a WAD lump was loaded with
 } cachepic_t;
 
 /* How a cached picture is allowed to lose its texture.
@@ -295,12 +318,45 @@ qpic_t *Draw_RevivePic (qpic_t *pic)
 	 * picture nobody asks for by name any more. */
 	entry->lastframe = host_framecount;
 
-	if (!entry->evicted || !entry->name[0] || draw_reviving_pic)
+	if (!entry->evicted || draw_reviving_pic)
 		return pic;
 
+	if (entry->unloadable || !entry->name[0])
+		return pic;
+
+	/* A WAD lump is reloaded from the WAD, not from the card.
+	 *
+	 * This path is not the common one -- a picture with no file behind it is
+	 * never released (see Draw_EvictCachePics) -- but Draw_ForgetTextures()
+	 * does release everything, on a video mode change or a new game, and the
+	 * status bar's pictures have to come back after it.  Their lump is in the
+	 * WAD, already in memory: reloading it costs a copy, not twenty-one opens
+	 * on the Memory Stick for a file name ("sbar.dds", "sbar.tga", ... that
+	 * never existed).  Round 77's log ends inside exactly that search. */
+	if (!entry->source[0])
+	{
+		draw_reviving_pic = true;
+		Draw_PicFromWad2 (entry->name,
+		                  entry->wad_flags ? entry->wad_flags
+		                                   : (TEXPREF_ALPHA | TEXPREF_PAD |
+		                                      TEXPREF_NOPICMIP));
+		draw_reviving_pic = false;
+
+		if (entry->evicted)
+			entry->unloadable = true;
+
+		return &entry->pic;
+	}
+
 	draw_reviving_pic = true;
-	Draw_CachePic(entry->name);
+	Draw_CachePic(entry->source);
 	draw_reviving_pic = false;
+
+	/* The reload failed -- the file is gone, or the name never was a file.
+	 * One attempt per session is enough: every retry is another twenty-one
+	 * opens on the card, inside a frame, to learn the same thing. */
+	if (entry->evicted)
+		entry->unloadable = true;
 
 	return &entry->pic;
 }
@@ -353,6 +409,7 @@ int Draw_EvictCachePics (int min_idle_frames)
 	byte shared[MAX_CACHED_PICS];
 #ifdef PSP_CACHEPIC_DIAG
 	int live = 0, lowreq = 0, fresh = 0, notex = 0, gone = 0, is_shared = 0;
+	int no_source = 0;
 #endif
 
 	if (!draw_initialized)
@@ -440,6 +497,20 @@ int Draw_EvictCachePics (int min_idle_frames)
 				continue;
 			}
 
+			/* No file behind this picture: releasing its texture would
+			 * destroy it for the rest of the session, because there is
+			 * nothing to load it back from.  The status bar's bar, its
+			 * numbers and every WAD icon are this case, and they are held in
+			 * static pointers that are never asked for by name again. */
+			if (!pic->source[0])
+			{
+#ifdef PSP_CACHEPIC_DIAG
+				if (pass == 0)
+					no_source++;
+#endif
+				continue;
+			}
+
 			gl = (glpic_t *)pic->pic.data;
 			if ((uintptr_t)gl < 0x1000 || !gl->gltexture)
 			{
@@ -499,10 +570,11 @@ int Draw_EvictCachePics (int min_idle_frames)
 			PSP_NOTE("pic: evict(%d) released nothing: %d live of %d entries "
 			         "(%d already evicted, %d asked under %d times), %d drawn "
 			         "in the last %d frames, %d without a texture, %d shared "
-			         "(scrap atlas or held by another entry)",
+			         "(scrap atlas or held by another entry), %d with no file "
+			         "behind them (WAD lumps, never released)",
 			         min_idle_frames, live, (int)menu_numcachepics, gone,
 			         lowreq, CACHEPIC_REQUESTS_TO_EVICT, fresh,
-			         min_idle_frames, notex, is_shared);
+			         min_idle_frames, notex, is_shared, no_source);
 		}
 	}
 	else if (released > 0)
@@ -550,6 +622,10 @@ void Draw_ForgetTextures (void)
 		pic->pic.width = pic->pic.height = 0;
 		pic->evicted = true;
 		pic->requests = 0;
+		/* Every texture is gone, so a picture that failed to load before
+		 * deserves one more attempt -- the file may be the reason it failed
+		 * last time, and this is a fresh start. */
+		pic->unloadable = false;
 	}
 }
 
@@ -731,8 +807,17 @@ qpic_t *Draw_PicFromWad2 (const char *name, unsigned int texflags)
 		Con_DPrintf ("Draw_PicFromWad: pic \"%s\" over-sized (%u*%u requires only %u bytes)\n", name, p->width,p->height, (unsigned)(sizeof(int)*2+pixel_count));
 
 	//Spike -- if we're loading external images, and one exists, then use that instead.
+	/* Whatever "gfx/<name>" resolves to is a file, so this picture can be
+	 * loaded again if its texture is ever released.  The source is cleared
+	 * first, because the entry may have been this name before with a file
+	 * behind it; the scrap and the lump paths below leave it empty, i.e.
+	 * "no file" -- and such a picture is never released (cachepic_t). */
+	pic->source[0] = '\0';
+	pic->wad_flags = texflags;
+
 	if (draw_load24bit && (gl.gltexture=TexMgr_LoadImage (NULL, name, 0, 0, SRC_EXTERNAL, NULL, va("gfx/%s", name), 0, texflags|TEXPREF_MIPMAP|TEXPREF_ALLOWMISSING)))
 	{
+		q_snprintf (pic->source, sizeof(pic->source), "gfx/%s", name);
 		gl.sl = 0;
 		gl.sh = (texflags&TEXPREF_PAD)?(float)gl.gltexture->source_width/(float)TexMgr_PadConditional(gl.gltexture->source_width):1;
 		gl.tl = 0;
@@ -795,9 +880,9 @@ qpic_t *Draw_PicFromWad2 (const char *name, unsigned int texflags)
 	pic->pic = *p;
 	memcpy (pic->pic.data, &gl, sizeof(glpic_t));
 	pic->evicted = false;
+	pic->unloadable = false;
 	pic->lastframe = host_framecount;
 	pic->requests = 0;
-
 	return &pic->pic;
 }
 
@@ -945,6 +1030,12 @@ qpic_t	*Draw_TryCachePic (const char *path, unsigned int texflags)
 		strcpy (pic->name, path);
 	}
 
+	/* Tried before and the file was not there: do not walk the whole
+	 * extension list again.  Draw_CachePic() turns the NULL below into the
+	 * 1x1 transparent stand-in, so the caller draws nothing, once. */
+	if (pic->unloadable)
+		return NULL;
+
 	if (strcmp("lmp", COM_FileGetExtension(path)))
 	{
 		char npath[MAX_QPATH];
@@ -966,12 +1057,21 @@ qpic_t	*Draw_TryCachePic (const char *path, unsigned int texflags)
 		/* TexMgr_LoadImage() only returns NULL for a missing file when the
 		 * caller asked for TEXPREF_ALLOWMISSING; the desktop build has never
 		 * seen this fire.  On the PSP a NULL here was a hard crash with no
-		 * message, so it is worth a check even if it "cannot happen". */
-		if (!gl.gltexture)
+		 * message, so it is worth a check even if it "cannot happen".
+		 *
+		 * A texture of size ZERO is the same failure wearing a pointer.
+		 * TexMgr_LoadImage() builds a 1x1 placeholder for an image it could not
+		 * read and then sets its width and height back to 0, and that was copied
+		 * into the entry as the picture's size: a 0x0 picture whose texcoords are
+		 * 0 / TexMgr_PadConditional(0).  A load that produced nothing must leave
+		 * the entry exactly as it was -- evicted, with the size it had. */
+		if (!gl.gltexture || gl.gltexture->width <= 0 || gl.gltexture->height <= 0)
 		{
 			Con_SafePrintf("Draw_TryCachePic: no texture for \"%s\"\n", path);
 			if (!evicted_slot)
 				menu_numcachepics--;
+			else
+				pic->unloadable = true;	/* known missing: do not search again */
 			return NULL;
 		}
 
@@ -986,8 +1086,10 @@ qpic_t	*Draw_TryCachePic (const char *path, unsigned int texflags)
 		DRAW_MARK("pic: copy");
 		memcpy (pic->pic.data, &gl, sizeof(glpic_t));
 		pic->evicted = false;
+		pic->unloadable = false;
 		pic->lastframe = host_framecount;
 		pic->requests = 0;
+		q_strlcpy (pic->source, path, sizeof(pic->source));
 		DRAW_MARK("pic: cached");
 
 		return &pic->pic;
@@ -1005,7 +1107,15 @@ qpic_t	*Draw_TryCachePic (const char *path, unsigned int texflags)
 	if (!dat && picpath != path)
 		dat = (qpic_t *)COM_LoadTempFile(path, NULL);
 	if (!dat)
+	{
+		/* No such .lmp.  Remember it: a caller that asks again every frame
+		 * must not put the engine back on the memory stick for it. */
+		if (!evicted_slot)
+			menu_numcachepics--;
+		else
+			pic->unloadable = true;
 		return NULL;
+	}
 	SwapPic (dat);
 
 	// HACK HACK HACK --- we need to keep the bytes for
@@ -1089,8 +1199,10 @@ qpic_t	*Draw_TryCachePic (const char *path, unsigned int texflags)
 	}
 	memcpy (pic->pic.data, &gl, sizeof(glpic_t));
 	pic->evicted = false;
+	pic->unloadable = false;
 	pic->lastframe = host_framecount;
 	pic->requests = 0;
+	q_strlcpy (pic->source, path, sizeof(pic->source));
 
 	return &pic->pic;
 }

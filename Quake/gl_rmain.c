@@ -31,9 +31,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
  * Defined up here on purpose: a macro that is used before its #define becomes
  * an implicit function call and only shows up with -Werror. */
 #if defined(PLATFORM_PSP) || defined(__psp__)
-extern void psp_trace (const char *step);
+extern void psp_trace_mark (const char *step);
 int psp_render_frames;	/* shared with r_alias.c: same first-three-frames window */
-#define RENDER_MARK(x)	do { if (psp_render_frames < 3) psp_trace(x); } while (0)
+#define RENDER_MARK(x)	do { if (psp_render_frames < 3) psp_trace_mark(x); } while (0)
 #else
 #define RENDER_MARK(x)	do { } while (0)
 #endif

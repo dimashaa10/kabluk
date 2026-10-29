@@ -28,9 +28,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
  * (psp_render_frames in gl_rmain.c).  An alias model is drawn in stages and a
  * fault in any of them looks identical from the outside. */
 #if defined(PLATFORM_PSP) || defined(__psp__)
-extern void psp_trace (const char *step);
+extern void psp_trace_mark (const char *step);
 extern int psp_render_frames;
-#define ALIAS_MARK(x)	do { if (psp_render_frames < 3) psp_trace(x); } while (0)
+#define ALIAS_MARK(x)	do { if (psp_render_frames < 3) psp_trace_mark(x); } while (0)
 #else
 #define ALIAS_MARK(x)	do { } while (0)
 #endif
