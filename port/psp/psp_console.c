@@ -802,17 +802,9 @@ void __assert_func (const char *file, int line, const char *func,
 	psp_con_panic("ASSERTION FAILED", file, line, func, expr);
 }
 
-/*
- * psp_trace -- a breadcrumb the engine drops between the steps of something
- * long (right now: Host_Init).
- *
- * The engine's own Con_Printf is useless this early: Con_Init() has not run
- * yet, so it throws the text away.  This writes straight to the debug screen
- * and to kabluk.log, and forces the card write, so whatever the last
- * breadcrumb says is where the module died -- on screen while it is still
- * alive, and in the file afterwards.
- */
-void psp_trace (const char *step)
+/* The body of both breadcrumbs; only the card write differs.  See the notes on
+ * psp_trace() and psp_trace_mark() for when each is the right one. */
+static void con_trace_step (const char *step, int sync_card)
 {
 	char buf[384];
 
@@ -826,18 +818,20 @@ void psp_trace (const char *step)
 
 	strncpy(con_last_step, step ? step : "?", sizeof(con_last_step) - 1);
 	con_last_step[sizeof(con_last_step) - 1] = '\0';
-	/* This line is on the card by now, so the watchdog must not echo it back
-	 * as a "mark:" entry (that is where the hundreds of
+	/* This line is written out on its own, so the watchdog must not echo it
+	 * back as a "mark:" entry (that is where the hundreds of
 	 * "mark: over: f 50 quads tex 69 ..." lines came from). */
 	con_last_step_is_mark = 0;
 
 	con_write(buf);
 	con_putc('\n');		/* flushes into the log buffer */
 
-	/* This one is a boot breadcrumb, and the whole point of it is that it is
-	 * already on the card when the very next step kills the module.  So it is
-	 * not batched: a card write here, none per frame later. */
-	con_log_sync();
+	/* A boot breadcrumb is on the card before this returns -- that is the
+	 * whole point of it.  A frame breadcrumb is not: see psp_trace_mark. */
+	if (sync_card)
+		con_log_sync();
+	else
+		con_log_sync_throttled();
 
 	/* The same text again, in row 0, where nothing else ever scrolls it
 	 * away.  Row 0 is the line to read when the screen is about to die:
@@ -848,6 +842,56 @@ void psp_trace (const char *step)
 		pspDebugScreenPrintf("LAST: %-60.60s", step ? step : "?");
 		pspDebugScreenSetXY(0, con_row);
 	}
+}
+
+/* A breadcrumb for a step that runs every frame -- and it is NOT booked on the
+ * card for that reason.
+ *
+ * Same line, same place in the log, and the watchdog still names it (the step
+ * lands in con_last_step like any other).  What it does not do is open, write
+ * and close kabluk.log: the line goes into the 4 KB buffer, and the card hears
+ * about it at most once every CON_TRACE_SYNC_MIN_US, or once a second from the
+ * watchdog's drain, whichever comes first.
+ *
+ * The hardware log of round 77 is the reason this function exists, and the
+ * heartbeat is where it says so:
+ *
+ *     run: f 72 state 1, ..., 279.7 ms/frame over 7 (cpu 271.8, ge 0.1,
+ *     vblank 7.8), card 114 writes 2070 ms
+ *
+ * A world frame emits fifteen "> scr: ..." / "> view: ..." marks, and every one
+ * of them was an open-write-close round trip -- sixteen card writes per frame,
+ * 18 ms each, 288 ms of a 280 ms frame.  The console sat at six frames per
+ * second in a menu that draws two pictures, and it was our own tracing doing
+ * it: the frame was not slow, it was waiting for the memory stick.  On an
+ * emulator there is no memory stick to wait for, which is exactly why the same
+ * build looked healthy there.
+ *
+ * What a hard fault can lose here is the lines written since the last card
+ * write -- the same fraction of a second the buffered diagnostics already
+ * tolerate.  In exchange the trail costs what it says it costs. */
+void psp_trace_mark (const char *step)
+{
+	con_trace_step (step, 0);
+}
+
+/*
+ * psp_trace -- a breadcrumb the engine drops between the steps of something
+ * long (right now: Host_Init).
+ *
+ * The engine's own Con_Printf is useless this early: Con_Init() has not run
+ * yet, so it throws the text away.  This writes straight to the debug screen
+ * and to kabluk.log, and forces the card write, so whatever the last
+ * breadcrumb says is where the module died -- on screen while it is still
+ * alive, and in the file afterwards.
+ *
+ * One card round trip each (18 ms measured).  That is the right price for a
+ * step that runs once and may be followed by a fault; it is the wrong price for
+ * anything inside the frame -- use psp_trace_mark() there.
+ */
+void psp_trace (const char *step)
+{
+	con_trace_step (step, 1);
 }
 
 /*

@@ -34,7 +34,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
  * Defined up here on purpose: a macro that is used before its #define becomes
  * an implicit function call and only shows up with -Werror. */
 #if defined(PLATFORM_PSP) || defined(__psp__)
-extern void psp_trace (const char *step);
+extern void psp_trace_mark (const char *step);
 static int psp_scr_frames;
 /* The marks below were gated on the first three calls of SCR_UpdateScreen,
  * which is right for a menu and wrong for a level: by the time a map is
@@ -45,7 +45,7 @@ static int psp_scr_frames;
  * So the gate is now "the first three frames that draw the world" as well. */
 static int psp_scr_world_frames;
 #define SCR_MARK(x)	do { if (psp_scr_frames < 3 || psp_scr_world_frames < 3) \
-		psp_trace(x); } while (0)
+		psp_trace_mark(x); } while (0)
 #else
 #define SCR_MARK(x)	do { } while (0)
 #endif

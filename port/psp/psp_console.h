@@ -42,6 +42,13 @@ void psp_con_watchdog (void);
 
 void psp_trace (const char *step);
 
+/* The same breadcrumb, for a step that runs every frame: the line goes into the
+ * log buffer and reaches the card at most once every 100 ms (or on the
+ * watchdog's once-a-second drain) instead of one round trip per line.  The
+ * watchdog still names it.  Measured on the hardware, per-line syncing of the
+ * frame marks was 16 round trips a frame -- 288 ms of a 280 ms frame. */
+void psp_trace_mark (const char *step);
+
 /* Records a name for the watchdog without printing or logging anything.  For
  * loops that run many times (every picture, every texture): the watchdog prints
  * the last mark when nothing has moved for eight seconds. */

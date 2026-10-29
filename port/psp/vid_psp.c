@@ -288,10 +288,10 @@ void GL_EndRendering (void)
 #if defined(PLATFORM_PSP) || defined(__psp__)
 	{
 		extern int psp_view_frame_count (void);
-		extern void psp_trace (const char *step);
+		extern void psp_trace_mark (const char *step);
 
 		if (psp_view_frame_count () < 3)
-			psp_trace ("frame: close the draw list and wait for the GE");
+			psp_trace_mark ("frame: close the draw list and wait for the GE");
 	}
 #endif
 
@@ -300,12 +300,12 @@ void GL_EndRendering (void)
 #if defined(PLATFORM_PSP) || defined(__psp__)
 	{
 		extern int psp_view_frame_count (void);
-		extern void psp_trace (const char *step);
+		extern void psp_trace_mark (const char *step);
 
 		/* Reached means the GE finished the list and the frame was
 		 * presented -- the list held nothing the hardware chokes on. */
 		if (psp_view_frame_count () < 3)
-			psp_trace ("frame: presented");
+			psp_trace_mark ("frame: presented");
 	}
 #endif
 }

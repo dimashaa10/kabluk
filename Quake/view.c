@@ -31,9 +31,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
  * Defined up here on purpose: a macro that is used before its #define becomes
  * an implicit function call and only shows up with -Werror. */
 #if defined(PLATFORM_PSP) || defined(__psp__)
-extern void psp_trace (const char *step);
+extern void psp_trace_mark (const char *step);
 static int psp_view_frames;
-#define VIEW_MARK(x)	do { if (psp_view_frames < 3) psp_trace(x); } while (0)
+#define VIEW_MARK(x)	do { if (psp_view_frames < 3) psp_trace_mark(x); } while (0)
 
 /* How many world frames have been drawn, for the marks outside this file.
  * GL_EndRendering() (port/psp/vid_psp.c) and SCR_UpdateScreen() both cover

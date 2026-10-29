@@ -1709,3 +1709,83 @@ grep -q 'frame: presented' port/psp/vid_psp.c || {
 }
 echo "PASS: a death after the renderer returns is covered by a mark: the HUD,"
 echo "PASS: the overlays, the GE sync and the present all name themselves."
+
+# ---- the frame marks must not open the memory stick ----------------------
+#
+# Round 77's log, from the panel and not from the emulator:
+#
+#   run: f 72 state 1, ..., 279.7 ms/frame over 7 (cpu 271.8, ge 0.1,
+#   vblank 7.8), card 114 writes 2070 ms
+#
+# 114 card writes in seven frames is sixteen a frame, which is exactly the
+# number of "> scr: ..." / "> view: ..." marks in a world frame -- because
+# every one of them went through psp_trace(), and psp_trace() ends in
+# con_log_sync(): open, write, close on the Memory Stick, 18 ms apiece.  288
+# ms of card time in a 280 ms frame is the six frames per second, and it is
+# the reason the same build is fine on an emulator, which has no card to wait
+# for.  So the per-frame breadcrumbs use psp_trace_mark() and only the boot
+# steps use psp_trace().
+grep -q 'void psp_trace_mark (const char \*step)' port/psp/psp_console.c || {
+    echo "FAIL: there is no breadcrumb that reaches the card at most once per"
+    echo "FAIL: 100 ms; every frame mark pays a full Memory Stick round trip"
+    exit 1
+}
+grep -q 'con_trace_step (const char \*step, int sync_card)' port/psp/psp_console.c || {
+    echo "FAIL: psp_trace and psp_trace_mark do not share their body, so they"
+    echo "FAIL: cannot differ only in the card write"
+    exit 1
+}
+grep -q 'con_trace_step (step, 0)' port/psp/psp_console.c || {
+    echo "FAIL: psp_trace_mark syncs the card like psp_trace"
+    exit 1
+}
+grep -q 'con_trace_step (step, 1)' port/psp/psp_console.c || {
+    echo "FAIL: psp_trace no longer forces the card write, which is the whole"
+    echo "FAIL: point of a boot breadcrumb"
+    exit 1
+}
+grep -q 'psp_trace_mark(x); } while (0)' Quake/gl_screen.c || {
+    echo "FAIL: SCR_MARK still syncs the card per mark"
+    exit 1
+}
+grep -q 'psp_trace_mark(x); } while (0)' Quake/view.c || {
+    echo "FAIL: VIEW_MARK still syncs the card per mark"
+    exit 1
+}
+grep -q 'psp_trace_mark ("frame: presented")' port/psp/vid_psp.c || {
+    echo "FAIL: the frame-end marks still sync the card per mark"
+    exit 1
+}
+if grep -q 'if (psp_scr_frames < 3 || psp_scr_world_frames < 3) \\' Quake/gl_screen.c &&
+   awk '/#define SCR_MARK/,/while \(0\)/' Quake/gl_screen.c | grep -q '[^_]psp_trace ('; then
+    echo "FAIL: SCR_MARK calls psp_trace(), whose card write costs 18 ms"
+    exit 1
+fi
+echo "PASS: the per-frame breadcrumbs reach the card at most once per 100 ms,"
+echo "PASS: so the trail costs a frame time, not sixteen."
+
+# ---- and the status bar says which part of itself it died in ------------
+#
+# The round-77 log ends on "scr: tileclear done" with "scr: sbar done" never
+# printed: the module died inside Sbar_Draw().  Which of its parts (the voice
+# meter, the tile clear, the inventory, the numbers, the scoreboard) was not
+# in the log, and guessing that from the source is what this project has
+# stopped doing.
+for mark in "sbar: enter" "sbar: voice" "sbar: tileclear" "sbar: inventory" \
+            "sbar: numbers" "sbar: extras"; do
+    grep -q "SBAR_MARK(\"$mark\")" Quake/sbar.c || {
+        echo "FAIL: Sbar_Draw() does not mark '$mark', so a death there is"
+        echo "FAIL: still unattributable"
+        exit 1
+    }
+done
+awk '/#define SBAR_MARK\(x\)/,/while \(0\)/' Quake/sbar.c | grep -q 'psp_trace_mark' || {
+    echo "FAIL: SBAR_MARK does not use the batched breadcrumb"
+    exit 1
+}
+grep -q 'if (psp_sbar_marks < 3) psp_trace_mark' Quake/sbar.c || {
+    echo "FAIL: the status bar marks are not limited to the first frames"
+    exit 1
+}
+echo "PASS: Sbar_Draw() splits itself into named steps -- enter, voice,"
+echo "PASS: tileclear, inventory, numbers, extras -- on the batched trail."
