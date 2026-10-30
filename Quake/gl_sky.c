@@ -1450,9 +1450,54 @@ Sky_GetTexCoord
  * emulation.  sqrtf() and float literals are the same numbers to within float
  * rounding and a good deal cheaper.
  *
- * (sqrtf is still a software square root on this CPU -- the Allegrex has no
- * hardware square-root instruction -- but a 32-bit one, and it does not drag
- * the surrounding expression into emulated double arithmetic as well.) */
+ * (That round took the doubles out and halved the cost -- and the next log
+ * says the rest is STILL the square root:
+ *
+ *     prof: frame 480, scene 92.0 ms (sky 87.1: flat 1.0,
+ *          emit 82.0 of 9984 verts, 6 faces 2496 quads 28 draws)
+ *
+ * -- 8.2 microseconds per emitted vertex, i.e. ~2700 cycles for a float
+ * multiply-add sequence that should cost ten.  sqrtf() is a libm call here,
+ * and on this toolchain it lands on the double-precision implementation:
+ * the same software emulation, one vertex at a time.
+ *
+ * So the square root is not called at all any more: the sky needs
+ *
+ *     length = 378 / sqrt(x)   ==   378 * (1 / sqrt(x))
+ *
+ * i.e. a RECIPROCAL square root, and that has a float-only form -- the bit
+ * trick every 3D engine of this era used (0x5f3759df magic constant plus two
+ * Newton-Raphson steps), which is a dozen single-precision operations and no
+ * library call at all.  Two Newton steps take the relative error from ~5% down
+ * to about 1e-5, which for a scrolling 128x128 cloud texture is a hundredth of
+ * a texel: the picture does not change.  tests/run_gameplay_tests.sh compiles
+ * this function on the build machine and checks it against sqrtf() over the
+ * range the sky actually uses, so the accuracy is a measured property and not
+ * a claim. */
+/* 1/sqrt(x), single precision only -- see the note above.
+ *
+ * The magic constant is the usual one: taking the float's bits, halving the
+ * exponent and negating it gives a first guess that is within a few percent,
+ * and Newton-Raphson on  y = 1/sqrt(x)  converges quadratically from there
+ * (y <- y * (1.5 - 0.5*x*y*y)).  Two iterations: ~5% -> ~0.3% -> ~1e-5. */
+static float Sky_RcpSqrt (float x)
+{
+	union { float f; unsigned int i; } u;
+	float y;
+
+	if (x <= 0.0f)
+		return 0.0f;
+
+	u.f = x;
+	u.i = 0x5f3759dfu - (u.i >> 1);
+	y = u.f;
+
+	y = y * (1.5f - 0.5f * x * y * y);
+	y = y * (1.5f - 0.5f * x * y * y);
+
+	return y;
+}
+
 void Sky_GetTexCoord (vec3_t v, float speed, float *s, float *t)
 {
 	vec3_t	dir;
@@ -1464,8 +1509,13 @@ void Sky_GetTexCoord (vec3_t v, float speed, float *s, float *t)
 	dir[2] *= 3.0f;	// flatten the sphere
 
 	length = dir[0]*dir[0] + dir[1]*dir[1] + dir[2]*dir[2];
+#ifdef PLATFORM_PSP
+	/* 378 / sqrt(length), without a library call: see Sky_RcpSqrt. */
+	length = (6.0f * 63.0f) * Sky_RcpSqrt (length);
+#else
 	length = sqrtf (length);
 	length = (6.0f * 63.0f) / length;
+#endif
 
 	scroll = cl.time * speed * clamped_skyspeed; // woods #skyspeed
 	scroll -= (int)scroll & ~127;

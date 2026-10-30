@@ -2511,7 +2511,11 @@ static r_clip_plane_t shim_clip_planes[SHIM_CLIP_PLANES];
 static void shim_clip_planes_update (void)
 {
 	const shim_matrix_t *mvp;
-	float *m;
+	const float *m;   /* const, because shim_mvp_get() hands out a read-only
+	                   * matrix -- assigning its .m to a `float *` was the
+	                   * -Wdiscarded-qualifiers warning of the round-89 build.
+	                   * Nothing here writes through it; m is only read by the
+	                   * SHIM_PLANE macro below. */
 
 	mvp = shim_mvp_get ();
 	m = mvp->m;

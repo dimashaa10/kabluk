@@ -2587,10 +2587,14 @@ grep -q 'sqrtf (length)' /tmp/skytex.txt || {
     echo "FAIL: the sky's per-vertex square root is not single precision"
     exit 1
 }
-grep -q 'sqrtf' /tmp/skytex.txt && ! grep -qE '[^f]sqrt *\(' /tmp/skytex.txt || {
-    echo "FAIL: Sky_GetTexCoord still calls double sqrt()"
+# A "call" is sqrt( not preceded by f and not inside a comment.
+grep -nE '[^a-z_]sqrt *\(' /tmp/skytex.txt |
+    grep -vE '^[0-9]+:[[:space:]]*(\*|/\*|//)' > /tmp/dsqrt2.txt || true
+if [ -s /tmp/dsqrt2.txt ]; then
+    echo "FAIL: Sky_GetTexCoord still calls double sqrt():"
+    head -3 /tmp/dsqrt2.txt
     exit 1
-}
+fi
 grep -q '1.0f / 128.0f' /tmp/skytex.txt || {
     echo "FAIL: the 0..1 conversion is still done in double precision"
     exit 1
@@ -2602,7 +2606,7 @@ grep -q '3.0f' /tmp/skytex.txt || {
 # And the same rule for the rest of the file: any square root in it is float.
 # (comment lines are skipped: `/*`, `*` and `//` at the start)
 grep -nE '[^a-z_]sqrt *\(' Quake/gl_sky.c |
-    grep -vE '^[0-9]+: *(\*|/\*|//)' > /tmp/dsqrt.txt || true
+    grep -vE '^[0-9]+:[[:space:]]*(\*|/\*|//)' > /tmp/dsqrt.txt || true
 if true; then
     if [ -s /tmp/dsqrt.txt ]; then
         echo "FAIL: a double sqrt() is still in gl_sky.c:"
@@ -2610,7 +2614,7 @@ if true; then
         exit 1
     fi
 fi
-grep -n 'sqrt(3.0)' Quake/gl_sky.c | grep -vE '^[0-9]+: *(\*|/\*|//)' > /tmp/d3.txt || true
+grep -n 'sqrt(3.0)' Quake/gl_sky.c | grep -vE '^[0-9]+:[[:space:]]*(\*|/\*|//)' > /tmp/d3.txt || true
 if [ -s /tmp/d3.txt ]; then
     echo "FAIL: the sky box still divides by a double sqrt(3.0)"
     exit 1
@@ -2672,3 +2676,81 @@ grep -q 'psp_sky_verts += drawn \* 4;' Quake/gl_sky.c || {
 }
 echo "PASS: the sky reports flat / emit / vertices / faces / quads / draws"
 echo "PASS: separately, so the next log names the loop instead of the file."
+
+# ---- the sky's reciprocal square root, measured, not assumed -----------
+#
+# sqrtf() on this toolchain lands on the double-precision implementation, and
+# the Allegrex has no double FPU: the round-89 log prices it at 8.2
+# microseconds per emitted sky vertex
+#
+#     prof: frame 480, (sky 87.1: flat 1.0, emit 82.0 of 9984 verts, ...)
+#
+# so the sky now uses a float-only bit-trick reciprocal square root with two
+# Newton steps (Quake/gl_sky.c, Sky_RcpSqrt).  Accuracy is the one thing that
+# must not be taken on trust here: this extracts the real function from the
+# real source, compiles it on the build machine, and compares it against
+# 1/sqrtf() over the range the sky feeds it.
+grep -q 'static float Sky_RcpSqrt (float x)' Quake/gl_sky.c || {
+    echo "FAIL: Sky_RcpSqrt is gone, so the sky is back to a libm square root"
+    echo "FAIL: per vertex (a software double on this CPU)"
+    exit 1
+}
+awk '/^static float Sky_RcpSqrt \(float x\)/,/^}/' Quake/gl_sky.c > "$work/rsq_body.c"
+if [ -s "$work/rsq_body.c" ] && command -v cc >/dev/null 2>&1; then
+    {
+        echo '#include <math.h>'
+        echo '#include <stdio.h>'
+        cat "$work/rsq_body.c"
+        cat <<'PROG'
+int main(void)
+{
+	float worst = 0.0f;
+	int i;
+	/* |dir| for a box centred on the eye: (x)^2+(y)^2+(3z)^2 up to a few
+	 * times gl_farclip^2, so 1 .. 4e9 covers it with room to spare. */
+	for (i = 0; i <= 300000; i++)
+	{
+		float t = (float)i / 300000.0f;
+		float x = 1.0f * powf(4.0e9f, t);
+		float ref = 1.0f / sqrtf(x);
+		float rel = fabsf(Sky_RcpSqrt(x) - ref) / ref;
+		if (rel > worst)
+			worst = rel;
+	}
+	if (!(worst < 1.0e-4f))
+	{
+		printf("FAIL: Sky_RcpSqrt is off by %g, more than 1e-4 relative\n",
+		       (double)worst);
+		return 1;
+	}
+	if (Sky_RcpSqrt(0.0f) != 0.0f || Sky_RcpSqrt(-1.0f) != 0.0f)
+	{
+		printf("FAIL: Sky_RcpSqrt does not guard a zero or negative input\n");
+		return 1;
+	}
+	printf("PASS: the sky's reciprocal square root is within %g relative of\n", (double)worst);
+	printf("PASS: 1/sqrtf over the range the sky uses -- a thousandth of a texel\n");
+	printf("PASS: on a 128-wide texture, and no libm call per vertex.\n");
+	return 0;
+}
+PROG
+    } > "$work/rsq.c"
+    if ! cc -O2 -o "$work/rsq" "$work/rsq.c" -lm; then
+        echo "FAIL: the sky's reciprocal square root does not compile"
+        exit 1
+    fi
+    "$work/rsq" || exit 1
+else
+    echo "FAIL: could not extract Sky_RcpSqrt for the accuracy check"
+    exit 1
+fi
+# And the vertex path must actually use it on the console.
+awk '/^void Sky_GetTexCoord/,/^}/' Quake/gl_sky.c > "$work/skytex2.txt"
+grep -q 'Sky_RcpSqrt (length)' "$work/skytex2.txt" || {
+    echo "FAIL: Sky_GetTexCoord does not use the fast reciprocal square root"
+    exit 1
+}
+grep -q '#ifdef PLATFORM_PSP' "$work/skytex2.txt" || {
+    echo "FAIL: the fast path is not confined to the console build"
+    exit 1
+}
