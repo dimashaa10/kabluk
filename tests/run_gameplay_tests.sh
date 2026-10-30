@@ -2822,3 +2822,225 @@ grep -q '%u tris %u clipped, ' port/psp/gl_shim.c || {
 echo "PASS: a convex polygon (a sky quad, a BSP surface) is clipped once and"
 echo "PASS: fanned, from scratch buffers that are not on the stack, and the log"
 echo "PASS: now separates the sky's clipping from its arithmetic."
+
+# ---- the sky's per-vertex path is float-only: cl.time is a double --------
+#
+# Sky_GetTexCoord() runs once per corner of every visible sky quad.  It used to
+# compute the layer's scroll in place:
+#
+#     scroll = cl.time * speed * clamped_skyspeed;    // cl.time is a double
+#     scroll -= (int)scroll & ~127;
+#
+# and the Allegrex has no double format at all, so that line was a chain of
+# libgcc helpers (__extendsfdf2, __muldf3, __fixdfsi, __floatsidf, __subdf3,
+# __truncdfsf2) four thousand times a frame.  The value depends only on the
+# clock, the layer's speed and r_skyspeed, so Sky_Scroll() computes it at most
+# once per frame per layer and hands back a float.
+awk '/^static float Sky_Scroll \(float speed\)$/,/^}$/' Quake/gl_sky.c > /tmp/skyscroll.txt
+[ -s /tmp/skyscroll.txt ] || {
+    echo "FAIL: there is no cached scroll, so the per-vertex path still does"
+    echo "FAIL: double arithmetic for a number that changes once a frame"
+    exit 1
+}
+awk '/^void Sky_GetTexCoord \(/,/^}$/' Quake/gl_sky.c > /tmp/skytexcoord.txt
+[ -s /tmp/skytexcoord.txt ] || { echo "FAIL: Sky_GetTexCoord is gone"; exit 1; }
+# Comments count nothing here: the note in Sky_GetTexCoord says the word
+# cl.time, and a test that greps it would be testing its own documentation.
+sky_nocomments ()
+{
+    awk '
+    {
+        line = $0; out = ""
+        while (1)
+        {
+            if (incomment)
+            {
+                p = index (line, "*/")
+                if (!p) { line = ""; break }
+                line = substr (line, p + 2); incomment = 0
+            }
+            else
+            {
+                p = index (line, "/*")
+                if (!p) { out = out line; break }
+                out = out substr (line, 1, p - 1); line = substr (line, p + 2)
+                incomment = 1
+            }
+        }
+        print out
+    }' "$1"
+}
+sky_nocomments Quake/gl_sky.c > /tmp/skynocomments.txt
+sky_nocomments /tmp/skytexcoord.txt > /tmp/skytexcoordnc.txt
+[ "$(grep -c 'cl\.time' /tmp/skytexcoordnc.txt)" -eq 0 ] || {
+    echo "FAIL: Sky_GetTexCoord still reads the double clock itself"
+    exit 1
+}
+# It has to be read in exactly one place in the whole file -- the cache that
+# Sky_Scroll keeps -- otherwise a second per-vertex reader exists somewhere.
+sky_nocomments /tmp/skyscroll.txt > /tmp/skyscrollnc.txt
+[ "$(grep -c 'cl\.time' /tmp/skynocomments.txt)" -eq 3 ] || {
+    echo "FAIL: cl.time is read outside Sky_Scroll, so a double is back in a"
+    echo "FAIL: per-vertex path (expected 3 uses, all in the cache: the key,"
+    echo "FAIL: the multiplication and the store)"
+    exit 1
+}
+[ "$(grep -c 'cl\.time' /tmp/skyscrollnc.txt)" -eq 3 ] || {
+    echo "FAIL: those three uses are not all inside Sky_Scroll"
+    exit 1
+}
+grep -q 'Sky_Scroll (speed)' /tmp/skytexcoord.txt || {
+    echo "FAIL: Sky_GetTexCoord does not use the cached scroll"
+    exit 1
+}
+grep -q 'int)scroll' /tmp/skytexcoord.txt && {
+    echo "FAIL: the double -> int -> double reduction is still per vertex"
+    exit 1
+}
+grep -q 'static float Sky_Scroll' /tmp/skyscroll.txt || {
+    echo "FAIL: Sky_Scroll does not narrow the result to float before returning"
+    exit 1
+}
+grep -q 'cached_time = cl.time;' /tmp/skyscroll.txt || {
+    echo "FAIL: the cache is never marked valid, so the scroll would freeze"
+    exit 1
+}
+grep -q 'return cached_scroll;' /tmp/skyscroll.txt || {
+    echo "FAIL: the cached value is never returned"
+    exit 1
+}
+# And the number it produces is the number the old code produced.  The function
+# is extracted from the real source and compiled here, so this cannot drift.
+cat > /tmp/skyscrollmain.c <<'SC'
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+#define CLAMP(minval, val, maxval) \
+    ((val) < (minval) ? (minval) : ((val) > (maxval) ? (maxval) : (val)))
+typedef struct { const char *name, *string; int flags; float value; } cvar_t;
+#define CVAR_ARCHIVE 1
+static cvar_t r_skyspeed = {"r_skyspeed", "1", CVAR_ARCHIVE, 1.0f};
+typedef struct { double time; } stubclient_t;
+static stubclient_t cl;
+SC
+cat /tmp/skyscroll.txt >> /tmp/skyscrollmain.c
+cat >> /tmp/skyscrollmain.c <<'SC'
+
+/* The line the function replaced, still in double, as the reference. */
+static float old_scroll (double time, float speed)
+{
+    float clamped_skyspeed = CLAMP (0.0f, r_skyspeed.value, 100.0f);
+    double scroll = time * (double)speed * (double)clamped_skyspeed;
+
+    scroll -= (double)((int)scroll & ~127);
+    return (float)scroll;
+}
+
+int main (void)
+{
+    /* Round numbers are a trap here: 36000 * 16 * 1 is exactly representable
+     * in float, so a float version of the product would agree with the double
+     * one by luck.  These need the fraction -- they are what a real clock looks
+     * like a few minutes into a game. */
+    static const double times[] = { 0.0, 0.016, 1.0, 12.5, 17.013, 61.0,
+                                    123.4567, 600.25, 1800.5, 3600.0,
+                                    3601.0166, 3600.999, 7200.125, 12345.678,
+                                    36000.0, 35999.9375 };
+    static const float speeds[] = { 8.0f, 16.0f };
+    static const float skyspeeds[] = { 0.0f, 0.5f, 1.0f, 2.0f, 100.0f, 250.0f };
+    double worst = 0.0;
+    unsigned int i, j, k;
+
+    for (i = 0; i < sizeof(times)/sizeof(times[0]); i++)
+    for (j = 0; j < sizeof(speeds)/sizeof(speeds[0]); j++)
+    for (k = 0; k < sizeof(skyspeeds)/sizeof(skyspeeds[0]); k++)
+    {
+        float got, want;
+        double d;
+
+        r_skyspeed.value = skyspeeds[k];
+
+        /* One call per (time, speed): the cache has to miss every time the
+         * clock moves, which is the whole point of the key. */
+        cl.time = times[i];
+        got = Sky_Scroll (speeds[j]);
+        want = old_scroll (times[i], speeds[j]);
+        d = fabs ((double)got - (double)want);
+        if (d > worst)
+            worst = d;
+
+        /* A second call in the same frame must return the same thing -- the
+         * cached path is what makes it cheap. */
+        if (Sky_Scroll (speeds[j]) != got)
+        {
+            printf ("cached call disagreed with the first one\n");
+            return 1;
+        }
+        /* ... and the other layer's speed must NOT get this layer's value. */
+        {
+            float other = Sky_Scroll (speeds[1 - j]);
+            float wantother = old_scroll (times[i], speeds[1 - j]);
+
+            if (fabs ((double)other - (double)wantother) > 1e-4)
+            {
+                printf ("speed %g got the other layer's scroll\n",
+                        (double)speeds[1 - j]);
+                return 1;
+            }
+        }
+    }
+
+    printf ("max |new - old| = %.3e texels\n", worst);
+
+    /* Below a hundredth of a texel on a 128x128 cloud picture: the picture
+     * cannot change.  One texel of a 128-wide texture is 1/128 of the tile. */
+    return worst < 1e-4 ? 0 : 1;
+}
+SC
+cc -O2 -std=gnu11 -o /tmp/skyscroll /tmp/skyscrollmain.c -lm || {
+    echo "FAIL: the extracted Sky_Scroll does not compile on its own"
+    exit 1
+}
+/tmp/skyscroll > /tmp/skyscroll.out || {
+    cat /tmp/skyscroll.out
+    echo "FAIL: the cached scroll does not match the double formula, so the"
+    echo "FAIL: clouds would jump"
+    exit 1
+}
+echo "PASS: the sky's scroll is computed once per frame per layer, in double,"
+echo "PASS: then narrowed to float -- $(cat /tmp/skyscroll.out) over sixteen"
+echo "PASS: clock values up to ten hours, so that path has no double in it"
+echo "PASS: and the clouds do not move."
+
+# ---- no double literal in the sky's per-quad or per-vertex functions ------
+#
+# The Allegrex FPU is single precision only (see the note above Sky_GetTexCoord),
+# so a `0.5` or a `1.0` in a loop that runs thousands of times a frame is a
+# libgcc call per iteration.  Three of them were left after the scroll fix:
+# Sky_FaceQuadAt()'s bounds test (once per quad) and Sky_SetBoxVert() (once per
+# skybox vertex).  This checks the bodies, not the file: a comment may say 0.5
+# as often as it likes.
+for skyfn in "Sky_GetTexCoord" "Sky_FaceQuadAt" "Sky_DrawFaceLayer" \
+             "Sky_SetBoxVert" "Sky_EmitSkyBoxVertex"; do
+    awk -v fn="$skyfn" '
+        $0 ~ "^(static )?(void|int|float) " fn " \\(" { on = 1 }
+        on { print; if ($0 ~ /^}$/) exit }
+    ' Quake/gl_sky.c > /tmp/skyfn.txt
+    if [ ! -s /tmp/skyfn.txt ]; then
+        echo "FAIL: $skyfn was not found -- this check is looking at nothing"
+        exit 1
+    fi
+    sky_nocomments /tmp/skyfn.txt > /tmp/skyfnnc.txt
+    bad=$(grep -nE "[^0-9a-zA-Z_.][0-9]+\.[0-9]+([^0-9a-zA-Z_f]|$)" /tmp/skyfnnc.txt |
+          grep -v "//" | head -3)
+    [ -z "$bad" ] || {
+        echo "FAIL: $skyfn has a DOUBLE literal in a path that runs per quad or"
+        echo "FAIL: per vertex:"
+        echo "$bad"
+        exit 1
+    }
+done
+echo "PASS: no double literal in the sky's per-quad or per-vertex functions,"
+echo "PASS: so the only extra precision in that path is the clock, and it is"
+echo "PASS: read in exactly one place (the scroll cache)."
