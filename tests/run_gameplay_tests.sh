@@ -2285,7 +2285,7 @@ grep -q 'SHIM_PROF_SKY' port/psp/gl_shim.c || {
     echo "FAIL: the profile has no sky bucket"
     exit 1
 }
-grep -q '#define SHIM_PROF_BUCKETS   7' port/psp/gl_shim.c || {
+grep -q '#define SHIM_PROF_BUCKETS   8' port/psp/gl_shim.c || {
     echo "FAIL: the bucket array was not grown, so the sky's microseconds are"
     echo "FAIL: written past the end of it"
     exit 1
@@ -2301,7 +2301,7 @@ grep -q '#define SKY_PROF_BUCKET 5' Quake/gl_sky.c || {
     echo "FAIL: else (see the SHIM_PROF_* enum in port/psp/gl_shim.c)"
     exit 1
 }
-[ "$(awk '/^enum \{$/,/^\};/' port/psp/gl_shim.c | grep -c '^	SHIM_PROF_')" -eq 7 ] || {
+[ "$(awk '/^enum \{$/,/^\};/' port/psp/gl_shim.c | grep -c '^	SHIM_PROF_')" -eq 8 ] || {
     echo "FAIL: the bucket enum does not have the six entries the numbers assume"
     exit 1
 }
@@ -2621,3 +2621,54 @@ grep -q '#define SKY_BOX_SCALE' Quake/gl_sky.c || {
 }
 echo "PASS: the sky's vertex path is single precision throughout -- no software"
 echo "PASS: double sqrt or double multiply per vertex (Allegrex has no .d)."
+
+# ---- the sky's own cost is split where it is spent ---------------------
+#
+# "sky 57.1 ms" was one number for four different jobs: the bounds pass on the
+# CPU, the flat fill, the emission loop (glTexCoord2f/glVertex3fv per corner)
+# and the clip+submit in glEnd().  They are fixed in completely different
+# places, and the last three rounds show what guessing between them costs.
+grep -q 'SKY_PROF_EMIT_BUCKET' Quake/gl_sky.c || {
+    echo "FAIL: the sky's emission loop is not timed separately"
+    exit 1
+}
+awk '/^static int Sky_DrawFaceLayer/,/^}/' Quake/gl_sky.c > /tmp/skylayer2.txt
+grep -q 'emit_t0 = sceKernelGetSystemTimeLow ();' /tmp/skylayer2.txt || {
+    echo "FAIL: no clock before the emission loop"
+    exit 1
+}
+grep -q 'psp_gl_shim_prof_add (SKY_PROF_EMIT_BUCKET' /tmp/skylayer2.txt || {
+    echo "FAIL: the emission loop's time is measured and thrown away"
+    exit 1
+}
+# The clock has to be read BEFORE glEnd and added BEFORE glEnd, or the number
+# includes the clip and submit that the FLUSH bucket already counts.
+python3 - "$PWD" <<'PYEOF' || exit 1
+import sys
+src = open('Quake/gl_sky.c').read()
+i = src.index('static int Sky_DrawFaceLayer')
+j = src.index('\n}\n', src.index('psp_sky_quads += drawn;', i))
+body = src[i:j]
+t_add = body.index('SKY_PROF_EMIT_BUCKET')
+t_end = body.index('glEnd ();', t_add)
+if t_add > t_end:
+    print("FAIL: the emission clock is added after glEnd, so it counts the")
+    print("FAIL: clip and submit as well")
+    sys.exit(1)
+sys.exit(0)
+PYEOF
+grep -q 'SHIM_PROF_SKY_EMIT' port/psp/gl_shim.c || {
+    echo "FAIL: the shim has no bucket for the sky's emission"
+    exit 1
+}
+grep -q '"emit %u.%u of %d verts, ' port/psp/gl_shim.c || {
+    echo "FAIL: the emission time is not printed"
+    exit 1
+}
+grep -q 'psp_sky_verts += drawn \* 4;' Quake/gl_sky.c || {
+    echo "FAIL: the sky does not count the vertices it hands over, so the"
+    echo "FAIL: per-vertex cost cannot be worked out from the log"
+    exit 1
+}
+echo "PASS: the sky reports flat / emit / vertices / faces / quads / draws"
+echo "PASS: separately, so the next log names the loop instead of the file."

@@ -271,7 +271,7 @@ static unsigned int   shim_world_prims;
  * sceGuDrawArray() it is the GE pushing back through the FIFO and the answer is
  * fewer, bigger primitives; if it is in the scene the answer is in R_*; if it is
  * in textures it is the announce path.  The next log says which. */
-#define SHIM_PROF_BUCKETS   7
+#define SHIM_PROF_BUCKETS   8
 enum {
 	SHIM_PROF_SCENE = 0,     /* R_RenderScene, added by gl_rmain.c            */
 	SHIM_PROF_FLUSH,         /* shim_flush_3d: clip + emit for the world      */
@@ -279,7 +279,8 @@ enum {
 	SHIM_PROF_DRAW,          /* sceGuDrawArray + dcache writeback             */
 	SHIM_PROF_PIXELS,        /* glTexImage2D/glTexSubImage2D: texel conversion */
 	SHIM_PROF_SKY,           /* Sky_DrawSky, added by gl_sky.c                 */
-	SHIM_PROF_SKY_FLAT       /* ... of which: the flat fill and the sky bounds */
+	SHIM_PROF_SKY_FLAT,      /* ... of which: the flat fill and the sky bounds */
+	SHIM_PROF_SKY_EMIT       /* ... of which: glBegin..glEnd vertex emission   */
 };
 
 /* The sky's own counters, filled in by Quake/gl_sky.c and printed below: the
@@ -290,6 +291,7 @@ enum {
 int psp_sky_faces;
 int psp_sky_quads;
 int psp_sky_draws;
+int psp_sky_verts;
 
 #if defined(PLATFORM_PSP) || defined(__psp__)
 extern unsigned int sceKernelGetSystemTimeLow (void);
@@ -3785,9 +3787,9 @@ void psp_gl_shim_end_frame (void)
 	 * bucket and no card traffic unless the line is printed. */
 	if (shim_frames <= 3 || (shim_frames % 120) == 0)
 		psp_tracef("prof: frame %u, scene %u.%u ms (sky %u.%u: flat %u.%u, "
-		           "%d faces %d quads %d draws), world flush "
-		           "%u.%u, textures state %u.%u, draw %u.%u, texels %u.%u, "
-		           "%u texture flushes",
+		           "emit %u.%u of %d verts, %d faces %d quads %d draws), world "
+		           "flush %u.%u, textures state %u.%u, draw %u.%u, texels "
+		           "%u.%u, %u texture flushes",
 		           shim_frames,
 		           shim_prof_us[SHIM_PROF_SCENE] / 1000,
 		           (shim_prof_us[SHIM_PROF_SCENE] % 1000) / 100,
@@ -3795,6 +3797,9 @@ void psp_gl_shim_end_frame (void)
 		           (shim_prof_us[SHIM_PROF_SKY] % 1000) / 100,
 		           shim_prof_us[SHIM_PROF_SKY_FLAT] / 1000,
 		           (shim_prof_us[SHIM_PROF_SKY_FLAT] % 1000) / 100,
+		           shim_prof_us[SHIM_PROF_SKY_EMIT] / 1000,
+		           (shim_prof_us[SHIM_PROF_SKY_EMIT] % 1000) / 100,
+		           psp_sky_verts,
 		           psp_sky_faces, psp_sky_quads, psp_sky_draws,
 		           shim_prof_us[SHIM_PROF_FLUSH] / 1000,
 		           (shim_prof_us[SHIM_PROF_FLUSH] % 1000) / 100,
@@ -3878,6 +3883,7 @@ void psp_gl_shim_begin_frame (void)
 		psp_sky_faces = 0;
 		psp_sky_quads = 0;
 		psp_sky_draws = 0;
+		psp_sky_verts = 0;
 	}
 
 	/* gu_psp.c synced the previous frame before it swapped, so the GE is

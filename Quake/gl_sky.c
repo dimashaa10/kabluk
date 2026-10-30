@@ -139,6 +139,7 @@ extern unsigned int sceKernelGetSystemTimeLow (void);
 extern void psp_gl_shim_prof_add (int bucket, unsigned int us);
 #define SKY_PROF_BUCKET 5
 #define SKY_PROF_FLAT_BUCKET 6
+#define SKY_PROF_EMIT_BUCKET 7
 
 /* The sky's own counters, printed by name in the shim's "prof:" line.  The
  * round-85 log had one number for the whole sky -- "sky 135.2 ms" -- and one
@@ -146,6 +147,7 @@ extern void psp_gl_shim_prof_add (int bucket, unsigned int us);
 extern int psp_sky_faces;
 extern int psp_sky_quads;
 extern int psp_sky_draws;
+extern int psp_sky_verts;
 #endif
 
 #ifndef ARRAY_COUNT
@@ -1693,6 +1695,16 @@ static int Sky_DrawFaceLayer (int axis, vec3_t verts[4], vec3_t up, vec3_t right
 	else if (r_skyalpha.value < 1.0f)
 		glColor3f (1, 1, 1);
 
+	{	/* Emission, measured on its own.  From glBegin to just before
+		 * glEnd is the CPU walking quads and handing the shim vertices;
+		 * glEnd is where the shim clips, appends and (once per batch)
+		 * submits.  The two are fixed in completely different places, so
+		 * the "sky 55.5 ms" of the round-88 log is split here instead of
+		 * being guessed at for a fourth round. */
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	unsigned int emit_t0 = sceKernelGetSystemTimeLow ();
+#endif
+
 	glBegin (GL_QUADS);
 
 	for (i = 0; i < di; i++)
@@ -1725,8 +1737,15 @@ static int Sky_DrawFaceLayer (int axis, vec3_t verts[4], vec3_t up, vec3_t right
 		}
 	}
 
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	psp_gl_shim_prof_add (SKY_PROF_EMIT_BUCKET,
+	                      sceKernelGetSystemTimeLow () - emit_t0);
+#endif
+
 	glEnd ();
 	psp_sky_draws++;
+	psp_sky_verts += drawn * 4;
+	}
 
 	psp_sky_quads += drawn;
 
