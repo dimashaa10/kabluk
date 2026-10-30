@@ -271,7 +271,7 @@ static unsigned int   shim_world_prims;
  * sceGuDrawArray() it is the GE pushing back through the FIFO and the answer is
  * fewer, bigger primitives; if it is in the scene the answer is in R_*; if it is
  * in textures it is the announce path.  The next log says which. */
-#define SHIM_PROF_BUCKETS   8
+#define SHIM_PROF_BUCKETS   9
 enum {
 	SHIM_PROF_SCENE = 0,     /* R_RenderScene, added by gl_rmain.c            */
 	SHIM_PROF_FLUSH,         /* shim_flush_3d: clip + emit for the world      */
@@ -280,8 +280,15 @@ enum {
 	SHIM_PROF_PIXELS,        /* glTexImage2D/glTexSubImage2D: texel conversion */
 	SHIM_PROF_SKY,           /* Sky_DrawSky, added by gl_sky.c                 */
 	SHIM_PROF_SKY_FLAT,      /* ... of which: the flat fill and the sky bounds */
-	SHIM_PROF_SKY_EMIT       /* ... of which: glBegin..glEnd vertex emission   */
+	SHIM_PROF_SKY_EMIT,      /* ... of which: glBegin..glEnd vertex emission   */
+	SHIM_PROF_SKY_CLIP       /* ... of which: the sky's glEnd: clip + submit   */
 };
+
+/* Set by Quake/gl_sky.c while it emits a layer, so that the clipping done in
+ * glEnd() can be attributed to the sky instead of to the world.  The sky's
+ * "emit" window spans its own glEnd calls, so without this the two overlap and
+ * the number cannot be decomposed. */
+int psp_sky_in_emit;
 
 /* The sky's own counters, filled in by Quake/gl_sky.c and printed below: the
  * round-85 log could only say "sky 135.2 ms", and 135 ms is either a few
@@ -292,6 +299,12 @@ int psp_sky_faces;
 int psp_sky_quads;
 int psp_sky_draws;
 int psp_sky_verts;
+
+/* Per-frame counters for the 3D path: how many triangles the polygons turned
+ * into, and how many of them were cut.  "quads 814" in the log becomes
+ * "1628 triangles, all clipped" or "... none clipped", which is the difference
+ * between a rasterisation cost and a clipping cost. */
+static unsigned int shim_frame_tris, shim_frame_clipped;
 
 #if defined(PLATFORM_PSP) || defined(__psp__)
 extern unsigned int sceKernelGetSystemTimeLow (void);
@@ -2550,32 +2563,70 @@ static void shim_clip_planes_update (void)
  * The result of clipping a triangle is a triangle or a convex polygon, drawn
  * as a fan around its first vertex -- which is why the loop below starts at 2,
  * not 3. */
-static void shim_emit_3d_triangle (const r_clip_vertex_t *a,
-                                   const r_clip_vertex_t *b,
-                                   const r_clip_vertex_t *c)
+/* One CONVEX polygon, clipped to the view and handed to the GE as a fan.
+ *
+ * This used to be a triangle-only routine, and every caller cut its polygon
+ * into triangles first.  For the sky that meant: a quad of the sky box became
+ * two triangles, each of which was tested against five planes and, when it
+ * crossed one, walked through five half-space passes copying up to sixteen
+ * vertices a time.  The sky box is centred on the eye, so HALF of it is behind
+ * the near plane and most of its quads cross the sides of the view as well --
+ * i.e. almost every sky triangle took the expensive path, twice per quad.
+ *
+ * Clipping the polygon once and fanning the result is the same geometry: the
+ * intersection of a convex polygon with a half-space is the intersection of
+ * the two triangles it is cut into, with the same region, so the picture does
+ * not change and the work halves.  The round-90 log says it in numbers --
+ *
+ *     prof: frame 2520, scene 54.1 ms (sky 37.4: flat 1.4,
+ *          emit 30.0 of 3256 verts, 4 faces 814 quads 10 draws)
+ *
+ * 9.2 microseconds per emitted sky vertex, against 3.4 for the whole rest of
+ * the frame *including* its clipping.  Arithmetic per sky vertex is about
+ * twenty-five floating point operations; nine microseconds is ~3000 cycles.
+ *
+ * The scratch is static rather than on the stack: a frame emits thousands of
+ * these, and the same 1 KB was being carved off the stack (and touched) once
+ * per triangle.  This function does not recurse and the shim is single
+ * threaded, so one set is enough -- the same reasoning as sky_clip_scratch in
+ * Quake/gl_sky.c. */
+static r_clip_vertex_t shim_clip_buf[2][R_CLIP_MAX];
+
+static void shim_emit_3d_convex (const r_clip_vertex_t *poly, int n)
 {
-	r_clip_vertex_t  buf[2][R_CLIP_MAX];
 	r_clip_vertex_t  *cur, *nxt;
-	int              m, i, p;
+	int              m, i, p, behind = 1;
 
-	shim_3d_triangles++;
+	if (n < 3 || n > R_CLIP_MAX - SHIM_CLIP_PLANES)
+		return;
 
-	if (a->w < SHIM_NEAR_W && b->w < SHIM_NEAR_W && c->w < SHIM_NEAR_W)
+	shim_3d_triangles += (unsigned int)(n - 2);
+	shim_frame_tris += (unsigned int)(n - 2);
+
+	for (i = 0; i < n; i++)
+		if (poly[i].w >= SHIM_NEAR_W)
+		{
+			behind = 0;
+			break;
+		}
+
+	if (behind)
 		return;                      /* wholly behind: nothing to draw */
 
-	buf[0][0] = *a;
-	buf[0][1] = *b;
-	buf[0][2] = *c;
-	m = 3;
-	cur = buf[0];
-	nxt = buf[1];
+	for (i = 0; i < n; i++)
+		shim_clip_buf[0][i] = poly[i];
+
+	m = n;
+	cur = shim_clip_buf[0];
+	nxt = shim_clip_buf[1];
 
 	if (!r_clip_inside_all (cur, m, shim_clip_planes, SHIM_CLIP_PLANES))
 	{
 		/* One pass per plane, ping-ponging between the two buffers: a
 		 * polygon clipped by five planes can gain five vertices, which
 		 * R_CLIP_MAX holds. */
-		shim_3d_clipped++;
+		shim_3d_clipped += (unsigned int)(m - 2);
+		shim_frame_clipped += (unsigned int)(m - 2);
 
 		for (p = 0; p < SHIM_CLIP_PLANES; p++)
 		{
@@ -2615,13 +2666,13 @@ static void shim_emit_3d_triangle (const r_clip_vertex_t *a,
 	}
 }
 
-/* Turn the primitive accumulated since glBegin() into clipped triangles.
+/* Turn the primitive accumulated since glBegin() into clipped polygons.
  *
- * Everything becomes a triangle list here, including GL_QUADS and GL_POLYGON,
- * because the clipper works on a polygon and a triangle is the only shape a
- * clipped polygon can always be broken into without knowing more about it.  The
- * engine's 3D path sends GL_POLYGON for a BSP surface and GL_TRIANGLES for
- * models; both arrive here. */
+ * The engine's 3D path sends GL_POLYGON for a BSP surface, GL_QUADS for the sky
+ * and GL_TRIANGLES/GL_TRIANGLE_STRIP for models.  Each of those is handed to
+ * shim_emit_3d_convex() whole where it fits the clipper's buffers, and cut into
+ * triangles only where it does not -- clipping a convex polygon once is the
+ * same region as clipping its fan of triangles, at a fraction of the work. */
 static void shim_flush_3d (void)
 {
 	int n = shim_vertex_count;
@@ -2660,23 +2711,18 @@ static void shim_flush_3d (void)
 	case GL_QUADS:
 		/* v0 v1
 		 * v3 v2   -- the order the engine always uses (see
-		 * shim_flush_quads, which relies on the same one). */
+		 * shim_flush_quads, which relies on the same one).
+		 *
+		 * One clipped convex polygon per QUAD, not two per triangle: see
+		 * the note above shim_emit_3d_convex.  This is the sky's path and
+		 * the models' path, and it halves the clipping work there. */
 		for (i = 0; i + 3 < n; i += 4)
-		{
-			shim_emit_3d_triangle(&shim_clip_vertices[i + 0],
-			                      &shim_clip_vertices[i + 1],
-			                      &shim_clip_vertices[i + 2]);
-			shim_emit_3d_triangle(&shim_clip_vertices[i + 0],
-			                      &shim_clip_vertices[i + 2],
-			                      &shim_clip_vertices[i + 3]);
-		}
+			shim_emit_3d_convex(&shim_clip_vertices[i], 4);
 		break;
 
 	case GL_TRIANGLES:
 		for (i = 0; i + 2 < n; i += 3)
-			shim_emit_3d_triangle(&shim_clip_vertices[i + 0],
-			                      &shim_clip_vertices[i + 1],
-			                      &shim_clip_vertices[i + 2]);
+			shim_emit_3d_convex(&shim_clip_vertices[i], 3);
 		break;
 
 	case GL_TRIANGLE_STRIP:
@@ -2684,23 +2730,43 @@ static void shim_flush_3d (void)
 		{
 			/* A strip alternates its winding; the clipper does not
 			 * care about winding, but a reader of this code does. */
+			r_clip_vertex_t tri[3];
+
 			if (i & 1)
-				shim_emit_3d_triangle(&shim_clip_vertices[i + 1],
-				                      &shim_clip_vertices[i + 0],
-				                      &shim_clip_vertices[i + 2]);
+			{
+				tri[0] = shim_clip_vertices[i + 1];
+				tri[1] = shim_clip_vertices[i + 0];
+				tri[2] = shim_clip_vertices[i + 2];
+			}
 			else
-				shim_emit_3d_triangle(&shim_clip_vertices[i + 0],
-				                      &shim_clip_vertices[i + 1],
-				                      &shim_clip_vertices[i + 2]);
+			{
+				tri[0] = shim_clip_vertices[i + 0];
+				tri[1] = shim_clip_vertices[i + 1];
+				tri[2] = shim_clip_vertices[i + 2];
+			}
+
+			shim_emit_3d_convex(tri, 3);
 		}
 		break;
 
 	case GL_TRIANGLE_FAN:
-	case GL_POLYGON:      /* a convex polygon is a fan around its first vertex */
-		for (i = 1; i + 1 < n; i++)
-			shim_emit_3d_triangle(&shim_clip_vertices[0],
-			                      &shim_clip_vertices[i],
-			                      &shim_clip_vertices[i + 1]);
+	case GL_POLYGON:      /* a convex polygon IS a fan around its first vertex */
+		/* The whole polygon at once when it fits the clipper's buffers
+		 * (a BSP surface of nine vertices is the common case): one pass
+		 * over five planes for the surface instead of one per triangle.
+		 * Past that, fall back to the fan, which is per-triangle. */
+		if (n <= R_CLIP_MAX - SHIM_CLIP_PLANES)
+			shim_emit_3d_convex(shim_clip_vertices, n);
+		else
+			for (i = 1; i + 1 < n; i++)
+			{
+				r_clip_vertex_t tri[3];
+
+				tri[0] = shim_clip_vertices[0];
+				tri[1] = shim_clip_vertices[i];
+				tri[2] = shim_clip_vertices[i + 1];
+				shim_emit_3d_convex(tri, 3);
+			}
 		break;
 
 	default:
@@ -2767,11 +2833,24 @@ void glEnd (void)
 		/* The engine's own polygon work for the world, from the shim's
 		 * side: clipping, emitting and the batch append.  See the note on
 		 * SHIM_PROF_* -- a frame of this map is 176 ms of somebody's time
-		 * and this bucket is one of the candidates. */
+		 * and this bucket is one of the candidates.
+		 *
+		 * The sky's own glEnd is counted twice on purpose: once here (so
+		 * "world flush" keeps meaning "every 3D flush in the frame") and
+		 * once in SKY_CLIP, because the sky's emission window spans its own
+		 * glEnd calls and the two numbers overlap.  Subtracting one from
+		 * the other is what tells clipping from arithmetic. */
 		unsigned int prof_t0 = SHIM_PROF_NOW ();
 
 		shim_flush_3d();
-		shim_prof_us[SHIM_PROF_FLUSH] += SHIM_PROF_NOW () - prof_t0;
+
+		{
+			unsigned int us = SHIM_PROF_NOW () - prof_t0;
+
+			shim_prof_us[SHIM_PROF_FLUSH] += us;
+			if (psp_sky_in_emit)
+				shim_prof_us[SHIM_PROF_SKY_CLIP] += us;
+		}
 		shim_vertex_count = 0;
 		return;
 	}
@@ -3791,7 +3870,8 @@ void psp_gl_shim_end_frame (void)
 	 * bucket and no card traffic unless the line is printed. */
 	if (shim_frames <= 3 || (shim_frames % 120) == 0)
 		psp_tracef("prof: frame %u, scene %u.%u ms (sky %u.%u: flat %u.%u, "
-		           "emit %u.%u of %d verts, %d faces %d quads %d draws), world "
+		           "emit %u.%u of %d verts, %u tris %u clipped, %d faces %d "
+		           "quads %d draws %u.%u clip), world "
 		           "flush %u.%u, textures state %u.%u, draw %u.%u, texels "
 		           "%u.%u, %u texture flushes",
 		           shim_frames,
@@ -3804,7 +3884,10 @@ void psp_gl_shim_end_frame (void)
 		           shim_prof_us[SHIM_PROF_SKY_EMIT] / 1000,
 		           (shim_prof_us[SHIM_PROF_SKY_EMIT] % 1000) / 100,
 		           psp_sky_verts,
+		           shim_frame_tris, shim_frame_clipped,
 		           psp_sky_faces, psp_sky_quads, psp_sky_draws,
+		           shim_prof_us[SHIM_PROF_SKY_CLIP] / 1000,
+		           (shim_prof_us[SHIM_PROF_SKY_CLIP] % 1000) / 100,
 		           shim_prof_us[SHIM_PROF_FLUSH] / 1000,
 		           (shim_prof_us[SHIM_PROF_FLUSH] % 1000) / 100,
 		           shim_prof_us[SHIM_PROF_TEX] / 1000,
@@ -3888,6 +3971,8 @@ void psp_gl_shim_begin_frame (void)
 		psp_sky_quads = 0;
 		psp_sky_draws = 0;
 		psp_sky_verts = 0;
+		shim_frame_tris = 0;
+		shim_frame_clipped = 0;
 	}
 
 	/* gu_psp.c synced the previous frame before it swapped, so the GE is

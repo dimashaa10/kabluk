@@ -148,6 +148,11 @@ extern int psp_sky_faces;
 extern int psp_sky_quads;
 extern int psp_sky_draws;
 extern int psp_sky_verts;
+/* Set while the sky emits, so the shim can attribute the clipping done inside
+ * glEnd() to the sky rather than to the world.  The sky's emission window spans
+ * its own glEnd calls, so without this the two numbers overlap and neither can
+ * be read. */
+extern int psp_sky_in_emit;
 #endif
 
 #ifndef ARRAY_COUNT
@@ -1790,11 +1795,16 @@ static int Sky_DrawFaceLayer (int axis, vec3_t verts[4], vec3_t up, vec3_t right
 #if defined(PLATFORM_PSP) || defined(__psp__)
 	psp_gl_shim_prof_add (SKY_PROF_EMIT_BUCKET,
 	                      sceKernelGetSystemTimeLow () - emit_t0);
+	psp_sky_in_emit = 1;   /* this glEnd is the sky's, not the world's */
 #endif
 
 	glEnd ();
 	psp_sky_draws++;
 	psp_sky_verts += drawn * 4;
+
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	psp_sky_in_emit = 0;
+#endif
 	}
 
 	psp_sky_quads += drawn;

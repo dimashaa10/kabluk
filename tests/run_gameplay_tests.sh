@@ -2285,7 +2285,7 @@ grep -q 'SHIM_PROF_SKY' port/psp/gl_shim.c || {
     echo "FAIL: the profile has no sky bucket"
     exit 1
 }
-grep -q '#define SHIM_PROF_BUCKETS   8' port/psp/gl_shim.c || {
+grep -q '#define SHIM_PROF_BUCKETS   9' port/psp/gl_shim.c || {
     echo "FAIL: the bucket array was not grown, so the sky's microseconds are"
     echo "FAIL: written past the end of it"
     exit 1
@@ -2301,8 +2301,8 @@ grep -q '#define SKY_PROF_BUCKET 5' Quake/gl_sky.c || {
     echo "FAIL: else (see the SHIM_PROF_* enum in port/psp/gl_shim.c)"
     exit 1
 }
-[ "$(awk '/^enum \{$/,/^\};/' port/psp/gl_shim.c | grep -c '^	SHIM_PROF_')" -eq 8 ] || {
-    echo "FAIL: the bucket enum does not have the six entries the numbers assume"
+[ "$(awk '/^enum \{$/,/^\};/' port/psp/gl_shim.c | grep -c '^	SHIM_PROF_')" -eq 9 ] || {
+    echo "FAIL: the bucket enum does not have the nine entries the numbers assume"
     exit 1
 }
 grep -q 'sky: this map has no external skybox' Quake/gl_sky.c &&
@@ -2754,3 +2754,71 @@ grep -q '#ifdef PLATFORM_PSP' "$work/skytex2.txt" || {
     echo "FAIL: the fast path is not confined to the console build"
     exit 1
 }
+
+# ---- a convex polygon is clipped ONCE, not once per triangle -----------
+#
+# The sky's quads used to become two triangles, each tested against five planes
+# and each walking five half-space passes when it crossed one -- and the sky box
+# is centred on the eye, so half of it is behind the near plane and most quads
+# cross the sides of the view too.  Clipping the quad once and fanning the
+# result covers the same region (the intersection of a convex polygon with a
+# half-space is the intersection of its triangles), at half the work.
+grep -q 'static r_clip_vertex_t shim_clip_buf\[2\]\[R_CLIP_MAX\];' port/psp/gl_shim.c || {
+    echo "FAIL: the clipper's scratch is back on the stack: one kilobyte carved"
+    echo "FAIL: off and touched once per emitted polygon"
+    exit 1
+}
+grep -q 'static void shim_emit_3d_convex (const r_clip_vertex_t \*poly, int n)' port/psp/gl_shim.c || {
+    echo "FAIL: there is no polygon-level emit, so every quad is still clipped"
+    echo "FAIL: as two independent triangles"
+    exit 1
+}
+grep -q 'shim_emit_3d_triangle' port/psp/gl_shim.c && {
+    echo "FAIL: the triangle-only path is still there"
+    exit 1
+}
+awk '/^static void shim_flush_3d/,/^}/' port/psp/gl_shim.c > /tmp/flush3d.txt
+grep -q 'shim_emit_3d_convex(&shim_clip_vertices\[i\], 4);' /tmp/flush3d.txt || {
+    echo "FAIL: a GL_QUADS primitive is not emitted as one polygon per quad"
+    exit 1
+}
+grep -q 'shim_emit_3d_convex(shim_clip_vertices, n);' /tmp/flush3d.txt || {
+    echo "FAIL: a GL_POLYGON surface is not clipped as a whole"
+    exit 1
+}
+# The whole polygon only when the clipper's buffers hold the result: a polygon
+# can gain one vertex per plane.
+grep -q 'if (n <= R_CLIP_MAX - SHIM_CLIP_PLANES)' /tmp/flush3d.txt || {
+    echo "FAIL: nothing bounds the polygon size before it is copied into the"
+    echo "FAIL: clipper's R_CLIP_MAX buffers"
+    exit 1
+}
+grep -q 'if (n < 3 || n > R_CLIP_MAX - SHIM_CLIP_PLANES)' port/psp/gl_shim.c || {
+    echo "FAIL: shim_emit_3d_convex does not guard its own input size"
+    exit 1
+}
+# And the log can now tell clipping from arithmetic, for the sky in particular.
+grep -q '^int psp_sky_in_emit;' port/psp/gl_shim.c || {
+    echo "FAIL: nothing attributes the sky's glEnd work to the sky"
+    exit 1
+}
+grep -q 'psp_sky_in_emit = 1;' Quake/gl_sky.c || {
+    echo "FAIL: the sky never sets the flag, so its clip time stays unnamed"
+    exit 1
+}
+grep -q 'psp_sky_in_emit = 0;' Quake/gl_sky.c || {
+    echo "FAIL: the flag is never cleared, so the world's own flushes would be"
+    echo "FAIL: counted as the sky's"
+    exit 1
+}
+grep -q 'SHIM_PROF_SKY_CLIP' port/psp/gl_shim.c || {
+    echo "FAIL: no bucket for the sky's clip time"
+    exit 1
+}
+grep -q '%u tris %u clipped, ' port/psp/gl_shim.c || {
+    echo "FAIL: the profile line does not say how many triangles were clipped"
+    exit 1
+}
+echo "PASS: a convex polygon (a sky quad, a BSP surface) is clipped once and"
+echo "PASS: fanned, from scratch buffers that are not on the stack, and the log"
+echo "PASS: now separates the sky's clipping from its arithmetic."
