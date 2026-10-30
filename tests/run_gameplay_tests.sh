@@ -2492,3 +2492,71 @@ grep -q 'Sky_ClipPoly (newc\[0\], newv\[0\]\[0\], stage+1);' /tmp/clip.txt || {
 }
 echo "PASS: the sky's clipper no longer walks the stack once per surface with"
 echo "PASS: 2 KB of work arrays per level."
+
+# ---- a platform #ifdef that the console build does not define ----------
+#
+# Round 86's hardware log exposed a compile-time bug that no host check could
+# see:
+#
+#     prof: frame 480, scene 148.6 ms (sky 145.2: flat 0.9,
+#                                      0 faces 0 quads 0 draws)
+#
+# A hundred and forty-five milliseconds inside Sky_DrawSky, and the counters
+# that live next to the drawing all zero -- because the drawing was in
+#
+#     #ifdef PLATFORM_PSP          <- FALSE on the console build
+#
+# while the profiling next to it was in
+#
+#     #if defined(PLATFORM_PSP) || defined(__psp__)   <- TRUE
+#
+# PLATFORM_PSP is not passed by port/psp/Makefile: it is derived from the
+# compiler's __psp__ by Quake/arch_def.h, and quakedef.h does NOT include that
+# header -- fifteen engine files include it themselves and gl_sky.c did not.
+# So the batched sky path of round 85 was never compiled, and every host
+# -fsyntax-only check passed anyway, because those checks pass -DPLATFORM_PSP
+# explicitly: they compile a build that does not exist.
+grep -q '^#include "arch_def.h"' Quake/gl_sky.c || {
+    echo "FAIL: gl_sky.c does not include arch_def.h, so a bare #ifdef"
+    echo "FAIL: PLATFORM_PSP in it is dead code on the console (the Makefile"
+    echo "FAIL: does not pass -DPLATFORM_PSP; __psp__ does not define it)"
+    exit 1
+}
+# The same rule, for the whole tree: a source file may spell PLATFORM_PSP
+# however it likes only if it includes arch_def.h; otherwise every use must
+# carry the || defined(__psp__) fallback.
+for f in Quake/*.c port/psp/*.c; do
+    grep -q "PLATFORM_PSP" "$f" || continue
+    grep -q '^#include "arch_def.h"' "$f" && continue
+    # `|| true`: this script runs under `set -e`, and a grep that finds
+    # nothing is a failure that would end the run here -- silently, which is
+    # how this very check first "passed": it exited at the first file with no
+    # bare use and never reached the file that had one.
+    grep -n "PLATFORM_PSP" "$f" | grep -v "^[0-9]*: *\*" | grep -v "defined(__psp__)" |
+        grep -v "defined (__psp__)" > /tmp/bare.txt || true
+    if [ -s /tmp/bare.txt ]; then
+        echo "FAIL: $f uses PLATFORM_PSP without including arch_def.h and"
+        echo "FAIL: without the defined(__psp__) fallback, so that branch is"
+        echo "FAIL: dead on the console:"
+        head -3 /tmp/bare.txt
+        exit 1
+    fi
+done
+# And the batched path itself: reachable under __psp__ alone.  Checked by
+# preprocessing the file the way the console build does -- __psp__, and NOT
+# -DPLATFORM_PSP.
+if command -v cc >/dev/null 2>&1 && [ -d /tmp/pspstub/empty ]; then
+    cc -E -std=gnu11 -w -D__psp__ -DPLATFORM_PROBE_ONLY -I/tmp/sdlinc \
+       -I/tmp/pspstub/empty -Iport/psp -IQuake \
+       -include /tmp/pspstub/empty/pspstub.h Quake/gl_sky.c 2>/dev/null > /tmp/sky_pp.txt
+    if [ -s /tmp/sky_pp.txt ]; then
+        grep -q 'psp_sky_quads += drawn;' /tmp/sky_pp.txt || {
+            echo "FAIL: with only __psp__ defined (what the console build"
+            echo "FAIL: has), the batched sky is not compiled"
+            exit 1
+        }
+    fi
+fi
+echo "PASS: gl_sky.c includes arch_def.h, so PLATFORM_PSP and __psp__ agree,"
+echo "PASS: the batched sky survives preprocessing with __psp__ alone, and no"
+echo "PASS: engine file has a PLATFORM_PSP branch that the console never sees."

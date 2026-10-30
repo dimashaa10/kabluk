@@ -24,6 +24,34 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "quakedef.h"
 
+/* PLATFORM_PSP, and not only the compiler's __psp__.
+ *
+ * quakedef.h does not include arch_def.h -- fifteen engine files include it
+ * themselves, and this one did not.  The Makefile does not pass -DPLATFORM_PSP
+ * either (it passes nothing platform-specific; the PSP toolchain predefines
+ * __psp__).  So on the console build, in THIS file only,
+ *
+ *     #if defined(PLATFORM_PSP) || defined(__psp__)     <- true  (profiling)
+ *     #ifdef PLATFORM_PSP                              <- FALSE (drawing!)
+ *
+ * and the round-85 batched sky was never compiled at all.  The round-86
+ * hardware log is what exposed it, in one line:
+ *
+ *     prof: frame 480, scene 148.6 ms (sky 145.2: flat 0.9,
+ *                                      0 faces 0 quads 0 draws)
+ *
+ * -- a hundred and forty-five milliseconds spent inside Sky_DrawSky with not
+ * one quad accounted for, because the counters live in the branch that was
+ * optimised away and the desktop per-quad loop was doing the drawing.  Every
+ * "fix" in that path since round 85 was inert, and no host -fsyntax-only check
+ * could see it: those checks pass -DPLATFORM_PSP explicitly, i.e. they compile
+ * a build that does not exist.
+ *
+ * Including arch_def.h is what the other engine files do and it makes the two
+ * spellings agree from here on.  tests/run_gameplay_tests.sh now refuses a
+ * bare PLATFORM_PSP in a file that does not include it. */
+#include "arch_def.h"
+
 #define	MAX_CLIP_VERTS 64
 
 float Fog_GetDensity(void);
@@ -1726,9 +1754,10 @@ void Sky_DrawFace (int axis)
 			rs_skypasses += n;
 		}
 	}
-	return;
-#endif
-
+#else
+	/* The desktop path: the same quads, one glBegin/glEnd pair each.  Here a
+	 * draw call is cheap and the subdivision is what makes the projection
+	 * accurate, so there is nothing to batch. */
 	start = Hunk_LowMark ();
 	p = (glpoly_t *) Hunk_Alloc(sizeof(glpoly_t));
 
@@ -1743,6 +1772,7 @@ void Sky_DrawFace (int axis)
 		}
 	}
 	Hunk_FreeToLowMark (start);
+#endif
 }
 
 /*

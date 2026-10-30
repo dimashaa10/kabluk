@@ -23,6 +23,17 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "quakedef.h"
 
+/* PLATFORM_PSP, from the compiler's __psp__ (Quake/arch_def.h).
+ *
+ * Needed by the `#ifndef PLATFORM_PSP` below, which switches the JPEG probe of
+ * stb_image off on the console.  quakedef.h does not include arch_def.h, so
+ * until round 87 that condition was simply true here -- PLATFORM_PSP was never
+ * defined in this file -- and the JPEG decoder was kept out only by the second,
+ * inner `#ifndef __psp__` sitting right behind it.  It worked, but by accident:
+ * anything added under the outer guard would have been compiled into the
+ * console build while reading as "not for the PSP". */
+#include "arch_def.h"
+
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #define STB_IMAGE_WRITE_STATIC
 #include "stb_image_write.h"
