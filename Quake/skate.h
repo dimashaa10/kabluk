@@ -41,13 +41,19 @@
 #define SKATE_SLIDE_EDGE_INSET 4.0f
 #define SKATE_SLIDE_EDGE_SNAP_UP 64.0f
 #define SKATE_SLIDE_EDGE_SNAP_DOWN 24.0f
+/* A tap is a convenience for a rider who is already rolling, not a climbing
+ * tool: it needs real momentum and may only reach a lip the board can roll up
+ * to. Collision latches keep the generous SKATE_SLIDE_EDGE_SNAP_UP mantle. */
+#define SKATE_SLIDE_TAP_MIN_SPEED 120.0f
+#define SKATE_SLIDE_TAP_SNAP_UP 24.0f
+#define SKATE_SLIDE_TOGGLE_COOLDOWN 0.35	// seconds; also bounds the probe cost
 #define SKATE_SLIDE_EDGE_SEARCH_PADDING 8.0f
 #define SKATE_SLIDE_EDGE_PROBE_DEPTH 24.0f
 #define SKATE_SLIDE_EDGE_SIDE_DEPTH 8.0f
 #define SKATE_SLIDE_EDGE_HEIGHT_TOLERANCE 24.0f
 #define SKATE_SLIDE_EDGE_TOP_NORMAL_Z 0.7f
 #define SKATE_SLIDE_EDGE_OFFSET 0.0f
-#define SKATE_SLIDE_BOARD_PITCH 45.0f
+#define SKATE_SLIDE_BOARD_PITCH 0.0f //45.0f
 #define SKATE_BRAKING 5.0f
 #define SKATE_TURN_RATE 120.0f
 #define SKATE_STEER_ANGLE 35.0f
@@ -58,6 +64,12 @@
 #define SKATE_CAMERA_FOCUS_DROP 16.0f
 #define SKATE_GROUND_CLEARANCE 1.0f
 #define SKATE_MAX_LIFT 64.0f
+
+/* The engine sends STAT_SKATE in legacy datagrams only when the value changes,
+ * plus this many redundant repeats so a lost packet cannot leave the chase
+ * camera latched on or off. Predinfo/FTE-delta clients use the normal
+ * acknowledged stat channel and need none of this. */
+#define SV_SKATE_STAT_REPEATS 3
 
 /* One stock-compatible stat carries both mode and camera lift (1/256 units).
  * The signature avoids treating another mod's ordinary stat 19 as skating.

@@ -2024,6 +2024,34 @@ static qboolean RSceneCache_Queue(byte *vis)
 	int e;
 	static int settingconflict;
 
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	/* ---- the scene cache cannot work on this console, and its failure is
+	 *      silent: the world is simply never drawn ----------------------
+	 *
+	 * The cache is built by a WORKER THREAD (RSceneCache_Thread, below) and
+	 * drawn from a vertex buffer object, with the surfaces submitted through
+	 * glDrawElements().  The PSP port has neither:
+	 *
+	 *   - SDL_CreateThread() in port/psp/sdl_stub.c deliberately never runs
+	 *     the function it is given (a thread that spins on a condition
+	 *     variable froze Host_Init -- see the comment there), so the worker
+	 *     never starts, the cache stays in SCS_BUILDING forever, and every
+	 *     frame hands back a cache with no batches in it;
+	 *   - GL_BuildBModelVertexBuffer() (r_brush.c) returns early unless
+	 *     gl_vbo_able && gl_mtexable && gl_max_texture_units >= 3, so
+	 *     gl_bmodel_vbo stays 0, and glDrawElements()/
+	 *     glVertexAttribPointer() are the empty stubs in
+	 *     port/psp/gl_stub.c.
+	 *
+	 * With the cache off, R_DrawWorld keeps its classic path: it walks the
+	 * visible leaves and calls glBegin(GL_POLYGON)/glVertex3fv() per
+	 * surface (r_world.c, r_brush.c), which is exactly what
+	 * port/psp/gl_shim.c draws -- on the GE, with the hardware doing the
+	 * transform.  r_scenecache is left as a cvar (a config file can turn it
+	 * on), but on this hardware there is nothing it can do. */
+	return false;
+#endif
+
 	static int old_lightstylevalue[countof(d_lightstylevalue)];
 	byte *bakesubmodels;
 

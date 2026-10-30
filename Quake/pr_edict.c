@@ -23,6 +23,13 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "quakedef.h"
 
+#if defined(PLATFORM_PSP) || defined(__psp__)
+/* port/psp/psp_console.c.  psp_tracef() joins the log batch, psp_trace_syncf()
+ * is on the card when it returns -- see the note on PR_AllocEdicts. */
+extern void psp_tracef (const char *fmt, ...);
+extern void psp_trace_syncf (const char *fmt, ...);
+#endif
+
 int		type_size[8] = {
 	1,					// ev_void
 	1,	// sizeof(string_t) / 4		// ev_string
@@ -292,10 +299,10 @@ static const char *PR_ValueString (int type, eval_t *val)
 		q_snprintf (line, sizeof(line), "%5.1f", val->_double);
 		break;
 	case ev_ext_integer:
-		sprintf (line, "%i", val->_int);
+		sprintf (line, "%i", (int)val->_int);	/* int32_t is long on some ports */
 		break;
 	case ev_ext_uint32:
-		sprintf (line, "%u", val->_uint32);
+		sprintf (line, "%u", (unsigned int)val->_uint32);
 		break;
 	case ev_ext_sint64:
 		sprintf (line, "%"PRIi64, val->_sint64);
@@ -357,10 +364,10 @@ const char *PR_UglyValueString (int type, eval_t *val)
 		q_snprintf (line, sizeof(line), "%f", val->_float);
 		break;
 	case ev_ext_integer:
-		sprintf (line, "%i", val->_int);
+		sprintf (line, "%i", (int)val->_int);	/* int32_t is long on some ports */
 		break;
 	case ev_ext_uint32:
-		sprintf (line, "%u", val->_uint32);
+		sprintf (line, "%u", (unsigned int)val->_uint32);
 		break;
 	case ev_ext_sint64:
 		sprintf (line, "%"PRIi64, val->_sint64);
@@ -1287,6 +1294,148 @@ static void PR_MergeEngineFieldDefs (void)
 
 /*
 ===============
+PR_AllocEdicts
+
+The entity array of a VM: one malloc of max_edicts * edict_size, at the top of
+every map, in three places (SV_SpawnServer, CL_LoadCSProgs, MQC_Init).
+
+It used to be written out at each of them as
+
+	qcvm->max_edicts = CLAMP (MIN_EDICTS, (int)max_edicts.value, MAX_EDICTS);
+	qcvm->edicts = (edict_t *) malloc (max_edicts_cvar * edict_size);
+
+with max_edicts defaulting to 15000.  For this game's progs edict_size is 1160
+bytes, so the request is
+
+	15000 * 1160 = 17 400 000 bytes
+
+-- the exact number in the round-67 log:
+
+	malloc: NULL for 17400000 bytes at 0x08949d64 -- last pic: cached,
+	phase host frame: input/commands/clien
+
+The heap block malloc() serves on the console is 10 MB (port/psp/psp_heap.c),
+of which 2.2 MB were already in use, so this could never be served, and the
+NULL was written through a moment later: the module died at the top of the
+level.  It is not a file, not a picture and not a leak -- it is a fixed
+allocation six times bigger than the console can ever make.
+
+So the size is computed from what the console actually has, and the answer is
+printed.  Two things follow from it:
+
+  * a VM gets the most edicts that still leave ROOM_FOR_THE_LEVEL for
+    everything else -- the progs of the other VMs, model scratch buffers, the
+    pak directory.  A client VM that spawns after the server VM sees what is
+    left, and shrinks the same way;
+  * a malloc that still fails is reported with both numbers and the caller
+    turns it into a Host_Error instead of a write through NULL.
+
+On the desktop nothing changes: the reserve is only taken when the platform
+knows its heap (psp_heap_block_left() returns 0 elsewhere).
+===============
+*/
+qboolean PR_AllocEdicts (qcvm_t *vm)
+{
+	extern cvar_t max_edicts;
+	int	want;
+	char	why[160];
+
+	if (!vm || !vm->progs || vm->edict_size <= 0)
+		return false;
+
+	want = CLAMP (MIN_EDICTS, (int)max_edicts.value, MAX_EDICTS);
+	why[0] = '\0';
+
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	/* ---- the ceiling the round-71 build proved ---------------------------
+	 *
+	 * Until now the size came only from what the heap could hold, i.e. from
+	 * the heap's SIZE -- so a bigger heap bought a bigger entity array, and
+	 * the array is the largest single thing the client or the server ever
+	 * allocates.  The 03:12 build on the 14 MB heap made the whole budget
+	 * visible in one line:
+	 *
+	 *     edicts: 8582 of 1160 bytes = 9721 KB -- reduced from 15000
+	 *
+	 * 9.7 MB of a 10 MB heap for an array that a single-player map fills a
+	 * few hundred entries of.  That is not a number to compute, it is a
+	 * number to CHOOSE: the entity array must be small enough that the
+	 * transient allocations of a level load (the model loader's scratch, the
+	 * picture decoder, the alias meshes) still fit beside it.
+	 *
+	 * 2048 edicts is 2375 KB for this game's 1160-byte edict and is several
+	 * times what a single-player map needs (vanilla Quake rarely passes 700).
+	 * A map that does need more says so -- ED_Alloc's "no free edicts" -- and
+	 * this constant is where it is raised. */
+#define PSP_MAX_EDICTS 2048
+
+	if (want > PSP_MAX_EDICTS)
+	{
+		snprintf (why, sizeof(why),
+		          " -- held to %d: the heap has to hold a level load too",
+		          PSP_MAX_EDICTS);
+		want = PSP_MAX_EDICTS;
+	}
+
+	{
+		extern unsigned int psp_heap_block_left (void);
+		unsigned int room = psp_heap_block_left ();
+
+		if (room)
+		{
+			/* What the level still needs after the entity array: a
+			 * 4 MB reserve is generous next to what the console had in
+			 * use after Host_Init (2.2 MB) and it is what keeps a
+			 * second VM from failing after the first one took
+			 * everything.  Never more than half of the room, so a small
+			 * heap still gets a usable number. */
+			unsigned int reserve = 4u * 1024u * 1024u;
+			unsigned int fit;
+
+			if (reserve > room / 2u)
+				reserve = room / 2u;
+			fit = (room - reserve) / (unsigned int)vm->edict_size;
+
+			if (fit < (unsigned int)MIN_EDICTS)
+			{
+				psp_trace_syncf ("edicts: %d KB left in the heap cannot hold even "
+				                 "%d edicts of %d bytes -- no map can start",
+				                 (int)(room / 1024), MIN_EDICTS, vm->edict_size);
+				return false;
+			}
+
+			if ((unsigned int)want > fit)
+			{
+				snprintf (why + strlen(why), sizeof(why) - strlen(why),
+				          " -- reduced to %d, the heap cannot hold it", (int)fit);
+				want = (int)fit;
+			}
+		}
+	}
+#endif
+
+	vm->max_edicts = want;
+	vm->edicts = (edict_t *) malloc ((size_t)want * (size_t)vm->edict_size);
+
+	snprintf (why + strlen(why), sizeof(why) - strlen(why),
+	          vm->edicts ? "" : " -- FAILED");
+
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	if (vm->edicts)
+		psp_tracef ("edicts: %d of %d bytes = %d KB%s", want, vm->edict_size,
+		            (int)(((long)want * vm->edict_size) / 1024), why);
+	else
+		psp_trace_syncf ("edicts: %d of %d bytes = %d KB%s", want, vm->edict_size,
+		                 (int)(((long)want * vm->edict_size) / 1024), why);
+#else
+	(void)why;
+#endif
+
+	return vm->edicts != NULL;
+}
+
+/*
+===============
 PR_LoadProgs
 ===============
 */
@@ -1295,6 +1444,60 @@ qboolean PR_LoadProgs (const char *filename, qboolean fatal, unsigned int needcr
 	int			i;
 
 	PR_ClearProgs(qcvm);	//just in case.
+
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	/* ---- the two numbers that decide whether this can work at all -------
+	 *
+	 * COM_LoadMallocFile() reads the whole progs into one malloc(): the QC VM
+	 * addresses everything by offset into that block, so the file -- not just
+	 * its code -- has to be resident.  The pool malloc() serves on the console
+	 * is a fixed 10 MB (port/psp/psp_heap.c), and both map-start logs so far
+	 * ended at
+	 *
+	 *     malloc: NULL for 17400000 bytes at 0x08949898 -- last pic: cached,
+	 *     phase host frame: input/commands/clien
+	 *
+	 * -- 17.4 MB, which is COM_LoadFile()'s len+1 of a 17 399 999-byte file.
+	 * Two files are read whole at the start of a level: the .bsp, for the map
+	 * CRC in SV_SpawnServer() below (that one was 17.4 MB of the heap until
+	 * round 67 replaced it with a 4 KB window, port/README.md 3al), and this
+	 * one.  If it is the progs, the log has to say so -- with the file's size
+	 * and what the heap can still reach -- instead of the module dying on a
+	 * NULL that COM_LoadFile() turns into a Sys_Error() with nowhere to go. */
+	{
+		extern unsigned int psp_heap_block_left (void);
+		FILE *probe = NULL;
+		int progsize = COM_FOpenFile (filename, &probe, NULL);
+		unsigned int room = psp_heap_block_left ();
+
+		if (progsize >= 0 && probe)
+			fclose (probe);
+
+		if (progsize < 0)
+		{
+			psp_tracef ("progs: %s not found in the search path", filename);
+		}
+		else
+		{
+			qboolean fits = ((unsigned int)progsize + 1u <= room);
+
+			psp_tracef ("progs: %s is %d KB; malloc can still reach %d KB%s",
+			            filename, progsize / 1024, (int)(room / 1024),
+			            fits ? "" : " -- TOO BIG FOR THE HEAP");
+
+			if (!fits)
+			{
+				/* Do not ask for memory that cannot exist: the answer is a
+				 * NULL that Sys_Error()s inside the server spawn.  Name the
+				 * problem where it can be read. */
+				Host_Error ("%s is %i KB and this console can only give malloc "
+				            "%i KB: the progs does not fit (see port/README.md 3al)",
+				            filename, progsize / 1024, (int)(room / 1024));
+				return false;
+			}
+		}
+	}
+#endif
 
 	qcvm->progs = (dprograms_t *)COM_LoadMallocFile(filename, NULL);
 	if (!qcvm->progs)

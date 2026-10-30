@@ -238,6 +238,8 @@ typedef struct client_s
 	int lastmovemessage;
 	double lastmovetime;
 	qboolean usingpmove;	//using the SV_RunClientCommand entrypoint, or getting pmove thrust upon them serverside (disables sv_user.c+movetype stuff, enables provides pmove hints to the client)
+	qboolean use_held;		// +use was down in the last command (action key edge detection)
+	double use_nexttime;	// earliest time this client may press a button again
 	qboolean crouched;		// crouch hull active during crouching/standing transition
 	qboolean crouch_wanted;	// current +movedown target
 	qboolean crouch_bounds_saved;
@@ -281,16 +283,20 @@ typedef struct client_s
 	float			skate_lift;
 	qboolean		skate_grounded;		// rearm a flip only after touching ground
 	qboolean		skate_jump_active;	// airborne after a real jump, independent of flip animation
+	qboolean		skate_jump_input;	// +jump seen in the latest move packet
 	qboolean		skate_slide_armed;	// slide mode toggled by press; key-up does not disarm it
 	qboolean		skate_sliding;		// grind-latched to a brush upper edge until its end or toggle-off
 	vec3_t			skate_slide_normal;
 	edict_t			*skate_slide_surface;
 	float			skate_slide_edge_height;
+	double			skate_slide_next_toggle;	// anti-spam gate for +skate_slide
 	int				skate_anim_state;
 	int				skate_anim_frame;
 	double			skate_anim_next_frame_time;
 	qboolean		skate_flip_active;
 	double			skate_flip_start_time;
+	int				skate_stat_sent;	// last STAT_SKATE written to a legacy datagram
+	int				skate_stat_repeat;	// redundant repeats left, to survive packet loss
 } client_t;
 
 
@@ -408,6 +414,18 @@ void SV_AddUpdates (void);
 void SV_ClientThink (void);
 void SV_UpdateCrouch (client_t *client, edict_t *ent, float upmove);
 void SV_UpdateCrouchAnimation (client_t *client, edict_t *ent);
+void SV_UpdateSpeedInfo (const vec3_t vel, const usercmd_t *ucmd, qboolean grounded);
+
+/* The action key's rules are fixed, not tunable: see sv_user.c. */
+#define	SV_USE_CLASSES	"func_button"	// the only classname a hand may press
+#define	SV_USE_RANGE	64.0f			// reach of +use, in units
+
+qboolean SV_UseClassListed (const char *list, const char *classname);
+qboolean SV_UseEntityAllowed (const edict_t *target);
+edict_t *SV_UseFindTarget (edict_t *player);
+void SV_UseExecute (edict_t *player, edict_t *target);
+qboolean SV_UsePress (edict_t *player);
+qboolean SV_UseInputEdge (client_t *client, unsigned int buttonbits);
 void SV_AddClientToServer (struct qsocket_s	*ret);
 
 void SV_ClientPrintf (const char *fmt, ...) FUNC_PRINTF(1,2);

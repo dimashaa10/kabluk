@@ -26,12 +26,14 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "pmove.h"
 
 #include "arch_def.h"
-#ifdef PLATFORM_UNIX
-//for unlink
+#if defined(PLATFORM_UNIX) || defined(PLATFORM_PSP)
+//for unlink -- PSP's libc has it too, through the newlib POSIX layer
 #include <unistd.h>
 #endif
 
+#if FEATURE_CURL
 #include <curl/curl.h> // woods #webdl
+#endif
 #include "cfgfile.h" // woods #webdl
 #include "q_ctype.h" // woods #entcopy
 
@@ -182,6 +184,33 @@ void CL_ClearState (void)
 
 	//johnfitz -- cl_entities is now dynamically allocated
 	cl.max_edicts = CLAMP (MIN_EDICTS,(int)max_edicts.value,MAX_EDICTS);
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	/* ---- the client array only has to be as big as the server can talk ---
+	 *
+	 * The two arrays are different things with the same cvar:
+	 *
+	 *   sv.qcvm->edicts     one malloc, max_edicts * edict_size (1160 for
+	 *                       this game) -- 3852 KB at 3401 edicts, and
+	 *                       PR_AllocEdicts() already sizes it from what the
+	 *                       10 MB heap can hold;
+	 *   cl.entities         a hunk block, cl.max_edicts * sizeof(entity_t)
+	 *                       (376 bytes) -- and sizeof is why it was the
+	 *                       biggest single block in the round-70 hunk:
+	 *                       15000 * 376 = 5507 KB of 19456 KB.
+	 *
+	 * An edict number reaching the client is an index into the *server's*
+	 * array (CL_EntityNum()), so it can never be >= sv.qcvm.max_edicts.  On
+	 * the PSP the only connection there can be is the loopback one
+	 * (port/psp/net_psp.c registers that driver and nothing else), so the
+	 * local server's own limit is the exact bound: the same 3401 edicts
+	 * become 1249 KB instead of 5507 KB, 4 MB back into the hunk on the
+	 * frame where the world textures are converted.
+	 *
+	 * On the desktop, and for a client whose listen server is not the thing
+	 * it will talk to, nothing changes: max_edicts.value decides, as before. */
+	if (sv.active && sv.qcvm.max_edicts > 0 && sv.qcvm.max_edicts < cl.max_edicts)
+		cl.max_edicts = CLAMP (MIN_EDICTS, sv.qcvm.max_edicts, MAX_EDICTS);
+#endif
 	cl.entities = (entity_t *) Hunk_AllocName (cl.max_edicts*sizeof(entity_t), "cl_entities");
 	//johnfitz
 
@@ -384,6 +413,30 @@ void CL_SignonReply (void)
 	char 	str[8192];
 
 	Con_DPrintf ("CL_SignonReply: %i\n", cls.signon);
+
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	/* The signon is the gate the port spent round 71 stuck behind, and the
+	 * only trace of it in the log was `state 2` -- the number of the client
+	 * state, not of the signon stage.  Each reply is printed once, on the
+	 * card, so a log that stops after one of these lines says exactly which
+	 * stage of the connect the engine never got past.
+	 *
+	 * Stages (SIGNONS is 4): 1 name, 2 colour+userinfo+spawn, 3 begin,
+	 * 4 the world is live and the console closes. */
+	{
+		extern void psp_tracef (const char *fmt, ...);
+		static int seen[8];
+
+		if (cls.signon > 0 && cls.signon < (int)(sizeof(seen) / sizeof(seen[0])) &&
+		    !seen[cls.signon])
+		{
+			seen[cls.signon] = 1;
+			psp_tracef ("signon: reply %d of %d (state %d, worldmodel %s)",
+			            cls.signon, SIGNONS, (int)cls.state,
+			            cl.worldmodel ? "yes" : "no");
+		}
+	}
+#endif
 
 	switch (cls.signon)
 	{
@@ -791,35 +844,48 @@ static qboolean CL_LerpEntity(entity_t *ent, vec3_t org, vec3_t ang, float frac)
 #endif
 		PMCL_SetMoveVars();
 
+		/* The snapshot always carries the *standing* hull; the crouch flag says
+		 * which of the two hulls is active right now. PM_SeedCrouch below turns
+		 * that back into the effective hull, so a replayed crouch command
+		 * produces the same boxes (and the same movement) as on the server. */
 		if (ent->netstate.solidsize)
 		{
-			pmove.player_maxs[0] = pmove.player_maxs[1] = ent->netstate.solidsize & 255;
-			pmove.player_mins[0] = pmove.player_mins[1] = -pmove.player_maxs[0];
-			pmove.player_mins[2] = -(int)((ent->netstate.solidsize >>8) & 255);
-			pmove.player_maxs[2] = (int)((ent->netstate.solidsize>>16) & 65535) - 32768;
+			pmove.stand_maxs[0] = pmove.stand_maxs[1] = ent->netstate.solidsize & 255;
+			pmove.stand_mins[0] = pmove.stand_mins[1] = -pmove.stand_maxs[0];
+			pmove.stand_mins[2] = -(int)((ent->netstate.solidsize >>8) & 255);
+			pmove.stand_maxs[2] = (int)((ent->netstate.solidsize>>16) & 65535) - 32768;
 		}
 		else
 		{
-			VectorClear(pmove.player_mins);
-			VectorClear(pmove.player_maxs);
+			VectorClear(pmove.stand_mins);
+			VectorClear(pmove.stand_maxs);
 		}
+		pmove.stand_viewheight = DEFAULT_VIEWHEIGHT;
+		pmove.waterlevel = cl.inwater ? 2 : 0;	//not networked, but the replay
+		pmove.crouched = !!(ent->netstate.pmovetype & PMP_CROUCHED);	//needs the same start
+
+		pmove.crouch_wanted = false;
+		pmove.crouch_blocked = false;
+		pmove.crouch_amount = pmove.crouched ? 1.0f : 0.0f;
+		PM_SeedCrouch ();
+
 		pmove.safeorigin_known = false;
 		VectorCopy(ent->msg_origins[0], pmove.origin);
 		for (j = 0; j < 3; j++)
 		{
 			pmove.velocity[j] = ent->netstate.velocity[j]*1.0/8;
-			bounds[0][j] = pmove.origin[j] + pmove.player_mins[j] - 256;
-			bounds[1][j] = pmove.origin[j] + pmove.player_maxs[j] + 256;
+			bounds[0][j] = pmove.origin[j] + pmove.stand_mins[j] - 256;
+			bounds[1][j] = pmove.origin[j] + pmove.stand_maxs[j] + 256;
 		}
 		VectorClear(pmove.gravitydir);
 
 		pmove.waterjumptime = 0;//FIXME: needs propagation. (e->v.teleport_time>qcvm->time)?e->v.teleport_time - qcvm->time:0;
-		pmove.jump_held = !!(ent->netstate.pmovetype&0x40);
+		pmove.jump_held = !!(ent->netstate.pmovetype&PMP_JUMP_HELD);
 		pmove.onladder = false;//!!(fl&PMF_LADDER);
 		pmove.jump_secs = 0;	//has been 0 since Z_EXT_PM_TYPE instead of imposing a delay on rejumps.
-		pmove.onground = !!(ent->netstate.pmovetype&0x80); //in case we're using pm_pground
+		pmove.onground = !!(ent->netstate.pmovetype&PMP_ONGROUND); //in case we're using pm_pground
 
-		switch(ent->netstate.pmovetype&63)
+		switch(ent->netstate.pmovetype&PMP_MOVETYPE_MASK)
 		{
 		case MOVETYPE_WALK:		pmove.pm_type = PM_NORMAL;		break;
 		case MOVETYPE_TOSS:		//pmove.pm_type = PM_DEAD;		break;
@@ -1065,7 +1131,7 @@ static void CL_ClientsidePowerupColor(entity_t* ent, int entnum)
 
 	/* Non-local ents: only known player models */
 	if (!is_local) {
-		if (!ent->model || !ent->model->name) return;
+		if (!ent->model) return;
 		if (strcmp(ent->model->name, "progs/player.mdl"))
 			return;
 	}
@@ -1515,6 +1581,8 @@ qboolean IsGithubRepoPath(const char* s)
 	// Now accepts both user/repo and user/repo/branch patterns
 	return true; // Must have at least 1 slash (user/repo)
 }
+
+#if FEATURE_CURL
 
 /*
 ==============================================================================
@@ -2065,6 +2133,26 @@ qboolean Curl_DownloadFile (const char* url, const char* filename, const char* l
 	return true; // File successfully downloaded
 }
 
+#else	/* !FEATURE_CURL -- no HTTP downloads without libcurl */
+
+/* The rest of the clipper still calls into this feature (gl_sky.c and the
+ * download paths), so keep the entry points and make them decline. */
+
+void WebCheckCallback_f (cvar_t* var)   { (void)var; }
+void Web2CheckCallback_f (cvar_t* var)  { (void)var; }
+void WebCheckInit (void)                { }
+
+qboolean Curl_DownloadFile (const char* url, const char* filename,
+                            const char* local_path, qboolean is_skybox,
+                            const char* display_name)
+{
+	(void)url; (void)filename; (void)local_path;
+	(void)is_skybox; (void)display_name;
+	return false;
+}
+
+#endif	/* FEATURE_CURL */
+
 //sent by the server to let us know that dp downloads can be used
 void CL_ServerExtension_Download_f(void)
 {
@@ -2423,6 +2511,34 @@ extern qboolean Sky_DownloadSkybox(const char* name);
 qboolean CL_CheckDownloads(void)
 {
 	int i;
+
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	/* Which of the stages below is holding the signon up, printed once per
+	 * stage change.  host.c only sends `prespawn` when this function returns
+	 * true, and the client cannot go past signon 2 until it does; a log that
+	 * ends with one of these lines and no `reply 3` says the stage by name
+	 * instead of leaving it to be guessed from the memory report.
+	 *
+	 * 0 the .lit probe  1 the .loc lookup  2 the skybox  3 the models
+	 * 4 the sounds      5 everything is loaded, the server can be told */
+	{
+		extern void psp_tracef (const char *fmt, ...);
+		static int last = -1;
+		int stage = (cl.model_download == 0) ? 0
+		          : (cl.loc_download == 0) ? 1
+		          : (cl.skybox_download == 0) ? 2
+		          : (cl.model_download < cl.model_count) ? 3
+		          : (cl.sound_download < cl.sound_count) ? 4 : 5;
+
+		if (stage != last)
+		{
+			last = stage;
+			psp_tracef ("signon: downloads stage %d of 5 (%d models of %d, "
+			            "%d sounds of %d)", stage, cl.model_download,
+			            cl.model_count, cl.sound_download, cl.sound_count);
+		}
+	}
+#endif
 	if (cl.model_download == 0 && cl.model_count && cl.model_name[1][0]) // woods
 	{	//haxors, download the lit first, but only if we don't already have the bsp
 		//this ensures that we don't keep requesting the lit for maps that just don't have one (although may be problematic if the first server we find deleted them all, but oh well)
@@ -2496,6 +2612,33 @@ qboolean CL_CheckDownloads(void)
 		cl.model_download++;
 	}
 
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	/* ---- the three steps between "signon" and the first world frame ------
+	 *
+	 * The round-72 log ends on "signon: downloads stage 3 of 5 (1 models of
+	 * 33, 0 sounds of 82)" and nothing after it: no FATAL ERROR (a Sys_Error
+	 * prints one and then holds the screen for 30 s), no watchdog line (a
+	 * stall prints one after 5 s), no memory line.  The client stopped
+	 * there, and the log cannot say WHICH of the three steps between that
+	 * line and the first world frame it stopped in:
+	 *
+	 *   1. precaching the models (33 of them, the world among them),
+	 *   2. precaching the sounds (82 of them, each decoded into the zone),
+	 *   3. R_NewMap(): the world's surfaces, lightmaps and textures -- the
+	 *      step where the picture arena is already full (6123 KB of
+	 *      6144 KB, 112 pictures) and the map's own textures have to fit.
+	 *
+	 * These four lines are the answer to "where", and they cost nothing: a
+	 * level load writes them once, and each is one sceIo write that is
+	 * already in the log by the time the console does anything with it. */
+	{
+		extern void psp_tracef (const char *fmt, ...);
+
+		psp_tracef ("signon: all %d models precached, the sounds are next",
+		            cl.model_download);
+	}
+#endif
+
 	for (; cl.sound_download < cl.sound_count; )
 	{
 		if (*cl.sound_name[cl.sound_download])
@@ -2506,6 +2649,17 @@ qboolean CL_CheckDownloads(void)
 		}
 		cl.sound_download++;
 	}
+
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	/* Step 2 done; R_NewMap() is the last one before the world is drawn (see
+	 * the note above the model loop for why each of these steps is named). */
+	{
+		extern void psp_tracef (const char *fmt, ...);
+
+		psp_tracef ("signon: all %d sounds precached, R_NewMap is next",
+		            cl.sound_download);
+	}
+#endif
 
 	if (!cl.worldmodel && cl.model_count >= 2)
 	{
@@ -2521,7 +2675,22 @@ qboolean CL_CheckDownloads(void)
 
 		//fixme: deal with skybox somehow
 
+#if defined(PLATFORM_PSP) || defined(__psp__)
+		{
+			extern void psp_tracef (const char *fmt, ...);
+
+			psp_tracef ("signon: R_NewMap: building %d surfaces of %s",
+			            cl.worldmodel->numsurfaces, cl.mapname);
+		}
+#endif
 		R_NewMap ();
+#if defined(PLATFORM_PSP) || defined(__psp__)
+		{
+			extern void psp_tracef (const char *fmt, ...);
+
+			psp_tracef ("signon: R_NewMap done, the first world frame is next");
+		}
+#endif
 
 #ifdef PSET_SCRIPT
 		//the protocol changing depending upon files found on the client's computer is of course a really shit way to design things

@@ -23,6 +23,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "quakedef.h"
 #include "bgmusic.h"
 #include "q_ctype.h" // woods #modsmenu (iw)
+#include "bindlist.h"	// engine actions the controls menu must always offer
 #include <sys/stat.h>
 
 #ifdef _WIN32
@@ -694,11 +695,23 @@ void M_DrawPic (int x, int y, qpic_t *pic)
 
 void M_DrawSubpic (int x, int y, qpic_t* pic, int left, int top, int width, int height) // woods #modsmenu (iw)
 {
-	float s1 = left / (float)pic->width;
-	float t1 = top / (float)pic->height;
-	float s2 = width / (float)pic->width;
-	float t2 = height / (float)pic->height;
-	Draw_SubPic (x, y, width, height, pic, s1, t1, s2, t2);
+	float s1;
+
+	/* A picture that failed to load has no size, and dividing by it puts
+	 * infinities into the texture coordinates.  A missing menu background
+	 * should cost a background, not the frame. */
+	if (!pic || pic->width <= 0 || pic->height <= 0 || width <= 0 || height <= 0)
+		return;
+
+	s1 = left / (float)pic->width;
+
+	{
+		float t1 = top / (float)pic->height;
+		float s2 = width / (float)pic->width;
+		float t2 = height / (float)pic->height;
+
+		Draw_SubPic (x, y, width, height, pic, s1, t1, s2, t2);
+	}
 }
 
 void M_DrawTransPicTranslate (int x, int y, qpic_t *pic, plcolour_t top, plcolour_t bottom) //johnfitz -- more parameters
@@ -1721,14 +1734,111 @@ void M_Menu_Main_f (void)
 	IN_UpdateGrabs();
 }
 
+/* ---- the animated Kabluk logo, gfx/a_kzlogo/logo<i> --------------------
+ *
+ * 24 frames, picked from realtime.  They are drawn in two places: as a banner
+ * hanging off the top of the menu pages at y = -64 (the two lines the port has
+ * in seven draw functions), and as the logo of the main menu (M_DrawLogo).
+ *
+ * Why the PSP does not show the banner, and does not animate:
+ *
+ * Every frame that is DRAWN becomes a picture in the cache: decoded, uploaded
+ * into the picture arena, and kept -- the engine has no idea that a picture
+ * shown for one eighth of a second is not going to be wanted again.  The cycle
+ * walks through all 24 of them inside three seconds of opening the menu, so the
+ * animation alone puts 24 pictures in a pool that the whole interface has to
+ * share (6 MB, port/psp/psp_mem.c, PSP_PICTURE_POOL).  On the PC that is
+ * decoration; on the console it is a third of the picture budget spent on a
+ * banner.
+ *
+ * Note the wording: not drawing is not enough, the Draw_CachePic() call is what
+ * loads the file.  So the PSP must not make the call at all -- that is why the
+ * banner lives in M_DrawKzLogoStrip() below instead of being repeated at each
+ * of the seven sites, and why M_DrawLogo() picks a fixed frame.
+ *
+ *   MENU_KZLOGO_PSP       1 = banner drawn on the PSP too, 0 = not
+ *   MENU_KZLOGO_ANIM_PSP  1 = logo animates on the PSP, 0 = it stays on frame 1
+ *
+ * Both are 1 everywhere except the PSP, so the PC build loses nothing.  To see
+ * the banner on the console, change the number -- nothing else. */
+#if defined(PLATFORM_PSP) || defined(__psp__)
+#  define MENU_KZLOGO_PSP		0
+#  define MENU_KZLOGO_ANIM_PSP	0
+#else
+#  define MENU_KZLOGO_PSP		1
+#  define MENU_KZLOGO_ANIM_PSP	1
+#endif
+
+/* ---- the spinning 3D model previews (DrawSpinningModelToMenuPixels) ----
+ *
+ * M_Main_Draw, M_Maps_Draw, M_Setup_Draw and M_Casino_Draw each render a
+ * rotating model into a rectangle next to the menu: progs/soldier.mdl,
+ * progs/player.mdl, progs/invulner.mdl and -- in the maps menu -- the BSP of
+ * the map under the cursor.  The rectangle's size comes from a picture the
+ * callers load first, gfx/david/tanec1.lmp (the setup menu uses
+ * gfx/menuplyr.lmp), with 256x256 as the fallback.
+ *
+ * What that costs, and why the PSP does not do it:
+ *
+ *   - the picture is decoded and sits in the picture cache for as long as the
+ *     menu is open, and it is loaded *before* the model is even considered --
+ *     gfx/david/tanec1.lmp is one more entry in the 6 MB pool that the whole
+ *     interface shares (port/psp/psp_mem.c, PSP_PICTURE_POOL);
+ *   - the model is a whole alias model: its skins are uploaded as textures and
+ *     the .bsp of a map is loaded and parsed as one, i.e. tens of textures and
+ *     the map's geometry, held for a preview a few centimetres wide.
+ *
+ * The PSP port has no 3D pipeline in front of the GE yet (DrawSpinningModelToMenuPixels
+ * returns immediately there, pr_ext.c), so on the console this was memory spent
+ * on something that never appeared on the panel: the block below skips the
+ * preview AND the picture, so nothing is loaded either.
+ *
+ *   MENU_MODELPREVIEW_PSP  1 = spin the model on the PSP too, 0 = not
+ *
+ * 1 everywhere except the PSP.  Turning it back on is a one-line change, and
+ * it is all that is needed: every call site reads this one number. */
+#if defined(PLATFORM_PSP) || defined(__psp__)
+#  define MENU_MODELPREVIEW_PSP	0
+#else
+#  define MENU_MODELPREVIEW_PSP	1
+#endif
+
+/* The banner above the menu pages: frame <i> of the sequence, centred, at
+ * y = -64.  png picks the file extension the menu it belongs to uses. */
+static void M_DrawKzLogoStrip (qboolean png)
+{
+#if MENU_KZLOGO_PSP
+	qpic_t *p = Draw_CachePic(va(png ? "gfx/a_kzlogo/logo%i.png"
+	                                 : "gfx/a_kzlogo/logo%i.bmp",
+	                            (int)(realtime * 8) % 24 + 1));
+
+	M_DrawPic((320 - p->width) / 2, -64, p);
+#else
+	/* Not loaded and not drawn: see the note above.  (void) because the
+	 * argument is part of every call site and disappears only here. */
+	(void) png;
+#endif
+}
+
 void M_DrawLogo (void)
 {
 	qpic_t* p;
+	GLint saved_scissor[4];
+	GLboolean scissor_was_on = glIsEnabled(GL_SCISSOR_TEST);
+
+	glGetIntegerv(GL_SCISSOR_BOX, saved_scissor);
 
 	glDisable(GL_SCISSOR_TEST); // Отключаем clipping, если он включён
 	GL_SetCanvas(CANVAS_DEFAULT); // Переключаемся на полный экран (0,0 = верхний левый угол)
 
+	/* The animation walks all 24 frames, and every frame it shows stays in
+	 * the picture cache; on the console the logo is therefore a still picture
+	 * (frame 1) instead of a sequence.  See the note above M_DrawKzLogoStrip. */
+#if MENU_KZLOGO_ANIM_PSP
 	p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.png", (int)(realtime * 8) % 24 + 1));
+#else
+	p = Draw_CachePic("gfx/a_kzlogo/logo1.png");
+#endif
 
 	// Рисуем в центре экрана (пример)
 	int logo_x = (glwidth - p->width) / 2;
@@ -1737,7 +1847,18 @@ void M_DrawLogo (void)
 	M_DrawPic(logo_x, logo_y, p);
 
 	GL_SetCanvas(CANVAS_MENU); // Возвращаемся к меню-канвасу
-	glEnable(GL_SCISSOR_TEST); // Возвращаем clipping, если нужно
+
+	/* Put the scissor back the way it was found.  Enabling it unconditionally
+	 * (which this did) re-used whatever box the last glScissor() had left --
+	 * the sbar's scrolling-text strip, for one -- and everything drawn after
+	 * the logo (the menu background, the menu text, the cursor) was clipped
+	 * away.  That is exactly what "the screen shows only the console
+	 * background" looks like. */
+	glScissor(saved_scissor[0], saved_scissor[1], saved_scissor[2], saved_scissor[3]);
+	if (scissor_was_on)
+		glEnable(GL_SCISSOR_TEST);
+	else
+		glDisable(GL_SCISSOR_TEST);
 }
 
 void M_Main_Draw (void) // woods #modsmenu #demosmenu (iw)
@@ -1745,22 +1866,32 @@ void M_Main_Draw (void) // woods #modsmenu #demosmenu (iw)
 	
 	int cursor, f;
 	qpic_t* p;
-	qpic_t* menup = Draw_CachePic("gfx/david/tanec1.lmp");
-	int boxw = menup ? menup->width : 256;
-	int boxh = menup ? menup->height : 256;
-	vrect_t bounds, vp;
-	Draw_GetMenuTransform(&bounds, &vp);
-	// Convert menu virtual coords (640x200) to absolute pixels via viewport
-	float s = (float)vp.width / (float)bounds.width;
-	float px = vp.x + 300 * s;
-	float py = vp.y + 32 * s;
-	float pw = boxw * s;
-	float ph = boxh * s;
-	DrawSpinningModelToMenuPixels("progs/soldier.mdl",
-		px, py, pw, ph,
-		15.0f,
-		-15.0f,
-		1, 2, 3, 4);
+
+#if MENU_MODELPREVIEW_PSP
+	/* Preview box: the size comes from a picture, drawn by the model code
+	 * over it.  The picture is loaded here because DrawSpinningModelToMenuPixels
+	 * needs the rectangle; on the PSP neither exists (see the note above). */
+	{
+		qpic_t* menup = Draw_CachePic("gfx/david/tanec1.lmp");
+		int boxw = menup ? menup->width : 256;
+		int boxh = menup ? menup->height : 256;
+		vrect_t bounds, vp;
+
+		Draw_GetMenuTransform(&bounds, &vp);
+		// Convert menu virtual coords (640x200) to absolute pixels via viewport
+		float s = (float)vp.width / (float)bounds.width;
+		float px = vp.x + 300 * s;
+		float py = vp.y + 32 * s;
+		float pw = boxw * s;
+		float ph = boxh * s;
+
+		DrawSpinningModelToMenuPixels("progs/soldier.mdl",
+			px, py, pw, ph,
+			15.0f,
+			-15.0f,
+			1, 2, 3, 4);
+	}
+#endif
 
 	// Restore menu 2D canvas to keep coordinates/cursor aligned
 	GL_SetCanvas(CANVAS_MENU);
@@ -2014,8 +2145,7 @@ void M_SinglePlayer_Draw(void)
 {
 	qpic_t* p;
 
-	p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.png", (int)(realtime * 8) % 24 + 1));
-	M_DrawPic((320 - p->width) / 2, -64, p);
+	M_DrawKzLogoStrip(true); /* gfx/a_kzlogo banner: PC only */
 
 	M_DrawTransPic(16, 4, Draw_CachePic("gfx/qplaque.pcx"));
 	p = Draw_CachePic(va("gfx/a_sgl/asgl%i.bmp", (int)(realtime * 2) % 3 + 1));
@@ -2333,10 +2463,28 @@ void M_Menu_Save_f (void)
 }
 
 
+/* The load and save screens used to call this with an empty title, and the
+ * empty title went all the way down into the texture loader: the hardware log
+ * of that screen ends on
+ *
+ *     mark: tex
+ *     img: asked for "", which names no file -- not looking
+ *     mark: pic 0x0
+ *
+ * -- a picture with no name, and a texture of no size, drawn as a quad whose
+ * texture coordinates are 0/0.  A screen with no title is the same screen
+ * without a title picture, so the empty case draws nothing at all. */
 static void M_DrawSaveSlots (const char* title_pic)
 {
-	qpic_t* p = Draw_CachePic(title_pic);
-	M_DrawPic((320 - p->width) / 2, 4, p);
+	if (title_pic && title_pic[0])
+	{
+		qpic_t* p = Draw_CachePic(title_pic);
+
+		/* Draw_CachePic() answers a picture that cannot be loaded with
+		 * a 1x1 stand-in; anything without a size draws nothing. */
+		if (p && p->width > 0 && p->height > 0)
+			M_DrawPic((320 - p->width) / 2, 4, p);
+	}
 
 	for (int i = 0; i < MAX_SAVEGAMES - 1; i++)
 	{
@@ -2359,6 +2507,17 @@ static void M_DrawSaveSlots (const char* title_pic)
 		M_DrawCharacter(8, 32 + load_cursor * 8, 12 + ((int)(realtime * 4) & 1));
 }
 
+/* Is the save/load screen the one on the panel?
+ *
+ * main_psp.c asks this to decide how often its diagnostics go to the memory
+ * card: this is the screen the port has repeatedly died on, and it is also the
+ * only screen where a line-per-line write is affordable.  Everything else in
+ * the menu pays the speed the per-line writes cost, and must not. */
+qboolean M_IsSaveMenu (void)
+{
+	return (m_state == m_load || m_state == m_save);
+}
+
 void M_Load_Draw (void)
 {
 	M_DrawSaveSlots ("");
@@ -2366,7 +2525,8 @@ void M_Load_Draw (void)
 	qpic_t* p;
 
 	p = Draw_CachePic(va("gfx/a_load/load%i.png", (int)(realtime * 2) % 3 + 1));
-	M_DrawPic((320 - p->width) / 2, 4, p);
+	if (p && p->width > 0 && p->height > 0)
+		M_DrawPic((320 - p->width) / 2, 4, p);
 
 }
 
@@ -2377,7 +2537,8 @@ void M_Save_Draw (void)
 	qpic_t* p;
 
 	p = Draw_CachePic(va("gfx/a_save/save%i.png", (int)(realtime * 2) % 4 + 1));
-	M_DrawPic((320 - p->width) / 2, 4, p);
+	if (p && p->width > 0 && p->height > 0)
+		M_DrawPic((320 - p->width) / 2, 4, p);
 
 	for (i = 0; i < MAX_SAVEGAMES; i++)
 		M_Print(16, 32 + 8 * i, m_filenames[i]);
@@ -2624,17 +2785,22 @@ void M_Maps_Draw(void)
 
 	// ya loh
 	qpic_t* p;
-	qpic_t* menup = Draw_CachePic("gfx/david/tanec1.lmp");
-	int boxw = menup ? menup->width : 256;
-	int boxh = menup ? menup->height : 256;
 	vrect_t bounds, vp;
 	Draw_GetMenuTransform(&bounds, &vp);
 
+	/* The scale and the viewport are also what the mouse hit-testing below
+	 * needs, so they stay; the preview rectangle and the picture it is sized
+	 * from are PC-only (see MENU_MODELPREVIEW_PSP). */
 	float s = (float)vp.width / (float)bounds.width;
+#if MENU_MODELPREVIEW_PSP
+	qpic_t* menup = Draw_CachePic("gfx/david/tanec1.lmp");
+	int boxw = menup ? menup->width : 256;
+	int boxh = menup ? menup->height : 256;
 	float px = vp.x + 300 * s;
 	float py = vp.y + 32 * s;
 	float pw = boxw * s;
 	float ph = boxh * s;
+#endif
 
 	// --- Определение элемента под мышью ---
 	int hovered_map_idx = -1;
@@ -2686,8 +2852,12 @@ void M_Maps_Draw(void)
 		}
 	}
 
+#if MENU_MODELPREVIEW_PSP
 	// Рендерим модель
 	DrawSpinningModelToMenuPixels(preview_map, px, py, pw, ph, 90.0f, -50.0f, 0, 0, 0, 0);
+#else
+	(void) preview_map;
+#endif
 
 	// --- Дальше стандартная логика меню ---
 	if (!keydown[K_MOUSE1])
@@ -2946,8 +3116,7 @@ void M_Skill_Draw(void)
 	int		x, y, f;
 	qpic_t* p;
 
-	p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.bmp", (int)(realtime * 8) % 24 + 1));
-	M_DrawPic((320 - p->width) / 2, -64, p);
+	M_DrawKzLogoStrip(false); /* gfx/a_kzlogo banner: PC only */
 	//pixda
 	M_DrawTransPic(16, 4, Draw_CachePic("gfx/qplaque.pcx"));
 	p = Draw_CachePic(m_skill_usecustomtitle ? (va("gfx/a_skill/askill%i.lmp", (int)(realtime * 2) % 3 + 1))  : "gfx/a_sgl/asgl1.lmp");
@@ -3110,8 +3279,7 @@ void M_MultiPlayer_Draw (void)
 	int		f, i; // woods
 	qpic_t	*p;
 
-	p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.bmp", (int)(realtime * 8) % 24 + 1));
-	M_DrawPic((320 - p->width) / 2, -64, p);
+	M_DrawKzLogoStrip(false); /* gfx/a_kzlogo banner: PC only */
 
 	M_DrawTransPic (16, 4, Draw_CachePic ("gfx/qplaque.pcx") );
 	p = Draw_CachePic(va("gfx/a_mp/amp%i.bmp", (int)(realtime * 2) % 3 + 1));
@@ -3436,8 +3604,7 @@ void M_Setup_Draw (void)
 		Cbuf_AddText("chase_active 1\n");
 	}
 
-	p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.bmp", (int)(realtime * 8) % 24 + 1));
-	M_DrawPic((320 - p->width) / 2, -64, p);
+	M_DrawKzLogoStrip(false); /* gfx/a_kzlogo banner: PC only */
 
 	M_DrawTransPic (16, 4, Draw_CachePic ("gfx/qplaque.pcx") );
 	p = Draw_CachePic(va("gfx/a_pasaan/pasaan%i.png", (int)(realtime * 2) % 3 + 1));
@@ -3471,7 +3638,11 @@ void M_Setup_Draw (void)
 
 	// woods #spinnymodel
 
+#if MENU_MODELPREVIEW_PSP
+	/* Only the preview below needs this picture (its width/height are the
+	 * rectangle the model is drawn into). */
 	qpic_t* menup = Draw_CachePic("gfx/menuplyr.lmp");
+#endif
 
 	// Normalize setup colors to a canonical form
 	setup_top = CL_PLColours_Parse(CL_PLColours_ToString(setup_top));
@@ -3491,6 +3662,7 @@ void M_Setup_Draw (void)
 		PR_SetMenuPreviewLegacyColors(top_legacy, bot_legacy);
 	}
 
+#if MENU_MODELPREVIEW_PSP
 	// Draw spinning player model aligned to CANVAS_MENU pixels
 	int boxw = menup ? menup->width : 96;
 	int boxh = menup ? menup->height : 96;
@@ -3507,6 +3679,7 @@ void M_Setup_Draw (void)
 		25.0f,
 		0.0f,
 		0, 0, 0, 0);
+#endif
 
 	// Restore menu 2D canvas to keep coordinates/cursor aligned
 	GL_SetCanvas(CANVAS_MENU);
@@ -4039,8 +4212,7 @@ void M_Net_Draw (void)
 	int		f;
 	qpic_t	*p;
 
-	p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.bmp", (int)(realtime * 8) % 24 + 1));
-	M_DrawPic((320 - p->width) / 2, -64, p);
+	M_DrawKzLogoStrip(false); /* gfx/a_kzlogo banner: PC only */
 
 	M_DrawTransPic (16, 4, Draw_CachePic ("gfx/qplaque.pcx") );
 	p = Draw_CachePic(va("gfx/a_mp/amp%i.bmp", (int)(realtime * 2) % 3 + 1));
@@ -4678,6 +4850,7 @@ const char *quakebindnames[][2] = // woods use iw quake bind names
 	{"+moveleft",		"Move left"},
 	{"+moveright",		"Move right"},
 	{"+jump",			"Jump / swim up"},
+	{"+use",			"Use"},
 	{"+skate_slide",		"Skate slide"},
 	{"+moveup",			"Swim up"},
 	{"+movedown",			"Crouch / swim down"},
@@ -4704,6 +4877,11 @@ const char *quakebindnames[][2] = // woods use iw quake bind names
 	{"impulse 9",		"Cigarette"},
 	{"impulse 225",		"Laser Cannon"},
 	{"impulse 226",		"Mjolnir"},
+	/* Every key can be bound from this screen, and on the PSP the pad's
+	 * buttons are keys -- but the console itself was only reachable through
+	 * the ` key, which this list did not offer.  That made the console the
+	 * one thing a pad-only player could not put on a button. */
+	{"toggleconsole",	"Console"},
 };
 #define	NUMQUAKECOMMANDS	(sizeof(quakebindnames)/sizeof(quakebindnames[0]))
 
@@ -4777,20 +4955,25 @@ void M_Keys_Populate(void) // woods #mousemenu -- modified
 		numbindnames = NUMQUAKECOMMANDS;
 	}
 
-	// Keep the engine skateboard action available even when an external
-	// bindlist.lst supplies the rest of the controls.
+	// Keep the engine's own actions bindable even when an external
+	// bindlist.lst supplies the rest of the controls: such a list cannot know
+	// about the keys this engine adds (see bindlist.h).
 	{
-		int i;
-		for (i = 0; i < numbindnames; i++)
-			if (!strcmp(bindnames[i].cmd, "+skate_slide"))
-				break;
-		if (i == numbindnames)
+		int a, i;
+
+		for (a = 0; a < (int)countof(engine_required_binds); a++)
 		{
+			for (i = 0; i < numbindnames; i++)
+				if (!strcmp(bindnames[i].cmd, engine_required_binds[a].cmd))
+					break;
+			if (i != numbindnames)
+				continue;	// already listed
+
 			bindnames = (bindname_t*)Z_Realloc(bindnames, sizeof(bindname_t) * (numbindnames + 1));
-			bindnames[numbindnames].cmd = (char*)Z_Malloc(sizeof("+skate_slide"));
-			strcpy(bindnames[numbindnames].cmd, "+skate_slide");
-			bindnames[numbindnames].desc = (char*)Z_Malloc(sizeof("Skate slide"));
-			strcpy(bindnames[numbindnames].desc, "Skate slide");
+			bindnames[numbindnames].cmd = (char*)Z_Malloc(strlen(engine_required_binds[a].cmd) + 1);
+			strcpy(bindnames[numbindnames].cmd, engine_required_binds[a].cmd);
+			bindnames[numbindnames].desc = (char*)Z_Malloc(strlen(engine_required_binds[a].desc) + 1);
+			strcpy(bindnames[numbindnames].desc, engine_required_binds[a].desc);
 			numbindnames++;
 		}
 	}
@@ -5653,23 +5836,6 @@ void M_Mouse_Key(int k)
 		M_Mouse_AdjustSliders(1);
 		break;
 	}
-	if (key_dest != key_menu || m_state != m_casino)
-		return;
-
-	if (!keydown == K_MOUSE1) {
-		int mx = 320; // глобальные переменные с координатами мыши
-		int my = 200;
-
-		// Проверяем попадание в прямоугольник кнопки
-		if (mx >= spin_x && mx < spin_x + spin_w
-			&& my >= spin_y && my < spin_y + spin_h) {
-			// Как при нажатии SPACE
-			Casino_StartSpin();
-			S_LocalSound("misc/menu2.wav");
-			return;
-		}
-	}
-
 }
 
 void M_Mouse_Mousemove(int cx, int cy)
@@ -10047,7 +10213,7 @@ void M_Extras_Draw(void)
 			break;
 
 		case EXTRAS_PONG: // Added Quake Pong display
-			text = "        Quake Pong";
+			text = "        Pong when paused";
 			value = cl_pong.value ? "on" : "off";
 			break;
 
@@ -11159,8 +11325,7 @@ void M_LanConfig_Draw (void)
 	//const char	*protocol;
 
 
-	p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.bmp", (int)(realtime * 8) % 24 + 1));
-	M_DrawPic((320 - p->width) / 2, -64, p);
+	M_DrawKzLogoStrip(false); /* gfx/a_kzlogo banner: PC only */
 
 	M_DrawTransPic (16, 4, Draw_CachePic ("gfx/qplaque.pcx") );
 	p = Draw_CachePic(va("gfx/a_join/joining%i.png", (int)(realtime * 2) % 4 + 1));
@@ -12580,69 +12745,140 @@ int gameoptions_cursor_table[] = {40, 56, 64, 72, 80, 88, 96, 104, 120, 128, 152
 #define	NUM_GAMEOPTIONS	11
 int		gameoptions_cursor;
 
-qboolean HasBots(void) // woods -- check if deathmatch needs difficulty #botdetect
+/*
+ * HasBots -- is the progs.dat in this game a stock one, or a custom one that
+ * knows about bots?
+ *
+ * The answer is two things read out of progs.dat: its CRC (the three stock
+ * files are known by number) and whether it contains the three-byte word
+ * "crx".  It used to be read into one malloc:
+ *
+ *     malloc: NULL for 17400000 bytes -- last pic: cached, phase host frame:
+ *
+ * -- the whole file, 17.4 MB, for one look at each byte in order.  On the
+ * console that is a request the heap can never satisfy (10 MB block, see
+ * port/psp/psp_heap.c), it happened in the menu drawn just before a map
+ * started, and the session ended there.  crc.c now answers both questions as a
+ * resumable scan (CRC_ScanBegin/CRC_ScanStep), so this reads the file 256 KB at
+ * a time and never asks for memory at all.
+ *
+ * A window per call is deliberate: the same card that takes 18 ms for one
+ * open/write/close (port/psp/psp_console.c) reads at a few MB/s, so 17 MB in
+ * one go is a several-second freeze inside a menu.  Spread over the frames the
+ * menu is open it finishes while the player is reading it, and until it does
+ * the menu shows what it showed before.
+ */
+#define BOTS_SCAN_WINDOW (256 * 1024)
+#define BOTS_CUSTOM_MARKER "crx"
+
+#if defined(PLATFORM_PSP) || defined(__psp__)
+extern void psp_tracef (const char *fmt, ...);
+#define BOTS_NOTE(...)	psp_tracef(__VA_ARGS__)
+#else
+#define BOTS_NOTE(...)	do { } while (0)
+#endif
+
+static FILE      *bots_file;		/* open while the scan is in progress */
+static crc_scan_t bots_scan;
+static qboolean   bots_running;		/* the scan holds an open file        */
+static int        bots_size;		/* its size, for the log line         */
+static byte       bots_window [BOTS_SCAN_WINDOW];	/* not on the stack */
+
+/* One window of the scan per call.  Returns true once the answer is in
+ * has_custom_progs (which also sets progs_check_done).
+ *
+ * The scan starts on the first call and finishes on the call that reaches the
+ * end of the file.  Two places forget the answer (a new mod, back to the main
+ * menu) by clearing progs_check_done; the call after that starts a fresh scan,
+ * because bots_running is false again.  A scan caught in the middle of one of
+ * those two events finishes with the answer of the file it was reading and
+ * re-checks at the next reset -- it is a menu label, not game state, and it is
+ * not worth a crash or a leak to make it perfect. */
+static qboolean Bots_ScanStep (void)
 {
-	if (!progs_check_done)
+	static const unsigned short valid_crcs[] = { 32913, 10067, 51593 };	// shareware/steam/regisrted pak0, rogue, hipnotic
+	size_t n, i;
+	qboolean is_valid_crc = false;
+
+	if (!bots_running)
 	{
-		FILE* file;
-		byte* buffer;
-		long size;
-		unsigned short crc;
+		int size;
 
-		const unsigned short valid_crcs[] = { 32913, 10067, 51593 }; // shareware/steam/regisrted pak0, rogue, hipnotic
-		const size_t num_valid_crcs = sizeof(valid_crcs) / sizeof(valid_crcs[0]);
-
-		const char* custom_marker = "crx"; // custom progs without bots
-		size_t custom_marker_len = strlen(custom_marker);
-
-		if (COM_FOpenFile("progs.dat", &file, NULL) < 0 || !file)
+		size = COM_FOpenFile ("progs.dat", &bots_file, NULL);
+		if (size < 0 || !bots_file)
 		{
-			progs_check_done = true;
-			return false;
+			bots_file = NULL;
+			progs_check_done = true;	/* no progs.dat: the stock answer */
+			return true;
 		}
 
-		fseek(file, 0, SEEK_END);
-		size = ftell(file);
-		fseek(file, 0, SEEK_SET);
+		bots_running = true;
+		bots_size = size;
+		CRC_ScanBegin (&bots_scan, BOTS_CUSTOM_MARKER);
+	}
 
-		buffer = (byte*)malloc(size);
-		if (!buffer)
+	/* Nothing left to read means the end of the file: the CRC is complete,
+	 * and a match that was waiting for the byte behind it is a whole word. */
+	n = bots_scan.found ? 0 : fread (bots_window, 1, sizeof(bots_window), bots_file);
+	if (n)
+	{
+		CRC_ScanStep (&bots_scan, bots_window, n);
+		return false;
+	}
+
+	if (ferror (bots_file))
+	{
+		/* A card that stopped answering is not an end of file: half a
+		 * progs.dat must not be turned into a CRC that means nothing.  The
+		 * menu falls back to the answer it gives with no progs.dat. */
+		fclose (bots_file);
+		bots_file = NULL;
+		bots_running = false;
+		progs_check_done = true;
+		BOTS_NOTE ("bots: progs.dat stopped reading -- no answer this time");
+		return true;
+	}
+
+	CRC_ScanFinish (&bots_scan);
+	fclose (bots_file);
+	bots_file = NULL;
+	bots_running = false;
+	progs_check_done = true;
+
+	/* The marker is checked first, because a scan that found it stopped
+	 * early and the CRC then covers only the part that was read. */
+	if (bots_scan.found)
+	{
+		has_custom_progs = false;	/* this progs knows about bots */
+	}
+	else
+	{
+		for (i = 0; i < sizeof(valid_crcs) / sizeof(valid_crcs[0]); i++)
 		{
-			fclose(file);
-			progs_check_done = true;
-			return false;
-		}
-
-		if (fread(buffer, 1, size, file) != (size_t)size)
-		{
-			free(buffer);
-			fclose(file);
-			progs_check_done = true;
-			return false;
-		}
-		fclose(file);
-
-		crc = CRC_Block(buffer, size);
-
-		qboolean is_valid_crc = false;
-		for (size_t i = 0; i < num_valid_crcs; i++)
-		{
-			if (crc == valid_crcs[i]) {
+			if (bots_scan.crc == valid_crcs[i])
+			{
 				is_valid_crc = true;
 				break;
 			}
 		}
 
-		if (is_valid_crc) 
-			has_custom_progs = false;
-		else if (q_memmem(buffer, size, custom_marker, custom_marker_len) != NULL)
-			has_custom_progs = false;
-		else 
-			has_custom_progs = true;
-
-		free(buffer);
-		progs_check_done = true;
+		has_custom_progs = !is_valid_crc;
 	}
+
+	BOTS_NOTE ("bots: progs.dat is %d KB, scanned in %d KB windows, crc 0x%04x, "
+	           "marker \"%s\" %s -> custom progs %s",
+	           bots_size / 1024, (int)(BOTS_SCAN_WINDOW / 1024), (unsigned)bots_scan.crc,
+	           BOTS_CUSTOM_MARKER, bots_scan.found ? "found" : "not found",
+	           has_custom_progs ? "yes" : "no");
+
+	return true;
+}
+
+qboolean HasBots(void) // woods -- check if deathmatch needs difficulty #botdetect
+{
+	if (!progs_check_done)
+		Bots_ScanStep ();
+
 	return has_custom_progs;
 }
 
@@ -12651,8 +12887,7 @@ void M_GameOptions_Draw (void)
 	qpic_t	*p;
 	int y = 40;
 
-	p = Draw_CachePic(va("gfx/a_kzlogo/logo%i.bmp", (int)(realtime * 8) % 24 + 1));
-	M_DrawPic((320 - p->width) / 2, -64, p);
+	M_DrawKzLogoStrip(false); /* gfx/a_kzlogo banner: PC only */
 
 	M_DrawTransPic (16, 4, Draw_CachePic ("gfx/qplaque.pcx") );
 	p = Draw_CachePic(va("gfx/a_creat/creating%i.bmp", (int)(realtime * 2) % 3 + 1));
@@ -14882,8 +15117,14 @@ static qboolean MQC_Init(void)
 			}
 
 
-		qcvm->max_edicts = CLAMP (MIN_EDICTS,(int)max_edicts.value,MAX_EDICTS);
-		qcvm->edicts = (edict_t *) malloc (qcvm->max_edicts*qcvm->edict_size);
+		if (!PR_AllocEdicts (qcvm))
+		{
+			/* No entity array means no menu VM: drop the progs entirely so
+			 * nothing runs against a NULL edicts. */
+			PR_ClearProgs(qcvm);
+			PR_SwitchQCVM(NULL);
+			return false;
+		}
 		qcvm->num_edicts = qcvm->reserved_edicts = 1;
 		memset(qcvm->edicts, 0, qcvm->num_edicts*qcvm->edict_size);
 
@@ -14992,6 +15233,36 @@ void M_Init (void)
 		MQC_Shutdown();
 }
 
+
+/*
+ * M_WillCoverConsole -- will M_Draw() paint over the console this frame?
+ *
+ * M_Draw() begins with Draw_ConsoleBackground() whenever the console is up
+ * (both in the menuqc branch and in the normal one), and that picture covers
+ * the whole panel.  It runs *after* SCR_DrawConsole(), so by the time the menu
+ * has its background the console's text has already been drawn and is then
+ * painted over.
+ *
+ * On a desktop nobody notices: the text goes into the OpenGL pipeline and is
+ * forgotten.  On the PSP every character is its own glBegin()/glEnd() pair, and
+ * a frame's draw dump from the hardware shows what that costs -- of 392 draws
+ * in the menu, 382 are 8x8 glyph quads and the menu's own pictures are the last
+ * eight.  All 382 of them are then covered by the draw that follows them.
+ *
+ * The conditions below are exactly the two branches at the top of M_Draw();
+ * keeping them in one place means the answer here cannot drift from what
+ * M_Draw() actually does. */
+qboolean M_WillCoverConsole (void)
+{
+	if (!scr_con_current)
+		return false;
+
+	if (cls.menu_qcvm.extfuncs.m_draw)
+		return (qboolean)(host_initialized && key_dest == key_menu);
+
+	return (qboolean)(m_state != m_none && key_dest == key_menu &&
+	                  !m_recursiveDraw);
+}
 
 void M_Draw (void)
 {
@@ -15678,6 +15949,7 @@ void M_Casino_Draw(void)
 	char str[64];
 	int cursor, f;
 
+#if MENU_MODELPREVIEW_PSP
 	qpic_t* menup = Draw_CachePic("gfx/david/tanec1.lmp");
 	int boxw = menup ? menup->width : 256;
 	int boxh = menup ? menup->height : 256;
@@ -15694,6 +15966,7 @@ void M_Casino_Draw(void)
 		45.0f,
 		-10.0f,
 		0, 0, 0, 0);
+#endif
 
 	// Restore menu 2D canvas to keep coordinates/cursor aligned
 	GL_SetCanvas(CANVAS_MENU);
@@ -15797,11 +16070,13 @@ void M_Casino_Key(int key)
 {
 	switch (key) {
 	case K_ESCAPE:
+	case K_BBUTTON:		/* the pad's "back", as in every other menu */
 		M_Menu_Main_f();
 		break;
 
 	case K_SPACE:
 	case K_ENTER:
+	case K_ABUTTON:		/* the pad's "confirm", as in every other menu */
 		if (!casino_state.spinning) {
 			Casino_StartSpin();
 			S_LocalSound("misc/menu2.wav");

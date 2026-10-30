@@ -13,7 +13,9 @@ static char default_cfg[] =
 "bind PGDN +lookup\n"
 "bind END centerview\n"
 
-"bind e +moveup\n"
+"// E is the action key (press buttons, like Half-Life); swim/noclip up is PGUP\n"
+"bind e +use\n"
+"bind PGUP +moveup\n"
 "bind c +movedown\n"
 "bind SHIFT +speed\n"
 "bind CTRL +movedown\n"
@@ -81,6 +83,14 @@ static char default_cfg[] =
 "bind RSHOULDER \"impulse 10\"\n"
 "bind LTRIGGER +jump\n"
 "bind RTRIGGER +attack\n"
+
+/* The PSP's face buttons are NOT given their actions here.  `exec default.cfg`
+ * first tries the file inside the game's pak, and QuakeSpasm's default.cfg
+ * starts with `unbindall`: anything this port put below would be wiped out by
+ * it on the very next line of the startup script.  So the pad's buttons get
+ * their defaults after the config is loaded, from IN_ApplyPadDefaults()
+ * (port/psp/in_psp.c), and only for keys the config left unbound.
+ */
 
 "gamma 1.0\n"
 "volume 0.7\n"

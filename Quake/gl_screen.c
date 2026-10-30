@@ -26,6 +26,86 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "time.h"
 #include "quakedef.h"
 
+/* PSP breadcrumbs for the screen update -- first 3 calls only.
+ *
+ * These run once per frame, so an unconditional write to the memory stick
+ * would be the slowest thing in the engine; the first few frames are the ones
+ * that matter, and after that the counter turns the mark into a comparison.
+ * Defined up here on purpose: a macro that is used before its #define becomes
+ * an implicit function call and only shows up with -Werror. */
+#if defined(PLATFORM_PSP) || defined(__psp__)
+extern void psp_trace_mark (const char *step);
+/* Whether a 3D polygon has already gone into this frame's draw list
+ * (port/psp/gl_shim.c).  Used below as the definition of a "world frame". */
+extern int psp_gl_world_drawn_this_frame (void);
+
+static int psp_scr_frames;		/* frames of the run, saturating at 100 */
+static int psp_scr_world_frames;	/* frames of the run that drew a world */
+
+/* Marks are printed for the first PSP_SCR_MARK_FRAMES frames of the run and
+ * for the first PSP_SCR_MARK_FRAMES frames that draw a 3D world -- and then
+ * never again.
+ *
+ * Round 81 is why this is a function with an explicit "and then never again".
+ * The old test was
+ *
+ *     if (psp_scr_frames < 3 || psp_scr_world_frames < 3)
+ *
+ * and it printed, in a 1500-frame session, 1105 "> scr: begin" lines where six
+ * frames' worth were intended: sixteen marks in every frame, each one ending in
+ * a Memory Stick round trip.  The heartbeat priced it exactly -- "card 23
+ * writes 681 ms" over 39 frames of 36.6 ms -- and that millisecond column sits
+ * inside the 15.4 ms the same line calls cpu.  The card was nearly half of
+ * every frame, and the diagnostic was the bill.
+ *
+ * The half that never closed was psp_scr_world_frames, which was incremented
+ * only when cls.state == ca_connected && r_refdef.drawworld && !con_forcedup.
+ * The log says why that describes the wrong thing: by frame 484 the heartbeat
+ * reads "state 1" -- ca_disconnected, the demo loop -- and that frame still
+ * draws 3D polygons ("draw: f 480 #1 ... proj m15 0.000").  A demo world is a
+ * world.  So is the CSQC path above (cl.qcvm.worldmodel), which draws through
+ * QuakeC and never sets r_refdef.drawworld at all.  A gate keyed on client
+ * state is a guess about the renderer; the shim knows.
+ *
+ * Now the shim answers: psp_gl_world_drawn_this_frame() is true when a 3D
+ * polygon has gone into this frame's draw list.  On the very first world frame
+ * the two marks before V_RenderView ("scr: begin", "scr: V_RenderView") are
+ * skipped -- there is no polygon yet when they are emitted -- and everything
+ * from "scr: set2d" to "frame: presented" is printed, which is the part that
+ * names the path after the renderer. */
+#define PSP_SCR_MARK_FRAMES	3
+
+/* And a budget that does not depend on any of the counters above: how many
+ * marks this run may print, full stop.
+ *
+ * Six frames of sixteen marks is under a hundred lines, so a hundred and a
+ * quarter is what it gets and the two windows cannot eat each other's share.
+ *
+ * The budget exists because the round-81 log is not the first log in which a
+ * gate that reads "the first three frames" printed one frame's marks per frame
+ * for the whole session.  A diagnostic that is *provably* quiet after a hundred
+ * lines is worth more here than one that is merely believed to be a counter:
+ * the worst case is then arithmetic in one file, whatever the rest does. */
+#define PSP_SCR_MARK_BUDGET	128
+static int psp_scr_budget = PSP_SCR_MARK_BUDGET;
+
+static qboolean psp_scr_mark_here (void)
+{
+	if (psp_scr_budget <= 0)
+		return false;			/* spent: silent for the rest of the run */
+	if (psp_scr_world_frames >= PSP_SCR_MARK_FRAMES)
+		return false;			/* both windows are spent: silence */
+	if (psp_scr_frames < PSP_SCR_MARK_FRAMES)
+		return true;			/* the run's first frames */
+	return psp_gl_world_drawn_this_frame () != 0;
+}
+
+#define SCR_MARK(x)	do { if (psp_scr_mark_here ()) { \
+		psp_scr_budget--; psp_trace_mark(x); } } while (0)
+#else
+#define SCR_MARK(x)	do { } while (0)
+#endif
+
 /*
 
 background clear
@@ -3677,6 +3757,22 @@ void SCR_DrawConsole (void)
 {
 	if (scr_con_current)
 	{
+#if defined(PLATFORM_PSP) || defined(__psp__)
+		/* The menu is about to paint the same console background over this
+		 * whole area -- M_Draw() calls Draw_ConsoleBackground() first thing,
+		 * and it runs right after this function.  Everything Con_DrawConsole
+		 * would draw here is therefore invisible, and it is not cheap here:
+		 * one glBegin()/glEnd() pair per character, 382 of them in a frame
+		 * whose own menu is eight pictures (the draw dump in the log counts
+		 * them).  Skip it; the screen is identical because the menu's
+		 * background covers exactly the same rectangle. */ 
+		if (M_WillCoverConsole ())
+		{
+			SCR_MARK ("scr: console covered by the menu, not drawn");
+			clearconsole = 0;
+			return;
+		}
+#endif
 		Con_DrawConsole (scr_con_current, true);
 		clearconsole = 0;
 	}
@@ -5297,6 +5393,8 @@ void SCR_UpdateScreen (void)
 	if (!scr_initialized || !con_initialized)
 		return;				// not initialized yet
 
+	SCR_MARK("scr: begin");
+
 
 	GL_BeginRendering (&glx, &gly, &glwidth, &glheight);
 
@@ -5364,23 +5462,30 @@ void SCR_UpdateScreen (void)
 		if (vid_fxaa.value > 0) // woods #fxaa begin FXAA frame for 3D rendering
 			FXAA_BeginFrame();
 
+		SCR_MARK("scr: V_RenderView");
 		V_RenderView ();
+		SCR_MARK("scr: V_RenderView done");
 
 		if (vid_fxaa.value > 0) // woods #fxaa end FXAA frame for 3D rendering
 			FXAA_EndFrame();
 
 		GL_Set2D ();
+		SCR_MARK("scr: set2d");
 
 		//FIXME: only call this when needed
 		SCR_TileClear ();
+		SCR_MARK("scr: tileclear done");
 
 		if (!cl.intermission)
 		{
 			Sbar_Draw ();
+			SCR_MARK("scr: sbar done");
 			if (!scr_drawloading && !con_forcedup)
 				SCR_DrawCrosshair (); //johnfitz
 		}
 	}
+
+	SCR_MARK("scr: overlays");
 
 	if (scr_drawdialog) //new game confirm
 	{
@@ -5406,6 +5511,7 @@ void SCR_UpdateScreen (void)
 	}
 	else
 	{
+		SCR_MARK("scr: overlays: net");
 		SCR_DrawNet ();
 		SCR_DrawTurtle ();
 		SCR_DrawPause ();
@@ -5413,6 +5519,7 @@ void SCR_UpdateScreen (void)
 		Pong_Update (); // woods #pong
 		Pong_Draw (); // woods #pong
 		SCR_CheckDrawCenterString ();
+		SCR_MARK("scr: overlays: text");
 		SCR_DrawDevStats (); //johnfitz
 		SCR_DrawFPS (); //johnfitz
 		SCR_DrawClock (); //johnfitz
@@ -5422,6 +5529,7 @@ void SCR_UpdateScreen (void)
 		SCR_DrawMatchClock (); // woods #matchhud
 		SCR_DrawMatchScores (); // woods #matchhud
 		SCR_ShowFlagStatus (); // woods #matchhud #flagstatus
+		SCR_MARK("scr: overlays: hud extras");
 		SCR_ShowObsFrags (); // woods #observerhud
 		SCR_DrawSpeed (); // woods #speed
 		SCR_DrawMovementKeys (); // woods #movementkeys
@@ -5431,15 +5539,32 @@ void SCR_UpdateScreen (void)
 		SCR_Observing (); // woods
 		TexturePointer_Draw (); // woods #texturepointer
 		SCR_DrawScopeOverlay (); // woods #scope
+		SCR_MARK("scr: overlays: console and menu");
 		SCR_DrawConsole ();
 		M_Draw ();
 	}
+
+	SCR_MARK("scr: gamma");
 
 	V_UpdateBlend (); //johnfitz -- V_UpdatePalette cleaned up and renamed
 
 	GLSLGamma_GammaCorrect ();
 
+	SCR_MARK("scr: end");
 	GL_EndRendering ();
+
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	if (psp_scr_frames < 100)
+		psp_scr_frames++;
+
+	/* Counted only when the renderer put a 3D polygon into this frame's
+	 * draw list -- see psp_scr_mark_here(), which is why this is asked of
+	 * the shim and not of cls.state.  Read after GL_EndRendering(): the
+	 * shim clears its counter in begin_frame, not in end_frame, so the
+	 * answer is still there. */
+	if (psp_scr_world_frames < 100 && psp_gl_world_drawn_this_frame ())
+		psp_scr_world_frames++;
+#endif
 }
 
 //============================================================================

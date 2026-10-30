@@ -24,6 +24,19 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "quakedef.h"
 
+/* PSP breadcrumbs.
+ *
+ * psp_mark() (port/psp/psp_console.c) writes one line to the debug screen and
+ * to kabluk.log, so the last mark in the file names the step that died.  The
+ * macro has to be defined up here: it is used by the texture resampler and the
+ * 32-bit loader, which come *before* TexMgr_LoadImage in this file. */
+#if defined(PLATFORM_PSP) || defined(__psp__)
+extern void psp_mark (const char *what);
+#define TEX_MARK(x)	psp_mark(x)
+#else
+#define TEX_MARK(x)	do { } while (0)
+#endif
+
 const int	gl_solid_format = 3;
 const int	gl_alpha_format = 4;
 
@@ -531,6 +544,11 @@ gltexture_t* TexMgr_NewTexture(void)
 	{
 		int i, newtexturecount = 64;
 		free_gltextures = (gltexture_t*)malloc(newtexturecount * sizeof(gltexture_t));
+		/* Without this check a failed malloc is a write through a NULL
+		 * pointer, which on the PSP means the console goes out silently. */
+		if (!free_gltextures)
+			Sys_Error ("TexMgr_NewTexture: out of memory for %i textures",
+			           newtexturecount);
 		for (i = 0; i < newtexturecount - 1; i++)
 			free_gltextures[i].next = &free_gltextures[i + 1];
 		free_gltextures[i].next = NULL;
@@ -754,6 +772,15 @@ TexMgr_NewGame
 void TexMgr_NewGame(void)
 {
 	TexMgr_ColormapTexture_Free(NULL);
+
+	/* Everything below is about to stop existing, and the picture cache in
+	 * gl_draw.c is holding raw pointers into this list.  Tell it first:
+	 * otherwise it hands those pointers back to TexMgr_FreeTexture() later,
+	 * which either answers "not found" or -- when the struct has already
+	 * been reused by a different texture -- deletes a live one.  The log of
+	 * that is fifty "TexMgr_FreeTexture: not found" lines in a row followed
+	 * by picture memory collapsing and every later PNG failing to decode. */
+	Draw_ForgetTextures();
 
 	TexMgr_FreeTextures(0, TEXPREF_PERSIST); //deletes all textures where TEXPREF_PERSIST is unset
 	TexMgr_LoadPalette();
@@ -979,6 +1006,12 @@ static unsigned* TexMgr_ResampleTexture(unsigned* in, int inwidth, int inheight,
 	unsigned* out;
 	int i, j, outwidth, outheight;
 
+	/* A zero dimension must never reach the arithmetic below: xfrac/yfrac
+	 * divide by (outwidth - 1), and Pad(0) is 1, so the divisor would be 0 --
+	 * on the PSP that is a trap exception, not an infinity. */
+	if (inwidth < 1 || inheight < 1)
+		return in;
+
 	if (inwidth == TexMgr_Pad(inwidth) && inheight == TexMgr_Pad(inheight))
 		return in;
 
@@ -986,8 +1019,11 @@ static unsigned* TexMgr_ResampleTexture(unsigned* in, int inwidth, int inheight,
 	outheight = TexMgr_Pad(inheight);
 	out = (unsigned*)Hunk_Alloc(outwidth * outheight * 4);
 
-	xfrac = ((inwidth - 1) << 16) / (outwidth - 1);
-	yfrac = ((inheight - 1) << 16) / (outheight - 1);
+	/* A one-pixel dimension makes the divisor zero, and a division by zero on
+	 * the PSP is a trap exception, not an infinity: the module dies with no
+	 * message.  A single row or column needs no interpolation anyway. */
+	xfrac = (outwidth > 1) ? (unsigned)(((inwidth - 1) << 16) / (outwidth - 1)) : 0;
+	yfrac = (outheight > 1) ? (unsigned)(((inheight - 1) << 16) / (outheight - 1)) : 0;
 	y = outjump = 0;
 
 	for (i = 0; i < outheight; i++)
@@ -999,13 +1035,33 @@ static unsigned* TexMgr_ResampleTexture(unsigned* in, int inwidth, int inheight,
 
 		for (j = 0; j < outwidth; j++)
 		{
+			unsigned ix = x >> 16;
+			unsigned iy = injump / (unsigned)inwidth;
+			unsigned ix1, iy1;
+
 			modx = (x >> 8) & 0xFF;
 			imodx = 256 - modx;
 
-			nwpx = (byte*)(in + (x >> 16) + injump);
-			nepx = nwpx + 4;
-			swpx = nwpx + inwidth * 4;
-			sepx = swpx + 4;
+			/* Clamp the four neighbours inside the source image.
+			 *
+			 * The routine was written for *downscaling*, where (x>>16) never
+			 * reaches the last column.  Upscaling happens for every non
+			 * power-of-two picture, and there nwpx on the bottom row points
+			 * one full row past the end of the buffer, swpx two rows past it.
+			 * On a desktop that reads whatever is next in the heap; on the PSP
+			 * those bytes can be past the end of the block we own. */
+			if (ix > (unsigned)(inwidth - 1))
+				ix = inwidth - 1;
+			if (iy > (unsigned)(inheight - 1))
+				iy = inheight - 1;
+
+			ix1 = (ix + 1 < (unsigned)inwidth) ? ix + 1 : ix;
+			iy1 = (iy + 1 < (unsigned)inheight) ? iy + 1 : iy;
+
+			nwpx = (byte*)(in + iy * inwidth + ix);
+			nepx = (byte*)(in + iy * inwidth + ix1);
+			swpx = (byte*)(in + iy1 * inwidth + ix);
+			sepx = (byte*)(in + iy1 * inwidth + ix1);
 
 			dest = (byte*)(out + outjump + j);
 
@@ -1261,6 +1317,8 @@ static void TexMgr_LoadImage32(gltexture_t* glt, unsigned* data)
 	if (glt->flags & TEXPREF_PREMULTIPLY)
 		data = (unsigned*)TexMgr_PreMultiply32((byte*)data, glt->width, glt->height);
 
+	TEX_MARK("tex32: resample");
+
 	if (!gl_texture_NPOT)
 	{
 		// resample up
@@ -1312,6 +1370,8 @@ static void TexMgr_LoadImage32(gltexture_t* glt, unsigned* data)
 		mipheight = TexMgr_SafeTextureSize3(glt->height >> picmip);
 	}
 
+	TEX_MARK("tex32: mipmap");
+
 	while ((int)glt->width > mipwidth)
 	{
 		TexMgr_MipMapW(data, glt->width, glt->height);
@@ -1328,13 +1388,19 @@ static void TexMgr_LoadImage32(gltexture_t* glt, unsigned* data)
 	}
 
 	// upload
+	/* The size goes into the mark: if a picture dies here, its dimensions are
+	 * the first thing to check (a padded 1xN or a giant one explains a lot). */
+	TEX_MARK(va("tex32: upload %dx%d", glt->width, glt->height));
+	TEX_MARK("tex32: bind");
 	GL_Bind(glt);
 	internalformat = (glt->flags & TEXPREF_ALPHA) ? gl_alpha_format : gl_solid_format;
+	TEX_MARK("tex32: image2d");
 	glTexImage2D(GL_TEXTURE_2D, 0, internalformat, glt->width, glt->height, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
 
 	// upload mipmaps
 	if (glt->flags & TEXPREF_MIPMAP && !(glt->flags & TEXPREF_WARPIMAGE)) // warp image mipmaps are generated later
 	{
+		TEX_MARK("tex32: mipchain");
 		mipwidth = glt->width;
 		mipheight = glt->height;
 
@@ -1355,7 +1421,9 @@ static void TexMgr_LoadImage32(gltexture_t* glt, unsigned* data)
 	}
 
 	// set filter modes
+	TEX_MARK("tex32: filter");
 	TexMgr_SetFilterModes(glt);
+	TEX_MARK("tex32: done");
 }
 
 void TexMgr_BlockSize(enum srcformat format, int* bytes, int* width, int* height)
@@ -1498,6 +1566,162 @@ static void TexMgr_LoadImageCompressed(gltexture_t* glt, byte* data)
 	TexMgr_SetFilterModes(glt);
 }
 
+#if defined(PLATFORM_PSP) || defined(__psp__)
+/*
+================
+TexMgr_Downscale8 -- halve 8-bit texels until both sides fit maxdim
+
+The GE cannot sample more than 512 texels in either direction.  pspsdk
+src/gu/sceGuTexImage.c keeps width and height as 4-bit logarithms
+(getExp(height) << 8 | getExp(width)), so anything above 512 either loses a bit
+of its size or, at 1024 and up, is masked to zero and encoded as 0xFFFF --
+"sample a 32768x32768 texture".  port/psp/gl_shim.c refuses those pictures
+instead of drawing garbage (SHIM_TEX_MAX), but by then the engine has already
+paid for them.
+
+Round 70 showed what "paid for them" costs.  Entering the map needed
+
+    Hunk_Alloc 4194336 bytes failed: 19456 KB total, 18128 KB used, 1327 KB free
+
+and 4194336 is 32 bytes of hunk header plus exactly 4 MB: one 1024x1024 miptex
+expanded by TexMgr_8to32() at four bytes a texel, into a hunk that also holds
+the zone, the console buffer, progs/player.mdl and cl_entities.  The texture
+could never have been drawn either -- 1024 is past what the GE addresses.
+
+Interstice-ProQuake (MotoLegacy/Interstice-ProQuake) does the opposite of this
+whole pipeline on the same hardware: source/psp/gu_draw.cpp GL_LoadTexture()
+rounds the picture up to a power of two, halves it when it is over 800
+(r_tex_scale_down), caps the mip chain at 16 texels and uploads it as
+GU_PSM_T8 -- one byte a texel, the map's own palette in a CLUT -- straight into
+VRAM.  There is no 32-bit copy at any point, so a big miptex costs its own size
+and nothing else.
+
+So the reduction is done here, on the indexed texels, *before* TexMgr_8to32()
+turns them into four bytes each.  The copy is one byte a texel (256 KB at
+512x512, against the megabyte the 32-bit version needed), and afterwards the
+largest 32-bit scratch this file can ask the hunk for is 512*512*4 = 1 MB.
+
+It is a copy and not an edit in place, because the same miptex is loaded twice
+when it has fullbright pixels (gl_model.c loads it once with TEXPREF_NOBRIGHT
+and once with TEXPREF_FULLBRIGHT from the same `(byte *)(tx+1)`), and the second
+load has no way to know the first one changed the bytes under it.
+
+Nearest-neighbour, not averaging: these are palette *indices*, and the mean of
+index 3 and index 200 is not a colour.  Averaging them is how a downscaled
+texture comes out looking like noise.  Interstice subsamples for the same
+reason.
+================
+*/
+#define TEX_PSP_MAX 512
+
+/*
+================
+TexMgr_PspFloorPow2 -- the power of two gl_shim.c is going to put this picture
+in, or the size itself when using it would cost more than 30% of a side
+
+Downscaling alone is not enough on this hardware, because the GE's texture
+memory is addressed in powers of two and port/psp/gl_shim.c places every
+picture in the smallest power-of-two box that holds it (shim_pot()).  The
+round-79 hardware log shows what that costs for the mod's own artwork:
+
+    tex: progs/v_nail.mdl:frame0 is 1300x563, the GE takes 512 -- scaled to 325x140
+    tex: progs/v_nail.mdl:frame1 ... scaled to 325x140
+    tex: progs/v_shot2.mdl:frame0 is 680x256 ... scaled to 340x128
+    tex: gfx/conback2.lmp is 1280x720 ... scaled to 320x180
+
+325x140 is a 512x256 box: 256 KB of the picture arena for 44 KB of texels.
+340x128 is a 512x128 box.  320x180 is a 512x256 box.  Every one of those
+boxes was taken whole from an arena that then reported
+
+    tex: no room for a 240x112 picture (256x128 box = 64 KB);
+         6132 KB of 6144 KB arena in use, largest free 4 KB
+
+and the pictures that could not fit were decoded from the memory stick again
+on the next frame, and the frame after that -- which is what "6 frames a
+second" looks like from the inside.
+
+Rounding the *already reduced* size down to the power of two the box is made
+of costs one step of resolution (325 -> 256, 140 -> 128) and gives the whole
+margin of the box back to the pool.  Only sizes that lose less than 30% of a
+side are rounded, so a long thin picture (which would lose a third of its
+height) keeps its size and its wide box.
+
+The aspect ratio is not a consideration here and must not be "fixed": the
+engine gives the renderer texture coordinates as fractions of the picture
+(M_ alias skins use 0..1 of the atlas, world surfaces use
+CalcSurfaceExtents over the miptex size), so a smaller atlas is the same
+picture, only coarser.
+================
+*/
+static unsigned int TexMgr_PspFloorPow2 (unsigned int n)
+{
+	unsigned int p = 8;
+
+	if (n < 16)
+		return n;
+
+	while ((p << 1) <= n)
+		p <<= 1;
+
+	/* 7/10 of the size or better, otherwise leave it alone. */
+	if (p * 10 < n * 7)
+		return n;
+
+	return p;
+}
+
+static byte *TexMgr_Downscale8 (byte *data, unsigned int *width, unsigned int *height, int maxdim)
+{
+	unsigned int w = *width, h = *height;
+	unsigned int f = 1, nw, nh, x, y;
+	byte *out;
+
+	if (!w || !h)
+		return data;
+
+	/* How many halvings are needed to fit both sides, done in one pass: the
+	 * sample step is 2^n, so every destination texel reads one source texel
+	 * and nothing else. */
+	while (w / f > (unsigned int)maxdim || h / f > (unsigned int)maxdim)
+	{
+		if (f > (1u << 16))
+			break;
+		f <<= 1;
+	}
+
+	nw = w / f;
+	nh = h / f;
+	if (nw < 1) nw = 1;
+	if (nh < 1) nh = 1;
+
+	if (nw == w && nh == h)
+		return data;		/* already small enough */
+
+	/* ...and then drop to the box the shim will make for it anyway.  Only
+	 * pictures that were over the GE's limit get here, so the interface's
+	 * own artwork is untouched -- see TexMgr_PspFloorPow2 above. */
+	nw = TexMgr_PspFloorPow2 (nw);
+	nh = TexMgr_PspFloorPow2 (nh);
+
+	out = (byte *)Hunk_AllocName ((int)(nw * nh), "tex_scale");
+	if (!out)
+		return data;		/* no room: upload it as it came */
+
+	for (y = 0; y < nh; y++)
+	{
+		const byte *src = data + (size_t)(y * f) * w;
+		byte *dst = out + (size_t)y * nw;
+
+		for (x = 0; x < nw; x++)
+			dst[x] = src[x * f];
+	}
+
+	*width = nw;
+	*height = nh;
+	return out;
+}
+#endif
+
 /*
 ================
 TexMgr_LoadImage8 -- handles 8bit source data, then passes it to LoadImage32
@@ -1521,6 +1745,36 @@ static void TexMgr_LoadImage8(gltexture_t* glt, byte* data)
 		// 32 pixels from the bottom to make it look nice.
 		memcpy(data, data + 32 * 31, 32);
 	}
+
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	/* ---- keep the 32-bit copy inside what the GE can address -----------
+	 * See TexMgr_Downscale8 above for why this is here and not in the
+	 * upload path.  gl_hardware_maxsize (512 on the PSP, vid_psp.c) clamps
+	 * the *result* of the conversion, which is one texture too late: the
+	 * 4 MB block has been taken by then.
+	 *
+	 * The gltexture stops being reloadable from its original source:
+	 * TexMgr_ReloadImage() would read source_width*source_height bytes out
+	 * of the lump and colour a smaller picture with them, which is not the
+	 * same picture.  World textures are never reloaded (the player skins
+	 * are, and those are 320x200 at most), but saying so costs one line and
+	 * prevents a silently scrambled picture if that ever changes. */
+	if (glt->width > TEX_PSP_MAX || glt->height > TEX_PSP_MAX)
+	{
+		extern void psp_tracef (const char *fmt, ...);
+		unsigned int ow = glt->width, oh = glt->height;
+
+		data = TexMgr_Downscale8 (data, &glt->width, &glt->height, TEX_PSP_MAX);
+		glt->source_width = glt->width;
+		glt->source_height = glt->height;
+		glt->source_file[0] = 0;
+		glt->source_offset = 0;
+
+		psp_tracef ("tex: %s is %dx%d, the GE takes %d -- scaled to %dx%d",
+		            glt->name, (int)ow, (int)oh, TEX_PSP_MAX,
+		            (int)glt->width, (int)glt->height);
+	}
+#endif
 
 	// detect false alpha cases
 	if (glt->flags & TEXPREF_ALPHA && !(glt->flags & TEXPREF_CONCHARS))
@@ -1664,12 +1918,32 @@ TexMgr_LoadLightmap -- handles lightmap data
 */
 static void TexMgr_LoadLightmap(gltexture_t* glt, byte* data)
 {
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	/* A map without its lightmaps is a black map, and the picture pool is
+	 * always full by the time a map is entered (gl_shim.c: the round-73 log
+	 * has it at 6131 KB of 6144 with 12 KB free).  Say that this upload is a
+	 * lightmap, so the shim lets it past the picture cap.  Cleared again
+	 * below, so no ordinary picture inherits the exemption. */
+	{
+		extern void psp_gl_shim_priority_texture (int on);
+
+		psp_gl_shim_priority_texture (1);
+	}
+#endif
 	// upload it
 	GL_Bind(glt);
 	if (gl_lightmap_format == GL_RGB9_E5)
 		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB9_E5, glt->width, glt->height, 0, GL_RGB, GL_UNSIGNED_INT_5_9_9_9_REV, data);
 	else
 		glTexImage2D(GL_TEXTURE_2D, 0, lightmap_bytes, glt->width, glt->height, 0, gl_lightmap_format, GL_UNSIGNED_BYTE, data);
+
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	{
+		extern void psp_gl_shim_priority_texture (int on);
+
+		psp_gl_shim_priority_texture (0);
+	}
+#endif
 
 	// set filter modes
 	TexMgr_SetFilterModes(glt);
@@ -1683,6 +1957,13 @@ TexMgr_LoadImage -- the one entry point for loading all textures
 gltexture_t* TexMgr_LoadImage(qmodel_t* owner, const char* name, int width, int height, enum srcformat format,
 	byte* data, const char* source_file, src_offset_t source_offset, unsigned flags)
 {
+	{
+		/* The prefix matters: it says whether the hang is before the texture
+		 * path (the wad lookup, "num_0") or inside it ("tex num_0"). */
+		char texmark[64];
+		snprintf(texmark, sizeof(texmark), "tex %s", name ? name : "?");
+		TEX_MARK(texmark);
+	}
 	unsigned short crc;
 	gltexture_t* glt = NULL;
 	int mark;
@@ -1727,6 +2008,8 @@ gltexture_t* TexMgr_LoadImage(qmodel_t* owner, const char* name, int width, int 
 	glt->source_width = width;
 	glt->source_height = height;
 	glt->source_crc = crc;
+
+	TEX_MARK("tex: convert");
 
 	//upload it
 	mark = Hunk_LowMark();
@@ -1773,8 +2056,10 @@ gltexture_t* TexMgr_LoadImage(qmodel_t* owner, const char* name, int width, int 
 		break;
 	}
 
+	TEX_MARK("tex: free hunk");
 	Hunk_FreeToLowMark(mark);
 
+	TEX_MARK("tex: done");
 	return glt;
 }
 

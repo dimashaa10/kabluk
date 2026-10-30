@@ -26,6 +26,18 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "quakedef.h"
 
+/* PSP breadcrumbs for the model loader.  Same idea as TEX_MARK: one line to
+ * the screen and the card, so the last line of kabluk.log names the step that
+ * killed the console.  A model is loaded in stages (skins, verts, triangles,
+ * frames), and a fault in any of them looks identical from the outside. */
+#if defined(PLATFORM_PSP) || defined(__psp__)
+extern void psp_mark (const char *what);
+extern void psp_tracef (const char *fmt, ...);
+#define MDL_MARK(x)	psp_mark(x)
+#else
+#define MDL_MARK(x)	do { } while (0)
+#endif
+
 qmodel_t	*loadmodel;
 char	loadname[32];	// for hunk tags
 char	diskname[MAX_QPATH];	// for loading related name-based files.
@@ -44,7 +56,19 @@ static const char *Mod_ParseWorldspawnKey(qmodel_t *mod, const char *wantkey, ch
 static cvar_t	external_ents = {"external_ents", "1", CVAR_ARCHIVE};
 static cvar_t	external_ents_dir = {"external_ents_dir", "", CVAR_ARCHIVE};
 static cvar_t   external_lits_dir = {"external_lits_dir", "", CVAR_ARCHIVE}; // woods #litdir
+#if defined(PLATFORM_PSP) || defined(__psp__)
+/* Off by default on the PSP.
+ *
+ * With it on, every picture looks for a hi-res replacement first: seven
+ * extensions per lookup, times every search path, each one a stat() on the
+ * memory stick.  Sbar_Init alone loads ~60 pictures, and the startup spent ten
+ * seconds and more just asking the card whether gfx/inv2_sshotgun.png exists.
+ * There are no hi-res packs on a PSP card to find; the cvar stays, so it can be
+ * turned back on from the config. */
+cvar_t	gl_load24bit = {"gl_load24bit", "0", CVAR_ARCHIVE};
+#else
 cvar_t	gl_load24bit = {"gl_load24bit", "1", CVAR_ARCHIVE};
+#endif
 static cvar_t	mod_ignorelmscale = {"mod_ignorelmscale", "0"};
 static cvar_t	mod_lightscale_broken = {"mod_lightscale_broken", "1"};	//match vanilla's brokenness bug with dlights and scaled textures. decoupled_lm bypasses this obviously buggy setting because zomgletmefixstuffffs
 cvar_t	mod_lightgrid = {"mod_lightgrid", "1"};	//mostly for debugging, I dunno. just leave it set to 1.
@@ -386,6 +410,7 @@ static qmodel_t *Mod_LoadModel (qmodel_t *mod, qboolean crash)
 	byte	*buf;
 	byte	stackbuf[1024];		// avoid dirtying the cache heap
 	int	mod_type;
+	qboolean buf_owned = false;	// true when buf came from malloc (see below)
 
 	if (!mod->needload)
 	{
@@ -399,6 +424,8 @@ static qmodel_t *Mod_LoadModel (qmodel_t *mod, qboolean crash)
 	}
 
 //
+MDL_MARK(va("model %s", mod->name));
+
 // load the file
 //
 	if (*mod->name == '*')
@@ -467,6 +494,55 @@ static qmodel_t *Mod_LoadModel (qmodel_t *mod, qboolean crash)
 	mod->needload = false;
 
 	mod_type = (buf[0] | (buf[1] << 8) | (buf[2] << 16) | (buf[3] << 24));
+
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	/* A model file that is bigger than the 1 KB stack buffer comes back from
+	 * COM_LoadStackFile() inside the hunk's *temp* block -- 3.4 MB of it for
+	 * progs/player.mdl -- and the loader below then builds a working copy in
+	 * the low hunk and finally asks the cache for a third copy of the same
+	 * size.  Three copies of one model in a 19 MB hunk is what ends the run:
+	 *
+	 *     hunk: Cache_Alloc 3536192 bytes does not fit: 19456 KB total,
+	 *           16074 KB used (low 12619 + cache 3454), 3381 KB free
+	 *     *** FATAL ERROR ***  Cache_TryAlloc: 3536192 is greater then free
+	 *                         hunk (3462928 free)
+	 *
+	 * -- 3462928 against 3536192, i.e. 72 KB short (round-81 build, first map
+	 * load: maps/PAVILION.bsp, then progs/player.mdl).
+	 *
+	 * The file bytes are only read here, never written, and the loader copies
+	 * what it keeps.  So for an alias model they are moved into the newlib
+	 * heap (10 MB free, 0 KB used at the time) and the temp block is given
+	 * back to the hunk before the loader runs.  Peak drops from file + 2 x
+	 * model to 2 x model, which is the 3.4 MB this console does not have.
+	 *
+	 * Brush models are left alone on purpose: their loader keeps pointers
+	 * into the file buffer for the length of the call and frees the temp
+	 * itself, and a .bsp is loaded through a different budget entirely. */
+	if ((mod_type == IDPOLYHEADER ||
+	     mod_type == (('M'<<0)+('D'<<8)+('1'<<16)+('6'<<24))) &&
+	    buf != stackbuf)
+	{
+		int filelen = COM_LastLoadFileLength ();
+		byte *owned = (byte *) malloc (filelen + 1);
+
+		if (owned)
+		{
+			memcpy (owned, buf, filelen + 1);
+			buf = owned;
+			buf_owned = true;
+
+			/* "Return space from the top of the hunk" -- Hunk_HighMark()
+			 * is what releases the temp block (zone.c, Hunk_TempAlloc). */
+			Hunk_HighMark ();
+
+			psp_tracef ("mdl: %s is %d KB; read into the heap, the hunk's "
+			            "temp copy released before the loader",
+			            mod->name, (filelen + 1) / 1024);
+		}
+	}
+#endif
+
 	switch (mod_type)
 	{
 	case IDPOLYHEADER:
@@ -523,6 +599,12 @@ static qmodel_t *Mod_LoadModel (qmodel_t *mod, qboolean crash)
 		Mod_LoadBrushModel (mod, buf);
 		break;
 	}
+
+	/* The heap copy, if there was one: the loader above copied what it keeps
+	 * (Mod_LoadAliasModel ends in Cache_Alloc + memcpy, and the working copy
+	 * in the hunk is freed with Hunk_FreeToLowMark). */
+	if (buf_owned)
+		free (buf);
 
 	if (crash && mod->type == mod_ext_invalid)
 	{	//any of those formats for a world map will be screwed up.
@@ -3768,6 +3850,8 @@ static void *Mod_LoadAllSkins (int numskins, daliasskintype_t *pskintype)
 
 	for (i=0 ; i<numskins ; i++)
 	{
+		MDL_MARK(va("mdl: skin %d/%d", i, numskins));
+
 		if (pskintype->type == ALIAS_SKIN_SINGLE)
 		{
 			Mod_FloodFillSkin( skin, pheader->skinwidth, pheader->skinheight );
@@ -4240,11 +4324,13 @@ static void Mod_LoadAliasModel (qmodel_t *mod, void *buffer, int pvtype)
 // load the skins
 //
 	pskintype = (daliasskintype_t *)&pinmodel[1];
+	MDL_MARK(va("mdl: %d skin(s)", pheader->numskins));
 	pskintype = (daliasskintype_t *) Mod_LoadAllSkins (pheader->numskins, pskintype);
 
 //
 // load base s and t vertices
 //
+	MDL_MARK("mdl: stverts");
 	pinstverts = (stvert_t *)pskintype;
 
 	for (i=0 ; i<pheader->numverts ; i++)
@@ -4257,6 +4343,7 @@ static void Mod_LoadAliasModel (qmodel_t *mod, void *buffer, int pvtype)
 //
 // load triangle lists
 //
+	MDL_MARK("mdl: triangles");
 	pintriangles = (dtriangle_t *)&pinstverts[pheader->numverts];
 
 	for (i=0 ; i<pheader->numtris ; i++)
@@ -4274,6 +4361,7 @@ static void Mod_LoadAliasModel (qmodel_t *mod, void *buffer, int pvtype)
 // load the frames
 //
 	posenum = 0;
+	MDL_MARK(va("mdl: %d frame(s)", numframes));
 	pframetype = (daliasframetype_t *)&pintriangles[pheader->numtris];
 
 	for (i=0 ; i<numframes ; i++)
@@ -4291,6 +4379,7 @@ static void Mod_LoadAliasModel (qmodel_t *mod, void *buffer, int pvtype)
 
 	mod->type = mod_alias;
 
+	MDL_MARK("mdl: bounds");
 	Mod_CalcAliasBounds (pheader); //johnfitz
 
 	//Spike: for setmodel compat with vanilla
@@ -4300,8 +4389,11 @@ static void Mod_LoadAliasModel (qmodel_t *mod, void *buffer, int pvtype)
 	//
 	// build the draw lists
 	//
+	MDL_MARK("mdl: display lists");
 	GL_MakeAliasModelDisplayLists (mod, pheader);
+	MDL_MARK("mdl: vertex buffer");
 	GLMesh_LoadVertexBuffer (mod, pheader);
+	MDL_MARK("mdl: to cache");
 
 //
 // move the complete, relocatable alias model to the cache
@@ -4311,7 +4403,14 @@ static void Mod_LoadAliasModel (qmodel_t *mod, void *buffer, int pvtype)
 
 	Cache_Alloc (&mod->cache, total, loadname);
 	if (!mod->cache.data)
+	{	/* Silent until now: the model stayed 'mod_alias' with no extradata,
+		 * and the first thing that drew it dereferenced NULL.  On the PSP the
+		 * cache lives in the same 33 MB zone, so this is a real possibility. */
+		Con_Warning("Mod_LoadAliasModel: no cache memory for %s (%i bytes)\n",
+		            mod->name, total);
+		MDL_MARK("mdl: CACHE FULL");
 		return;
+	}
 	memcpy (mod->cache.data, pheader, total);
 
 	Hunk_FreeToLowMark (start);

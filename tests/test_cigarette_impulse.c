@@ -209,6 +209,15 @@ void PF_sv_pmove (void)
 {
 }
 
+/* The engine action key (+use) looks up the progs' own `activator` global before
+ * running a button's use function. This harness has no progs definitions, which
+ * is exactly the fallback case: self/other still carry the player. */
+ddef_t *ED_FindGlobal (const char *name)
+{
+	(void)name;
+	return NULL;
+}
+
 void PR_ExecuteProgram (func_t function)
 {
 	edict_t *ent = host_client->edict;

@@ -78,6 +78,12 @@
 #	define	PLATFORM_HAIKU		1
 #   endif
 
+#elif defined(__psp__)
+
+#   if !defined(PLATFORM_PSP)
+#	define	PLATFORM_PSP		1
+#   endif
+
 #else	/* here goes the unix platforms */
 
 #if defined(__unix) || defined(__unix__) || defined(unix)	|| \
@@ -149,6 +155,8 @@
 #	define	PLATFORM_STRING	"AmigaOS"
 #elif defined(__QNX__) || defined(__QNXNTO__)
 #	define	PLATFORM_STRING	"QNX"
+#elif defined(PLATFORM_PSP)
+#	define	PLATFORM_STRING	"PSP"
 #elif defined(PLATFORM_OSX)
 #	define	PLATFORM_STRING	"MacOSX"
 #elif defined(PLATFORM_MAC)

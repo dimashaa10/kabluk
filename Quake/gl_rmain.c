@@ -22,6 +22,21 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 // r_main.c
 
 #include "quakedef.h"
+
+/* PSP breadcrumbs for the 3D renderer -- first 3 calls only.
+ *
+ * These run once per frame, so an unconditional write to the memory stick
+ * would be the slowest thing in the engine; the first few frames are the ones
+ * that matter, and after that the counter turns the mark into a comparison.
+ * Defined up here on purpose: a macro that is used before its #define becomes
+ * an implicit function call and only shows up with -Werror. */
+#if defined(PLATFORM_PSP) || defined(__psp__)
+extern void psp_trace_mark (const char *step);
+int psp_render_frames;	/* shared with r_alias.c: same first-three-frames window */
+#define RENDER_MARK(x)	do { if (psp_render_frames < 3) psp_trace_mark(x); } while (0)
+#else
+#define RENDER_MARK(x)	do { } while (0)
+#endif
 #include "glquake.h"
 
 vec3_t		modelorg, r_entorigin;
@@ -931,6 +946,10 @@ void R_DrawEntitiesOnList (qboolean alphapass) //johnfitz -- added parameter
 		if (!r_drawflame.value) // woods
 			if (!strcmp(currententity->model->name, "progs/flame.mdl") || !strcmp(currententity->model->name, "progs/flame2.mdl"))
 				continue;
+
+		/* Which entity, of how many, and what kind of thing it is. */
+		RENDER_MARK(va("ent %d/%d type %d %s", i, cl_numvisedicts,
+		               (int)currententity->model->type, currententity->model->name));
 
 		switch (currententity->model->type)
 		{
@@ -1883,25 +1902,47 @@ void R_DrawTracers(void)
 R_RenderScene
 ================
 */
+/* The engine's own bucket in the shim's frame profiler (port/psp/gl_shim.c,
+ * SHIM_PROF_SCENE).
+ *
+ * The round-84 log says a frame of the loaded map is 176 ms of "cpu" with
+ * "ge 0.1", and the heartbeat cannot say whether that is the engine, the shim
+ * or a GE that pushes back through the command FIFO.  R_RenderScene is the
+ * whole world: setup, sky, surfaces, entities, water, dlights.  Timing it here
+ * splits the frame in one number, and the next log answers the question. */
+#if defined(PLATFORM_PSP) || defined(__psp__)
+extern unsigned int sceKernelGetSystemTimeLow (void);
+extern void psp_gl_shim_prof_add (int bucket, unsigned int us);
+#define SHIM_PROF_SCENE_BUCKET 0
+#endif
+
 void R_RenderScene (void)
 {
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	unsigned int prof_t0 = sceKernelGetSystemTimeLow ();
+#endif
 	currententity = &r_worldentity;
+	RENDER_MARK("scene: setup");
 	R_SetupScene (); //johnfitz -- this does everything that should be done once per call to RenderScene
 
 	Fog_EnableGFog (); //johnfitz
 
 	if (r_refdef.drawworld)
 	{
+		RENDER_MARK("scene: sky");
 		Sky_DrawSky (); //johnfitz
+		RENDER_MARK("scene: world");
 		R_DrawWorld ();
 	}
 	currententity = NULL;
 
+	RENDER_MARK("scene: sound");
 	S_ExtraUpdate (); // don't let sound get messed up if going slow
 
 	if (r_refdef.drawworld)
 		R_DrawShadows (); //johnfitz -- render entity shadows
 
+	RENDER_MARK("scene: entities");
 	R_DrawEntitiesOnList (false); //johnfitz -- false means this is the pass for nonalpha entities
 
 	R_DrawWorld_Water (); //johnfitz -- drawn here since they might have transparency
@@ -1909,6 +1950,8 @@ void R_RenderScene (void)
 	R_DrawEntitiesOnList (true); //johnfitz -- true means this is the pass for alpha entities
 
 	R_RenderDlights (); //triangle fan dlights -- johnfitz -- moved after water
+
+	RENDER_MARK("scene: particles");
 
 	if (r_refdef.drawworld)
 	{
@@ -1933,6 +1976,11 @@ void R_RenderScene (void)
 
 	TP_DrawLocsWithWirePoints(); // woods #locext
 	LOC_ShowLocs(); // woods #locext
+
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	psp_gl_shim_prof_add (SHIM_PROF_SCENE_BUCKET,
+	                       sceKernelGetSystemTimeLow () - prof_t0);
+#endif
 }
 
 static GLuint r_scaleview_texture;
@@ -2072,6 +2120,8 @@ void R_RenderView (void)
 	if (r_norefresh.value)
 		return;
 
+	RENDER_MARK("render: begin");
+
 	if (r_refdef.drawworld && !cl.worldmodel)
 		Sys_Error ("R_RenderView: NULL worldmodel");
 
@@ -2136,6 +2186,7 @@ void R_RenderView (void)
 	skyroom_drawing = false;
 	//skyroom end
 
+	RENDER_MARK("render: setup view");
 	R_SetupView (); //johnfitz -- this does everything that should be done once per frame
 
 	//johnfitz -- stereo rendering -- full of hacky goodness
@@ -2191,6 +2242,7 @@ void R_RenderView (void)
 		R_RenderSceneBlur(gl_motion_blur.value);
 	}
 
+	RENDER_MARK("render: scene done");
 	R_ScaleView ();
 
 	//johnfitz -- modified r_speeds output
@@ -2221,5 +2273,10 @@ void R_RenderView (void)
 					rs_aliaspolys,
 					rs_dynamiclightmaps);
 	//johnfitz
+
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	if (psp_render_frames < 100)
+		psp_render_frames++;
+#endif
 }
 

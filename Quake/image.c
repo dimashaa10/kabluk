@@ -23,6 +23,17 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "quakedef.h"
 
+/* PLATFORM_PSP, from the compiler's __psp__ (Quake/arch_def.h).
+ *
+ * Needed by the `#ifndef PLATFORM_PSP` below, which switches the JPEG probe of
+ * stb_image off on the console.  quakedef.h does not include arch_def.h, so
+ * until round 87 that condition was simply true here -- PLATFORM_PSP was never
+ * defined in this file -- and the JPEG decoder was kept out only by the second,
+ * inner `#ifndef __psp__` sitting right behind it.  It worked, but by accident:
+ * anything added under the outer guard would have been compiled into the
+ * console build while reading as "not for the PSP". */
+#include "arch_def.h"
+
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #define STB_IMAGE_WRITE_STATIC
 #include "stb_image_write.h"
@@ -36,6 +47,119 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 static char loadfilename[MAX_OSPATH]; //file scope so that error messages can use it
 
+#if defined(PLATFORM_PSP) || defined(__psp__)
+/* Names the candidate file just before it is opened.  Image loading is the one
+ * place where a bad file can take the console down without a message, and the
+ * difference between "cherry.png" and "cherry.pcx" is the difference between
+ * two completely different decoders. */
+extern void psp_mark (const char *what);
+#define IMG_MARK(x)	psp_mark(x)
+
+/* A picture file this port will not even open.
+ *
+ * Starting a map ended a hardware session like this, and the line before the
+ * console switched itself off was
+ *
+ *     malloc: NULL for 17400000 bytes -- last pic: cached
+ *
+ * i.e. an image decoder asking for 17.4 megabytes on a console whose whole
+ * free heap at that moment was eight.  Whatever the file was, it was not going
+ * to be decoded: PNG (lodepng) reads the entire file into one malloc, and the
+ * RGBA a picture decodes to is w*h*4 on top of that.  The biggest texture the
+ * GE can sample here is 512x512, which decodes to one megabyte, so a file
+ * larger than a few megabytes is a file whose decode could only ever fail --
+ * after taking the console down with it.
+ *
+ * So it is refused by name, on one line, and the caller is told "no picture",
+ * which is the path every missing texture already takes.  Four megabytes is
+ * four times the largest decode this port can use; it is a limit on the FILE,
+ * not on the picture, so nothing that used to work stops working.
+ *
+ * (The comment on IMG_MARK above says image loading is the one place where a
+ * bad file takes the console down without a message.  This is the other half
+ * of that: a file too big to try is now a message too.) */
+#define PSP_IMAGE_FILE_LIMIT (4 * 1024 * 1024)
+
+static qboolean Image_RefuseHugeFile (const char *path)
+{
+	extern void psp_tracef (const char *fmt, ...);
+	static int said;
+
+	if (com_filesize >= 0 && com_filesize <= PSP_IMAGE_FILE_LIMIT)
+		return false;
+
+	if (said < 8)
+	{
+		said++;
+		psp_tracef ("img: %s is %d KB on the card -- more than this port will "
+		            "hold (%d KB); skipped, the picture will be missing",
+		            path, (int)(com_filesize / 1024),
+		            (int)(PSP_IMAGE_FILE_LIMIT / 1024));
+	}
+
+	return true;
+}
+
+#define IMG_REFUSE_IF_HUGE(path) \
+	do { if (Image_RefuseHugeFile (path)) { fclose (f); return NULL; } } while (0)
+
+/* A picture that DECODES to more than this port can hold.
+ *
+ * The file limit above catches a big file; it does not catch a small one that
+ * describes a huge picture.  A PNG of a few hundred kilobytes can declare
+ * 2048x2048, and lodepng will dutifully try to allocate 16 MB of RGBA for it --
+ * on a console whose entire newlib heap block is 10 MB.  That is exactly the
+ * shape of the line that ended a hardware session:
+ *
+ *     malloc: NULL for 17400000 bytes -- last pic: cached
+ *
+ * A 17.4 MB buffer for one picture, from a heap that had 8 MB free.
+ *
+ * The limit itself is not a guess.  sceGuTexImage() takes the LOGARITHM of the
+ * width and height and pspsdk asserts 1..512 (src/gu/sceGuTexImage.c), which is
+ * why the shim's SHIM_TEX_MAX is 512: every picture the GE can sample here is
+ * at most 512x512, and the shim downsamples anything bigger on upload.  So a
+ * picture with more than a million pixels (1024x1024, four megabytes of RGBA)
+ * is already four times the largest one this port can use, and the biggest
+ * picture that works today is 512x512.
+ *
+ * Refused by name, with both dimensions and the size it wanted, so the log says
+ * which file it was -- and the caller gets "no picture", the path a missing
+ * texture has always taken. */
+#define PSP_IMAGE_PIXEL_LIMIT (1024u * 1024u)
+
+static qboolean Image_RefuseHugePixels (const char *path, long w, long h)
+{
+	extern void psp_tracef (const char *fmt, ...);
+	static int said;
+
+	if (w <= 0 || h <= 0)
+		return false;		/* the decoder will say what is wrong with it */
+
+	if ((double)w * (double)h <= (double)PSP_IMAGE_PIXEL_LIMIT)
+		return false;
+
+	if (said < 8)
+	{
+		said++;
+		psp_tracef ("img: %.60s is %dx%d = %d KB of pixels -- more than this "
+		            "console can hold (%d KB); skipped, the picture will be "
+		            "missing",
+		            path, (int)w, (int)h, (int)((w * h * 4) / 1024),
+		            (int)((PSP_IMAGE_PIXEL_LIMIT * 4) / 1024));
+	}
+
+	return true;
+}
+
+#define IMG_REFUSE_IF_HUGE_PIXELS(path, w, h, stream) \
+	do { if (Image_RefuseHugePixels ((path), (long)(w), (long)(h))) { fclose (stream); return NULL; } } while (0)
+#else
+#define IMG_MARK(x)	do { } while (0)
+#define IMG_REFUSE_IF_HUGE(path)	do { } while (0)
+#define IMG_REFUSE_IF_HUGE_PIXELS(path, w, h)	do { } while (0)
+#endif
+
 extern cvar_t gl_load24bit_skins; // woods #loadskins
 
 typedef struct stdio_buffer_s {
@@ -48,6 +172,12 @@ typedef struct stdio_buffer_s {
 static stdio_buffer_t *Buf_Alloc(FILE *f)
 {
 	stdio_buffer_t *buf = (stdio_buffer_t *) calloc(1, sizeof(stdio_buffer_t));
+
+	/* calloc() returning NULL used to be a write through a NULL pointer, which
+	 * on the PSP is the screen going out without a word. */
+	if (!buf)
+		Sys_Error ("Buf_Alloc: out of memory reading '%s'", loadfilename);
+
 	buf->f = f;
 	return buf;
 }
@@ -77,25 +207,295 @@ static inline int Buf_GetC(stdio_buffer_t *buf)
 ** */
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_BMP
-#define STBI_ONLY_JPEG
 #ifdef LODEPNG_NO_COMPILE_DECODER
 	#define STBI_ONLY_PNG
 #endif
+#ifndef PLATFORM_PSP
+#ifndef __psp__
+	/* No JPEG on the console.
+	 *
+	 * With a decoder list of "JPEG, PNG, BMP" (that is the order stb_image
+	 * tries them in, see stbi__load_main()), every PNG first goes through the
+	 * JPEG probe -- and on the PSP that probe is both expensive (it puts an
+	 * 18 KB stbi__jpeg on the stack in the middle of a menu redraw) and
+	 * unreliable: the menu art in the paks came back as
+	 * "img: gfx/a_mmenu/mainmenu1.png FAILED: no SOI", which is the JPEG
+	 * decoder saying the file does not start with FF D8 -- for a file whose
+	 * first bytes are 89 50 4E 47 0D 0A 1A 0A, i.e. a perfectly good PNG.
+	 *
+	 * The game's own interface art is PNG, BMP, PCX and TGA, and it has no
+	 * JPEG at all, so the probe is pure liability here: without it, PNG is
+	 * tested first and the "no SOI" class of failure cannot happen.  A .jpg
+	 * would now report "unknown image type" instead of decoding. */
+	#define STBI_ONLY_JPEG
+#endif
+#endif
+/* Third-party headers get the warnings they were written for, not ours.
+ *
+ * With the JPEG decoder switched off (above) stb_image still compiles one
+ * helper nothing calls any more -- stbi__at_eof() is used by the JPEG, PIC,
+ * PNM and GIF readers only -- so -Wall reports "defined but not used" for a
+ * line of a 7000-line header we do not maintain.  Silencing that one
+ * diagnostic around the include is the right level: patching the header means
+ * redoing the patch at every stb_image update, and the warning itself is
+ * evidence that the PNG-first configuration is the one being compiled. */
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-function"
+#endif
 #include "stb_image.h"
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
+/* A decoded picture is copied into the hunk and the decoder's buffer is freed.
+ * stb hands back w*h*4 bytes of RGBA; the engine wants them in the hunk because
+ * that is where the rest of the loader puts image data. */
+static byte *Image_STBIDone (byte *heap, int width, int height)
+{
+	byte *hunk;
+
+	if (!heap)
+		return NULL;
+
+	//this is silly, but we do it for consistency.
+	//frankly, most people should be using tga-inside-pk3.
+	hunk = Hunk_Alloc(width * height * 4);
+	memcpy(hunk, heap, width * height * 4);
+	free(heap);
+
+	return hunk;
+}
+
+/* Files larger than this are streamed instead of read into memory: the decode
+ * needs its own w*h*4 buffer on top of the file, and the port keeps a measured
+ * amount of malloc() for pictures (main_psp.c: PSP_MALLOC_FLOOR, 12 MB).  Every
+ * menu picture in this game is a few kilobytes, so the two-megabyte path
+ * handles the real work and the stream path stays as a safety net for something
+ * huge in a pak. */
+#define IMG_STBI_READ_LIMIT (2u * 1024u * 1024u)
+
+#if defined(PLATFORM_PSP) || defined(__psp__)
+/* ---- what a picture decode does when the heap says no --------------------
+ *
+ * A decoded picture is w*h*4 bytes of RGBA from malloc(), and that buffer
+ * competes with the picture arena's chunks for the same pool -- the part of the
+ * heap the zone does not take (main_psp.c).  The hardware log of build 08:12
+ * has both numbers on it:
+ *
+ *     tex: 84 pictures, 2488 KB in use of ...
+ *     ... tex 4022 KB at run: f 347
+ *     img: gfx/a_sgl/asgl3.bmp FAILED: outofmem (14166 bytes,
+ *          sig 42 4D 56 37 00 00 00 00)
+ *
+ * "outofmem" is stb_image's own word for "malloc() returned NULL", and the
+ * file was fine: the whole 14166 bytes were read (its header declares exactly
+ * 14166) and they begin with "BM".  The memory that was missing was the one
+ * the decoder needed, while the engine's picture cache was still holding
+ * megabytes of pictures that nothing had drawn for a long time.
+ *
+ * So an allocation for a picture that fails now asks the cache first
+ * (psp_gl_shim_reclaim_pictures(): evict idle pictures, then hand the arena
+ * chunks that became empty back to the heap) and tries once more.  Nothing is
+ * retried blindly -- each line in the log names the allocation, its size, how
+ * many pictures were released and what the heap looked like on both sides. */
+extern int psp_gl_shim_reclaim_pictures (void);
+/* How much malloc() can still reach in its heap block, not what the allocator
+ * happens to be holding: the difference between the two is the whole point of
+ * this line (psp_heap.c explains). */
+extern unsigned int psp_heap_block_left (void);
+
+#define IMG_RECLAIM_LOGS 16
+static int img_reclaim_logs;
+
+/* `size` is 0 when the failed allocation is the decoder's own (stb allocates
+ * w*h*4 internally and does not tell us how big it was). */
+static int Image_ReclaimForPicture (const char *what, size_t size)
+{
+	int released;
+	unsigned int before = psp_heap_block_left (), after;
+
+	released = psp_gl_shim_reclaim_pictures ();
+	after = psp_heap_block_left ();
+
+	if (img_reclaim_logs < IMG_RECLAIM_LOGS)
+	{
+		extern void psp_tracef (const char *fmt, ...);
+
+		img_reclaim_logs++;
+
+		if (size)
+			psp_tracef ("img: %s: %d bytes failed, %d idle pictures "
+			            "released, heap left %d -> %d KB",
+			            what, (int)size, released,
+			            (int)(before / 1024), (int)(after / 1024));
+		else
+			psp_tracef ("img: %s: the decoder's buffer failed, %d idle "
+			            "pictures released, heap left %d -> %d KB",
+			            what, released,
+			            (int)(before / 1024), (int)(after / 1024));
+	}
+
+	return released;
+}
+
+/* malloc() for picture work, with the reclaim above in front of the failure. */
+static void *Image_AllocPicture (const char *what, size_t size)
+{
+	void *p = malloc (size);
+
+	if (!p && Image_ReclaimForPicture (what, size) > 0)
+		p = malloc (size);
+
+	return p;
+}
+
+#define IMG_ALLOC(what, size)	Image_AllocPicture ((what), (size))
+#else
+#define IMG_ALLOC(what, size)	malloc (size)
+#endif
+
 static byte *Image_LoadSTBI(FILE *f, int *width, int *height)
 {
 	int bytesPerPixel;
-	byte *heap = stbi_load_from_file(f, width, height, &bytesPerPixel, 4);
-	fclose(f);
-	if (heap)
-	{	//this is silly, but we do it for consistency.
-		//frankly, most people should be using tga-inside-pk3.
-		byte *hunk = Hunk_Alloc(*width**height*4);
-		memcpy(hunk, heap, *width**height*4);
-		free(heap);
-		return hunk;
+	byte *heap = NULL;
+	unsigned char *in;
+	size_t want, got = 0;
+
+	/* One read, then decode from memory.
+	 *
+	 * The previous version read the first eight bytes for the log, seeked
+	 * back to where it started, and handed the FILE* to
+	 * stbi_load_from_file().  The hardware log says why that is not
+	 * trustworthy:
+	 *
+	 *   img: gfx/a_spmenu/aspm2.png FAILED: bad png sig (2023 bytes,
+	 *        sig 89 50 4E 47 0D 0A 1A 0A)
+	 *
+	 * "Not a PNG", about a file whose own first bytes -- read one line
+	 * earlier from the same stream -- are the PNG signature exactly.  Two
+	 * reads of one stream cannot disagree unless the second one does not
+	 * start where the first one did, and the only thing between them is the
+	 * seek back.  A stream that came out of a pak is a file handle positioned
+	 * at an entry, not a file that begins at zero, so "seek to where I was"
+	 * is one operation away from "seek to the start of something else".
+	 *
+	 * With the file read into memory once, the signature the log prints and
+	 * the bytes stb decodes are the same bytes, and a failure is finally what
+	 * it claims to be.  It also reads the file once instead of twice. */
+	want = (size_t)(com_filesize > 0 ? com_filesize : 0);
+
+	if (want > IMG_STBI_READ_LIMIT)
+	{
+		/* Too big to hold twice: let stb read the stream itself, as before.
+		 * The position question above does not disappear, so the answer is
+		 * still named, only without the signature bytes. */
+		heap = stbi_load_from_file(f, width, height, &bytesPerPixel, 4);
+		fclose(f);
+
+#if defined(PLATFORM_PSP) || defined(__psp__)
+		{
+			extern void psp_tracef (const char *fmt, ...);
+
+			if (heap)
+				psp_tracef("img: %s ok %dx%d (%d bytes, streamed)",
+				           loadfilename, *width, *height, (int)want);
+			else
+				psp_tracef("img: %s FAILED: %s (%d bytes, streamed)",
+				           loadfilename,
+				           stbi_failure_reason() ? stbi_failure_reason() : "(no reason)",
+				           (int)want);
+		}
+#else
+		(void)bytesPerPixel;
+#endif
+
+		return Image_STBIDone(heap, *width, *height);
 	}
-	return NULL;
+
+	in = want ? (unsigned char *)IMG_ALLOC(loadfilename, want) : NULL;
+
+	if (in)
+		got = fread(in, 1, want, f);
+
+	fclose(f);
+
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	{
+		extern void psp_tracef (const char *fmt, ...);
+
+		if (!in)
+		{
+			psp_tracef("img: %s: no %d-byte buffer to read the file into",
+			           loadfilename, (int)want);
+			return NULL;
+		}
+
+		if (got != want)
+		{
+			/* A short read is its own answer: the size the file system
+			 * reported and the bytes it handed over disagree. */
+			psp_tracef("img: %s: read %d of %d bytes -- file truncated or "
+			           "not where the file system says it is",
+			           loadfilename, (int)got, (int)want);
+			free(in);
+			return NULL;
+		}
+	}
+#endif
+
+	if (!in || !got)
+	{
+		free(in);
+		return NULL;
+	}
+
+	/* stb allocates w*h*4 bytes of its own before it returns anything, and a
+	 * failed allocation there is a picture that is simply missing.  The size
+	 * is in the header, so it is asked for first: see
+	 * PSP_IMAGE_PIXEL_LIMIT for why 17 MB is not a size this console has. */
+	{
+		int iw = 0, ih = 0, ic = 0;
+
+		if (stbi_info_from_memory (in, (int)got, &iw, &ih, &ic))
+			IMG_REFUSE_IF_HUGE_PIXELS (loadfilename, iw, ih, f);
+	}
+
+	heap = stbi_load_from_memory(in, (int)got, width, height, &bytesPerPixel, 4);
+
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	/* Only one failure of the decoder is worth a second attempt: its own
+	 * allocation coming back empty.  Everything else (a corrupt file, an
+	 * unsupported format) says the same thing twice. */
+	if (!heap && stbi_failure_reason () && !strcmp (stbi_failure_reason (), "outofmem"))
+		if (Image_ReclaimForPicture (loadfilename, 0) > 0)
+			heap = stbi_load_from_memory (in, (int)got, width, height,
+			                              &bytesPerPixel, 4);
+#endif
+
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	{
+		extern void psp_tracef (const char *fmt, ...);
+
+		if (heap)
+			psp_tracef("img: %s ok %dx%d (%d bytes)", loadfilename,
+			           *width, *height, (int)got);
+		else
+			psp_tracef("img: %s FAILED: %s (%d bytes, sig %02X %02X %02X %02X "
+			           "%02X %02X %02X %02X)", loadfilename,
+			           stbi_failure_reason() ? stbi_failure_reason() : "(no reason)",
+			           (int)got,
+			           got > 0 ? in[0] : 0, got > 1 ? in[1] : 0,
+			           got > 2 ? in[2] : 0, got > 3 ? in[3] : 0,
+			           got > 4 ? in[4] : 0, got > 5 ? in[5] : 0,
+			           got > 6 ? in[6] : 0, got > 7 ? in[7] : 0);
+	}
+#else
+	(void)bytesPerPixel;
+#endif
+
+	free(in);
+
+	return Image_STBIDone(heap, *width, *height);
 }
 
 static unsigned int Image_ReadLE32(const byte *p)
@@ -187,8 +587,10 @@ static byte *Image_LoadBMP(FILE *f, int *width, int *height, qboolean *malloced,
 		palette[i][3] = 255;
 	}
 
-	row = (byte *)malloc(row_stride);
-	rgba = (byte *)malloc(output_size);
+	IMG_REFUSE_IF_HUGE_PIXELS (loadfilename, bmp_width, bmp_height, f);
+
+	row = (byte *)IMG_ALLOC(loadfilename, row_stride);
+	rgba = (byte *)IMG_ALLOC(loadfilename, output_size);
 	if (!row || !rgba)
 		goto fail;
 	if (fseek(f, file_start + (long)pixel_offset, SEEK_SET) != 0)
@@ -239,7 +641,8 @@ byte *Image_LoadPNG(FILE *f, int *width, int *height, qboolean *malloced)
 #ifdef LODEPNG_NO_COMPILE_DECODER
 	return Image_LoadSTBI (f, width, height);
 #else
-	unsigned w, h;
+	unsigned w = 0, h = 0;
+	unsigned err;
 	unsigned char *out = NULL, *in;
 	size_t insize = com_filesize;
 
@@ -251,8 +654,67 @@ byte *Image_LoadPNG(FILE *f, int *width, int *height, qboolean *malloced)
 	}
 	if (com_filesize == fread(in, 1, com_filesize, f))
 	{
-		*malloced = true;
-		lodepng_decode32(&out, &w, &h, in, insize);
+		/* The IHDR is right there in the bytes we just read, and it is
+		 * what lodepng is about to size its 4-bytes-per-pixel output
+		 * from.  Asking it first is the difference between a missing
+		 * picture and a NULL for seventeen megabytes (see
+		 * PSP_IMAGE_PIXEL_LIMIT). */
+		if (insize > 29 && !memcmp(in + 12, "IHDR", 4))
+		{
+			unsigned pw = ((unsigned)in[16] << 24) | ((unsigned)in[17] << 16) |
+			              ((unsigned)in[18] << 8) | (unsigned)in[19];
+			unsigned ph = ((unsigned)in[20] << 24) | ((unsigned)in[21] << 16) |
+			              ((unsigned)in[22] << 8) | (unsigned)in[23];
+
+			IMG_REFUSE_IF_HUGE_PIXELS (loadfilename, (long)pw, (long)ph, f);
+		}
+
+		err = lodepng_decode32(&out, &w, &h, in, insize);
+		if (err || !out)
+		{
+			/* Some pictures decode and some do not, and from a
+			 * screenshot the two are indistinguishable: both arrive
+			 * at the texture upload as a 1x1 picture.  So the failure
+			 * says what lodepng objected to, and the IHDR fields say
+			 * what the file actually is -- a PNG whose header is
+			 * 640x400 of 16-bit interlaced RGBA is a different
+			 * problem from one that is only 40 bytes long. */
+#if defined(PLATFORM_PSP) || defined(__psp__)
+			{
+				extern void psp_tracef (const char *fmt, ...);
+				unsigned pw = 0, ph = 0, depth = 0, ctype = 0, inter = 0;
+
+				if (insize > 29 && !memcmp(in + 12, "IHDR", 4))
+				{
+					pw = ((unsigned)in[16] << 24) | ((unsigned)in[17] << 16) |
+					     ((unsigned)in[18] << 8) | (unsigned)in[19];
+					ph = ((unsigned)in[20] << 24) | ((unsigned)in[21] << 16) |
+					     ((unsigned)in[22] << 8) | (unsigned)in[23];
+					depth = in[24];
+					ctype = in[25];
+					inter = in[28];
+				}
+
+				psp_tracef("png: %s rc=%d, %d bytes, IHDR %ux%u depth %u "
+				           "ctype %u interlace %u",
+				           loadfilename, (int)err, (int)insize,
+				           pw, ph, depth, ctype, inter);
+			}
+#endif
+			free(out);
+			out = NULL;
+		}
+		else
+		{
+			/* lodepng hands the size back through its own w/h.  This
+			 * function used to ignore them, so every PNG arrived at
+			 * TexMgr_LoadImage() as a 0x0 picture: the menu logo and
+			 * the menu background were loaded, uploaded as a single
+			 * texel and then drawn with no area at all. */
+			*width = (int)w;
+			*height = (int)h;
+			*malloced = true;
+		}
 	}
 	free(in);
 	fclose(f);
@@ -633,6 +1095,12 @@ static byte *Image_LoadDDS(FILE *f, int *width, int *height, enum srcformat *fmt
 		goto fail;
 	}
 
+	/* A .dds declares its size in its header and its payload is read whole
+	 * into the zone -- so a header claiming 4096x4096 costs 64 MB of zone
+	 * before anything is drawn.  Same rule as every other decoder here. */
+	IMG_REFUSE_IF_HUGE_PIXELS (fname, (long)fmtheader.dwWidth,
+	                           (long)fmtheader.dwHeight, f);
+
 	datasize = TexMgr_ImageSize(fmtheader.dwWidth, fmtheader.dwHeight, encoding);
 	if (!datasize)
 		goto fail;	//werid/unsupported
@@ -679,6 +1147,35 @@ byte *Image_LoadImage (const char *name, int *width, int *height, enum srcformat
 	*malloced = false;
 	*fmt = SRC_RGBA;
 
+	/* Nothing to look for.
+	 *
+	 * A menu session's log ends with "mark: textures/.tga": a caller asked for
+	 * a picture whose name is empty, or is nothing but a directory, and this
+	 * function dutifully tried twenty-one file names -- ".dds", ".tga",
+	 * "textures/.dds", "textures/.tga", ... -- on the memory stick before
+	 * giving up on all of them.  An empty base name cannot match a file, and
+	 * the twenty-one failed opens are what the trail then reports as "the
+	 * engine was loading a texture" when in fact it was loading nothing.
+	 *
+	 * Say it once, by name, and leave.  Every caller here already handles
+	 * NULL (that is the path a missing texture has always taken). */
+	if (!name || !COM_SkipPath (name)[0])
+	{
+#if defined(PLATFORM_PSP) || defined(__psp__)
+		extern void psp_tracef (const char *fmt, ...);
+		static int said;
+
+		if (!said)
+		{
+			said = 1;
+			psp_tracef ("img: asked for \"%s\", which names no file -- not "
+			            "looking (the first one only; the caller is the mark "
+			            "before this line)", name ? name : "(null)");
+		}
+#endif
+		return NULL;
+	}
+
 	for (i = 0; i < sizeof(prefixes)/sizeof(prefixes[0]); i++)
 	{
 		if (i == 2)	//last resort...
@@ -692,39 +1189,67 @@ byte *Image_LoadImage (const char *name, int *width, int *height, enum srcformat
 			break;
 
 		q_snprintf (loadfilename, sizeof(loadfilename), "%s%s.dds", prefixes[i], name);
+		IMG_MARK(loadfilename);
 		COM_FOpenFile (loadfilename, &f, NULL);
 		if (f)
+		{
+			IMG_REFUSE_IF_HUGE (loadfilename);
 			return Image_LoadDDS (f, width, height, fmt);
+		}
 
 		q_snprintf (loadfilename, sizeof(loadfilename), "%s%s.tga", prefixes[i], name);
+		IMG_MARK(loadfilename);
 		COM_FOpenFile (loadfilename, &f, NULL);
 		if (f)
+		{
+			IMG_REFUSE_IF_HUGE (loadfilename);
 			return Image_LoadTGA (f, width, height);
+		}
 
 		q_snprintf (loadfilename, sizeof(loadfilename), "%s%s.png", prefixes[i], name);
+		IMG_MARK(loadfilename);
 		COM_FOpenFile (loadfilename, &f, NULL);
 		if (f)
+		{
+			IMG_REFUSE_IF_HUGE (loadfilename);
 			return Image_LoadPNG (f, width, height, malloced);
+		}
 
 		q_snprintf (loadfilename, sizeof(loadfilename), "%s%s.bmp", prefixes[i], name);
+		IMG_MARK(loadfilename);
 		COM_FOpenFile (loadfilename, &f, NULL);
 		if (f)
+		{
+			IMG_REFUSE_IF_HUGE (loadfilename);
 			return Image_LoadBMP (f, width, height, malloced, !strncmp(origname, "gfx/", 4));
+		}
 
 		q_snprintf (loadfilename, sizeof(loadfilename), "%s%s.jpeg", prefixes[i], name);
+		IMG_MARK(loadfilename);
 		COM_FOpenFile (loadfilename, &f, NULL);
 		if (f)
+		{
+			IMG_REFUSE_IF_HUGE (loadfilename);
 			return Image_LoadSTBI (f, width, height);
+		}
 
 		q_snprintf (loadfilename, sizeof(loadfilename), "%s%s.jpg", prefixes[i], name);
+		IMG_MARK(loadfilename);
 		COM_FOpenFile (loadfilename, &f, NULL);
 		if (f)
+		{
+			IMG_REFUSE_IF_HUGE (loadfilename);
 			return Image_LoadSTBI (f, width, height);
+		}
 
 		q_snprintf (loadfilename, sizeof(loadfilename), "%s%s.pcx", prefixes[i], name);
+		IMG_MARK(loadfilename);
 		COM_FOpenFile (loadfilename, &f, NULL);
 		if (f)
+		{
+			IMG_REFUSE_IF_HUGE (loadfilename);
 			return Image_LoadPCX (f, width, height);
+		}
 	}
 
 	name = origname;
@@ -868,6 +1393,8 @@ byte *Image_LoadTGA (FILE *fin, int *width, int *height)
 
 	columns = targa_header.width;
 	rows = targa_header.height;
+	IMG_REFUSE_IF_HUGE_PIXELS (loadfilename, columns, rows, fin);
+
 	numPixels = columns * rows;
 	upside_down = !(targa_header.attributes & 0x20); //johnfitz -- fix for upside-down targas
 
@@ -1088,6 +1615,8 @@ byte *Image_LoadPCX (FILE *f, int *width, int *height)
 	byte		palette[768];
 	stdio_buffer_t  *buf;
 
+	IMG_MARK("pcx: header");
+
 	start = ftell (f); //save start of file (since we might be inside a pak file, SEEK_SET might not be the start of the pcx)
 
 	if (fread(&pcx, sizeof(pcx), 1, f) != 1) // woods
@@ -1110,9 +1639,16 @@ byte *Image_LoadPCX (FILE *f, int *width, int *height)
 	w = pcx.xmax - pcx.xmin + 1;
 	h = pcx.ymax - pcx.ymin + 1;
 
+	if (w <= 0 || h <= 0 || w > 8192 || h > 8192)
+		Sys_Error ("'%s' has bad dimensions %ix%i", loadfilename, w, h);
+
+	IMG_REFUSE_IF_HUGE_PIXELS (loadfilename, w, h, f);
+
+	IMG_MARK("pcx: allocating");
 	data = (byte *) Hunk_Alloc((w*h+1)*4); //+1 to allow reading padding byte on last line
 
 	//load palette
+	IMG_MARK("pcx: palette");
 	fseek (f, start + com_filesize - 768, SEEK_SET);
 	if (fread(palette, 1, 768, f) != 768) // woods
 		Sys_Error("Failed to read PCX palette from '%s'", loadfilename);
@@ -1120,6 +1656,7 @@ byte *Image_LoadPCX (FILE *f, int *width, int *height)
 	//back to start of image data
 	fseek (f, start + sizeof(pcx), SEEK_SET);
 
+	IMG_MARK("pcx: rows");
 	buf = Buf_Alloc(f);
 
 	for (y=0; y<h; y++)
@@ -1138,18 +1675,33 @@ byte *Image_LoadPCX (FILE *f, int *width, int *height)
 			else
 				runlength = 1;
 
-			while(runlength--)
+			/* Buf_GetC() returns EOF (-1) on a truncated or corrupt file.  The
+			 * palette lookup below would then read three bytes *before* the
+			 * array, and on a BE/alignment-strict CPU that is the kind of
+			 * crash that leaves no message. */
+			if (readbyte < 0)
+				readbyte = 0;
+
+			while(runlength-- > 0 && x < pcx.bytes_per_line)
 			{
-				p[0] = palette[readbyte*3];
-				p[1] = palette[readbyte*3+1];
-				p[2] = palette[readbyte*3+2];
-				p[3] = 255;
-				p += 4;
+				/* bytes_per_line is padded up for the row, and can be larger
+				 * than the real width.  The padding pixels are not part of the
+				 * image: writing them ran past the end of a buffer that was
+				 * sized for w*h pixels. */
+				if (x < w)
+				{
+					p[0] = palette[readbyte*3];
+					p[1] = palette[readbyte*3+1];
+					p[2] = palette[readbyte*3+2];
+					p[3] = 255;
+					p += 4;
+				}
 				x++;
 			}
 		}
 	}
 
+	IMG_MARK("pcx: done");
 	Buf_Free(buf);
 	fclose(f);
 

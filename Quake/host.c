@@ -28,6 +28,23 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include <setjmp.h>
 #include "time.h" // woods #cfgbackup
 
+/* Frame breadcrumbs: the first few frames only.
+ *
+ * Host_Frame() is called thousands of times a second, so a mark per frame
+ * would turn the memory stick into the bottleneck.  But the first frames are
+ * where the engine executes its config files and precaches the level, and if
+ * one of them kills the module we need to know which phase of the frame did
+ * it.  After three frames these compile down to a comparison -- but the macro
+ * has to live up here, because _Host_Frame() comes long before the HOST_TRACE
+ * block that declares psp_trace(). */
+#if defined(PLATFORM_PSP) || defined(__psp__)
+extern void psp_trace (const char *step);
+static int host_frame_marks;
+#define FRAME_MARK(x)	do { if (host_frame_marks < 3) psp_trace(x); } while (0)
+#else
+#define FRAME_MARK(x)	do { } while (0)
+#endif
+
 void URI_Init(void); // woods #uri
 void URI_Shutdown(void); // woods #uri
 void URI_Frame(void); // woods #uri
@@ -214,6 +231,19 @@ void Host_Error (const char *error, ...)
 	va_end (argptr);
 	Con_Printf ("Host_Error: %s\n",string);
 
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	/* Con_Printf() writes into the engine's console buffer and paints the
+	 * panel -- neither of which is kabluk.log until the next log sync, and
+	 * this function is followed by a longjmp, a server shutdown and a client
+	 * disconnect.  The hardware log of round 70 ended before the
+	 * "Host_Error: connect failed" the player saw on screen, because the
+	 * module died in that shutdown.  One durable line costs one card write
+	 * and is the difference between "the console switched off" and a
+	 * message. */
+	extern void psp_trace_syncf (const char *fmt, ...);
+	psp_trace_syncf ("Host_Error: %s", string);
+#endif
+
 	Con_Redirect(NULL);
 
 	if (sv.active)
@@ -271,7 +301,24 @@ void	Host_FindMaxClients (void)
 	else if (svs.maxclients > MAX_SCOREBOARD)
 		svs.maxclients = MAX_SCOREBOARD;
 
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	/* client_t is ~130 KB in this engine: MAX_MSGLEN and MAX_DATAGRAM are 64 KB
+	 * each and every client owns one of both.  255 of those (MAX_SCOREBOARD)
+	 * are 33.9 MB -- more than the entire hunk the PSP port can hand out, so
+	 * Host_InitLocal died right here with
+	 *
+	 *	Hunk_Alloc: failed on 33955840 bytes
+	 *
+	 * Allocate for the clients the server will actually have instead; the
+	 * maxplayers command already clamps itself to this limit, and a
+	 * single-player game wants exactly one.  Passing -listen N still works,
+	 * because svs.maxclients is already N at this point. */
+	svs.maxclientslimit = svs.maxclients;
+	if (svs.maxclientslimit < 1)
+		svs.maxclientslimit = 1;
+#else
 	svs.maxclientslimit = MAX_SCOREBOARD;
+#endif
 	svs.clients = (struct client_s *) Hunk_AllocName (svs.maxclientslimit*sizeof(client_t), "clients");
 
 	if (svs.maxclients > 1)
@@ -282,7 +329,9 @@ void	Host_FindMaxClients (void)
 
 // 1. System/Standard
 #include <zlib.h>
+#if FEATURE_CURL
 #include <curl/curl.h>
+#endif
 
 // 2. Audio codecs
 #ifdef USE_CODEC_FLAC
@@ -317,10 +366,10 @@ void Host_Version_f(void)
 
 	// Application Section
 	Con_Printf("\n^mApplication Information^m\n\n");
-	Con_Printf("%-24s %1.2f\n", "Quake", VERSION);
-	Con_Printf("%-24s %s\n", "QuakeSpasm", QUAKESPASM_VER_STRING);
-	Con_Printf("%-24s %s\n", "QuakeSpasm-Spiked", QSS_VER);
-	Con_Printf("%-24s %s\n", "QSS-M", QSSM_VER_STRING);
+	Con_Printf("%-24s %1.2f\n", "Kuzba$$", VERSION);
+	//Con_Printf("%-24s %s\n", "QuakeSpasm", QUAKESPASM_VER_STRING);
+	Con_Printf("%-24s %s\n", "Version Date", QSS_VER);
+	Con_Printf("%-24s %s\n", "Kabluk", QSSM_VER_STRING);
 
 #ifdef QSS_VERSION
 	Con_Printf("%-24s %s\n", "QSS Git Description", QS_STRINGIFY(QSS_VERSION));
@@ -1349,8 +1398,14 @@ static void CL_LoadCSProgs(void)
 			(PR_LoadProgs("csprogs.dat", false, PROGHEADER_CRC, pr_csqcbuiltins, pr_csqcnumbuiltins) && (qcvm->extfuncs.CSQC_DrawHud||qcvm->extfuncs.CSQC_DrawScores||cl.qcvm.extfuncs.CSQC_UpdateView))||
 			(PR_LoadProgs("progs.dat",   false, PROGHEADER_CRC, pr_csqcbuiltins, pr_csqcnumbuiltins) && (qcvm->extfuncs.CSQC_DrawHud||cl.qcvm.extfuncs.CSQC_UpdateView)))
 		{
-			qcvm->max_edicts = CLAMP (MIN_EDICTS,(int)max_edicts.value,MAX_EDICTS);
-			qcvm->edicts = (edict_t *) malloc (qcvm->max_edicts*qcvm->edict_size);
+			/* Same allocation as the server's, same failure: a NULL here was
+			 * a write through it two lines down. */
+			if (!PR_AllocEdicts (qcvm))
+			{
+				PR_ClearProgs(qcvm);
+				PR_SwitchQCVM(NULL);
+				return;
+			}
 			qcvm->num_edicts = qcvm->reserved_edicts = 1;
 			memset(qcvm->edicts, 0, qcvm->num_edicts*qcvm->edict_size);
 			for (i = 0; i < qcvm->num_edicts; i++)
@@ -1540,6 +1595,7 @@ void _Host_Frame (double time)
 		profile_frame_start = profile_phase_start = Sys_DoubleTime();
 	}
 
+	FRAME_MARK("frame: input");
 	if (!isDedicated) // woods  -- don't call the input functions in dedicated servers (vkquake)
 	{ 
 		// get new key events
@@ -1555,8 +1611,10 @@ void _Host_Frame (double time)
 	Host_GetConsoleCommands ();
 
 // process console commands
+	FRAME_MARK("frame: cbuf (config/map commands)");
 	Cbuf_Execute ();
 
+	FRAME_MARK("frame: net");
 	NET_Poll();
 	URI_Frame(); // woods #uri
 
@@ -1626,6 +1684,7 @@ void _Host_Frame (double time)
 	}
 
 // fetch results from server
+	FRAME_MARK("frame: client");
 	if (cls.state == ca_connected)
 		CL_ReadFromServer ();
 
@@ -1643,6 +1702,7 @@ void _Host_Frame (double time)
 		profile_phase_start = Sys_DoubleTime();
 
 	// CPU submission time only; avoid glFinish so profiling does not stall the GPU.
+	FRAME_MARK("frame: screen");
 	SCR_UpdateScreen ();
 	if (profile_enabled)
 	{
@@ -1651,6 +1711,7 @@ void _Host_Frame (double time)
 		profile_phase_start = profile_now;
 	}
 
+	FRAME_MARK("frame: particles");
 	CL_RunParticles (); //johnfitz -- seperated from rendering
 	if (profile_enabled)
 	{
@@ -1665,6 +1726,7 @@ void _Host_Frame (double time)
 		profile_phase_start = Sys_DoubleTime();
 
 // update audio
+	FRAME_MARK("frame: audio");
 	BGM_Update();	// adds music raw samples and/or advances midi driver
 	if (cl.listener_defined)
 	{
@@ -1700,6 +1762,10 @@ void _Host_Frame (double time)
 
 	host_framecount++;
 
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	if (host_frame_marks < 100)
+		host_frame_marks++;
+#endif
 }
 
 void Host_Frame (double time)
@@ -1743,6 +1809,26 @@ void Host_Frame (double time)
 Host_Init
 ====================
 */
+#if defined(PLATFORM_PSP) || defined(__psp__)
+/* On the PSP there is no terminal: if the module dies inside Host_Init the
+ * screen goes with it and nothing has been printed yet, because the engine's
+ * own Con_Printf is a no-op until Con_Init() (halfway down this function).
+ * psp_trace() (port/psp/psp_console.c) writes one line to the debug screen and
+ * to kabluk.log and forces the card write, so the *last* breadcrumb names the
+ * call that killed it.  It is a diagnostic, not part of the port: on every
+ * other platform HOST_TRACE compiles away to nothing. */
+extern void psp_trace (const char *step);
+extern void psp_tracef (const char *fmt, ...);
+#define HOST_TRACE(x)	psp_trace(x)
+/* Same thing with a formatted message: used where a *value* matters, not just
+ * how far we got (which directories the engine decided to look in). */
+#define HOST_TRACEF(...)	psp_tracef(__VA_ARGS__)
+#else
+#define HOST_TRACE(x)	do { } while (0)
+#define HOST_TRACEF(...)	do { } while (0)
+#endif
+
+
 void Host_Init (void)
 {
 	extern void LOC_PQ_Init (void);    // rook / woods #pqteam (added PQ to name)
@@ -1762,29 +1848,51 @@ void Host_Init (void)
 	com_argc = host_parms->argc;
 	com_argv = host_parms->argv;
 
+	HOST_TRACE ("Memory_Init");
 	Memory_Init (host_parms->membase, host_parms->memsize);
+	HOST_TRACE ("Cbuf_Init");
 	Cbuf_Init ();
+	HOST_TRACE ("Cmd_Init");
 	Cmd_Init ();
+	HOST_TRACE ("LOG_Init");
 	LOG_Init (host_parms);
+	HOST_TRACE ("Cvar_Init");
 	Cvar_Init (); //johnfitz
+	HOST_TRACE ("COM_Init");
 	COM_Init ();
+	HOST_TRACE ("COM_InitFilesystem");
 	COM_InitFilesystem ();
+	HOST_TRACEF ("basedir `%s`, gamedir `%s`", com_basedir, com_gamedir);
+	HOST_TRACE ("Host_InitLocal");
 	Host_InitLocal ();
+	HOST_TRACE ("W_LoadWadFile");
 	W_LoadWadFile (); //johnfitz -- filename is now hard-coded for honesty
 	if (cls.state != ca_dedicated)
 	{
+		HOST_TRACE ("Key_Init");
 		Key_Init ();
+		HOST_TRACE ("Con_Init");
 		Con_Init ();
 	}
+	HOST_TRACE ("PR_Init");
 	PR_Init ();
+	HOST_TRACE ("Mod_Init");
 	Mod_Init ();
+	HOST_TRACE ("NET_Init");
 	NET_Init ();
+	HOST_TRACE ("SV_Init");
 	SV_Init ();
+	HOST_TRACE ("URI_Init");
 	URI_Init(); // woods #uri
 
+	HOST_TRACE ("LOC_PQ_Init");
 	LOC_PQ_Init (); // rook / woods #pqteam (added PQ to name)
 	if (cls.state != ca_dedicated)
+	{
+		HOST_TRACE ("IPLog_Init");
 		IPLog_Init ();		// JPG 1.05 - ip address logging // woods #iplog
+	}
+	HOST_TRACE ("Con_Printf Exe");
 
 #ifdef QSS_DATE	//avoid non-determinism.
 	Con_Printf ("Exe: " ENGINE_NAME_AND_VER "\n");
@@ -1795,44 +1903,73 @@ void Host_Init (void)
 
 	if (cls.state != ca_dedicated)
 	{
+		HOST_TRACE ("gfx/colormap.lmp");
 		host_colormap = (byte *)COM_LoadHunkFile ("gfx/colormap.lmp", NULL);
 		if (!host_colormap)
 			Sys_Error ("Couldn't load gfx/colormap.lmp");
 
+		HOST_TRACE ("V_Init");
 		V_Init ();
+		HOST_TRACE ("Chase_Init");
 		Chase_Init ();
+		HOST_TRACE ("ExtraMaps_Init");
 		ExtraMaps_Init (); //johnfitz
+		HOST_TRACE ("Modlist_Init");
 		Modlist_Init (); //johnfitz
+		HOST_TRACE ("DemoList_Init");
 		DemoList_Init (); //ericw
+		HOST_TRACE ("SkyList_Init");
 		SkyList_Init (); // woods #skylist
+		HOST_TRACE ("ExecList_Init");
 		ExecList_Init(); // woods #execlist
+		HOST_TRACE ("TextList_Init");
 		TextList_Init(); // woods #textlist
+		HOST_TRACE ("ParticleList_Init");
 		ParticleList_Init (); // woods #particlelist
+		HOST_TRACE ("ServerList_Init");
 		ServerList_Init(); // woods #serverlist
+		HOST_TRACE ("BookmarksList_Init");
 		BookmarksList_Init (); // woods #bookmarksmenu
+		HOST_TRACE ("FolderList_Init");
 		FolderList_Init(); // woods #folderlist
+		HOST_TRACE ("MusicList_Init");
 		MusicList_Init (); // woods #musiclist
+		HOST_TRACE ("M_CheckMods");
 		M_CheckMods (); // woods #modsmenu (iw)
+		HOST_TRACE ("VID_Init");
 		VID_Init ();
+		HOST_TRACE ("IN_Init");
 		IN_Init ();
+		HOST_TRACE ("TexMgr_Init");
 		TexMgr_Init (); //johnfitz
+		HOST_TRACE ("Draw_Init");
 		Draw_Init ();
+		HOST_TRACE ("SCR_Init");
 		SCR_Init ();
+		HOST_TRACE ("R_Init");
 		R_Init ();
+		HOST_TRACE ("S_Init");
 		S_Init ();
+		HOST_TRACE ("CDAudio_Init");
 		CDAudio_Init ();
+		HOST_TRACE ("BGM_Init");
 		BGM_Init();
+		HOST_TRACE ("Sbar_Init");
 		Sbar_Init ();
+		HOST_TRACE ("CL_Init");
 		CL_Init ();
+		HOST_TRACE ("M_Init");
 		M_Init(); // woods move this up for tab complete system #iwtabcomplete
 	}
 
+	HOST_TRACE ("LOC_Init");
 	LOC_Init (); // for 2021 rerelease support.
 
 	Hunk_AllocName (0, "-HOST_HUNKLEVEL-");
 	host_hunklevel = Hunk_LowMark ();
 
 	host_initialized = true;
+	HOST_TRACE ("Host_Init done");
 	Con_Printf ("\n========= Kabluk Engine Initialized =========\n\n");
 
 	if (setjmp (host_abortserver) )

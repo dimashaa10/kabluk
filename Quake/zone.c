@@ -207,7 +207,20 @@ void* Q_malloc(size_t size)
 	void* p;
 
 	if (!(p = malloc(size)))
+	{
+		/* On the console the message alone names nothing: it says the
+		 * malloc pool is empty, but not how big the request was or how
+		 * much of the pool was still free.  Both are printed first, so
+		 * the log line that ends the run actually describes the failure.
+		 * port/psp/psp_heap.c reads newlib's own accounting. */
+#if defined(PLATFORM_PSP) || defined(__psp__)
+		{
+			extern void psp_heap_report (const char *where);
+			psp_heap_report (va ("Q_malloc %d bytes failed", (int)size));
+		}
+#endif
 		Sys_Error("Not enough memory free; check disk space");
+	}
 
 	return p;
 }
@@ -440,6 +453,122 @@ void Hunk_Print (qboolean all)
 
 /*
 ===================
+Hunk_Report
+
+"the hunk is full" is not a diagnosis.  On the console it is the sentence
+before the sentence that ends the run:
+
+	Cache_TryAlloc: 3536192 is greater then free hunk
+
+-- progs/player.mdl wants 3.5 MB of an entity world that is already loaded, and
+the message says neither how big the hunk is, how much of it is free, nor what
+the rest is holding.  On a 64 MB console with a 17.4 MB map that answer decides
+everything: if the lightmaps are the bulk, they can be handed to the picture
+pool and freed; if it is the miptex, same; if it is the vertexes and surfaces,
+the map is simply too large and has to be changed.
+
+So this walks both halves of the hunk, totals the allocations by name (the same
+grouping Hunk_Print uses, but reduced to the six biggest) and writes the answer
+to the card *before* the caller dies.  It is a diagnosis, not a policy: nothing
+is freed here.
+
+Silent off the PSP, where the console has 19 MB and none of this is a problem.
+===================
+*/
+#if defined(PLATFORM_PSP) || defined(__psp__)
+extern void psp_trace_syncf (const char *fmt, ...);
+
+#define HUNK_REPORT_TOP 6
+
+void Hunk_Report (const char *why)
+{
+	struct { char name[HUNKNAME_LEN]; int bytes; } top[HUNK_REPORT_TOP];
+	hunk_t	*h, *next, *endlow, *starthigh, *endhigh;
+	int		i, used, freebytes, total = 0;
+
+	if (!hunk_base || hunk_size <= 0)
+		return;
+
+	memset (top, 0, sizeof(top));
+
+	used = hunk_low_used + hunk_high_used;
+	freebytes = hunk_size - used;
+
+	psp_trace_syncf ("hunk: %s: %d KB total, %d KB used (low %d + cache %d), %d KB free",
+	                 why ? why : "?", hunk_size / 1024, used / 1024,
+	                 hunk_low_used / 1024, hunk_high_used / 1024,
+	                 freebytes / 1024);
+
+	h = (hunk_t *)hunk_base;
+	endlow = (hunk_t *)(hunk_base + hunk_low_used);
+	starthigh = (hunk_t *)(hunk_base + hunk_size - hunk_high_used);
+	endhigh = (hunk_t *)(hunk_base + hunk_size);
+
+	/* Both halves, low first.  A block whose header does not look right ends
+	 * the walk instead of failing it: this runs on a path that is already
+	 * about to stop the engine, and a diagnosis must not become the crash. */
+	for (i = 0; i < 2; i++)
+	{
+		if (i)
+			h = starthigh;
+
+		while (h < (i ? endhigh : endlow))
+		{
+			int slot, smallest;
+
+			if (h->sentinel != HUNK_SENTINEL || h->size < (int)sizeof(hunk_t))
+				break;
+
+			next = (hunk_t *)((byte *)h + h->size);
+			if (next <= h || next > (i ? endhigh : endlow))
+				break;
+
+			total += h->size;
+
+			/* Aggregated by name, keeping only the six biggest: a map load
+			 * makes hundreds of small blocks and a list of them says
+			 * nothing. */
+			slot = -1;
+			smallest = 0;
+			for (int k = 0; k < HUNK_REPORT_TOP; k++)
+			{
+				if (top[k].bytes && !strncmp(top[k].name, h->name, HUNKNAME_LEN - 1))
+				{
+					slot = k;
+					break;
+				}
+				if (k == 0 || top[k].bytes < top[smallest].bytes)
+					smallest = k;
+			}
+
+			if (slot >= 0)
+				top[slot].bytes += h->size;
+			else if (top[smallest].bytes < h->size)
+			{
+				q_strlcpy (top[smallest].name, h->name, HUNKNAME_LEN);
+				top[smallest].bytes = h->size;
+			}
+
+			h = next;
+		}
+	}
+
+	psp_trace_syncf ("hunk: %d KB in blocks, biggest by name:", total / 1024);
+	for (i = 0; i < HUNK_REPORT_TOP; i++)
+	{
+		if (top[i].bytes > 0)
+			psp_trace_syncf ("hunk:   %6d KB  %s", top[i].bytes / 1024, top[i].name);
+	}
+}
+#else
+void Hunk_Report (const char *why)
+{
+	(void)why;
+}
+#endif
+
+/*
+===================
 Hunk_Print_f -- johnfitz -- console command to call hunk_print
 ===================
 */
@@ -467,7 +596,16 @@ void *Hunk_AllocName (int size, const char *name)
 	size = sizeof(hunk_t) + ((size+15)&~15);
 
 	if (hunk_size - hunk_low_used - hunk_high_used < size)
+	{
+		/* The name goes into the report as well as the size.  Round 70 needed
+		 * it: the failure read "Hunk_Alloc 4194336 bytes failed" and 4194336
+		 * is 32 bytes of hunk header plus exactly 4 MB, but nothing in the
+		 * log said which of the hundred allocations that size could be --
+		 * it took reading gl_texmgr.c to find TexMgr_8to32().  A call site
+		 * that is unnamed ("unknown", i.e. plain Hunk_Alloc) says so. */
+		Hunk_Report (va ("Hunk_Alloc %i bytes failed (%s)", size, name ? name : "?"));
 		Sys_Error ("Hunk_Alloc: failed on %i bytes",size);
+	}
 
 	h = (hunk_t *)(hunk_base + hunk_low_used);
 	hunk_low_used += size;
@@ -752,7 +890,12 @@ cache_system_t *Cache_TryAlloc (int size, qboolean nobottom)
 	if (!nobottom && cache_head.prev == &cache_head)
 	{
 		if (hunk_size - hunk_high_used - hunk_low_used < size)
-			Sys_Error ("Cache_TryAlloc: %i is greater then free hunk", size);
+		{
+			Hunk_Report (va ("Cache_Alloc %i bytes does not fit", size));
+			Sys_Error ("Cache_TryAlloc: %i is greater then free hunk (%i free; "
+			           "the hunk: lines above say what holds the rest)",
+			           size, hunk_size - hunk_low_used - hunk_high_used);
+		}
 
 		new_cs = (cache_system_t *) (hunk_base + hunk_low_used);
 		memset (new_cs, 0, sizeof(*new_cs));

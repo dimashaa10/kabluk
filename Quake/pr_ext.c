@@ -26,7 +26,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "quakedef.h"
 #include "q_ctype.h"
+#if FEATURE_CURL
 #include <curl/curl.h> // woods #uri
+#endif
 
 static float g_menu_vm_scale_override = 0.0f; // woods #spinnymodel
 static float PR_GetVMScale(void)
@@ -1884,12 +1886,92 @@ void PR_GetSetInputs(usercmd_t *cmd, qboolean set)
 			cmd->cursor_entitynumber = *qcvm->extglobals.input_cursor_entitynumber;
 	}
 }
+/* Engine-side crouch bookkeeping for a client whose movement runs through the
+ * shared pmove (SV_RunClientCommand or the engine fallback). The edict always
+ * carries the effective hull, so the uncrouched one is remembered on the client
+ * slot; PM_UpdateCrouch rebuilds the hull from this frame's command only, which
+ * is what keeps client-side prediction in sync. */
+static client_t *PF_CrouchClient(edict_t *e)
+{
+	if (qcvm != &sv.qcvm || !host_client || host_client->edict != e)
+		return NULL;
+	return host_client;
+}
+static void PF_CrouchToPmove(client_t *client, edict_t *e)
+{
+	float stand_mins_z, stand_maxs_z;
+	if (!client)
+	{
+		VectorCopy(e->v.mins, pmove.stand_mins);
+		VectorCopy(e->v.maxs, pmove.stand_maxs);
+		pmove.stand_viewheight = e->v.view_ofs[2] > 0 ? e->v.view_ofs[2] : DEFAULT_VIEWHEIGHT;
+		pmove.crouched = false;
+		pmove.crouch_amount = 0;
+		return;
+	}
+	if (!client->crouched && client->crouch_amount <= 0)
+	{	// standing: keep the reference hull/eye in sync with the edict, so mods
+		// that change view_ofs or the hull while standing are honoured
+		client->crouch_stand_mins_z = e->v.mins[2];
+		client->crouch_stand_maxs_z = e->v.maxs[2];
+		client->crouch_stand_viewheight = e->v.view_ofs[2] > 0 ? e->v.view_ofs[2] : DEFAULT_VIEWHEIGHT;
+		client->crouch_bounds_saved = true;
+	}
+	if (client->crouch_bounds_saved)
+	{
+		stand_mins_z = client->crouch_stand_mins_z;
+		stand_maxs_z = client->crouch_stand_maxs_z;
+		pmove.stand_viewheight = client->crouch_stand_viewheight;
+	}
+	else
+	{
+		stand_mins_z = e->v.mins[2];
+		stand_maxs_z = e->v.maxs[2];
+		pmove.stand_viewheight = e->v.view_ofs[2] > 0 ? e->v.view_ofs[2] : DEFAULT_VIEWHEIGHT;
+	}
+	VectorCopy(e->v.mins, pmove.stand_mins);
+	VectorCopy(e->v.maxs, pmove.stand_maxs);
+	pmove.stand_mins[2] = stand_mins_z;
+	pmove.stand_maxs[2] = stand_maxs_z;
+	pmove.crouched = client->crouched;
+	pmove.crouch_amount = client->crouch_amount;
+}
+static void PF_CrouchFromPmove(client_t *client, edict_t *e)
+{
+	float maxs_z;
+	if (!client)
+		return;
+	if (!client->crouch_bounds_saved)
+	{
+		client->crouch_stand_mins_z = pmove.stand_mins[2];
+		client->crouch_stand_maxs_z = pmove.stand_maxs[2];
+		client->crouch_stand_viewheight = pmove.stand_viewheight;
+		client->crouch_bounds_saved = true;
+	}
+	maxs_z = pmove.player_maxs[2];
+	if (e->v.maxs[2] != maxs_z)
+	{
+		e->v.maxs[2] = maxs_z;
+		e->v.size[2] = e->v.maxs[2] - e->v.mins[2];
+		SV_LinkEdict(e, false);
+	}
+	/* Only touch the eye while the crouch owns it; mods are free to move
+	 * view_ofs themselves while the player is standing. */
+	if (pmove.crouched || pmove.crouch_amount > 0)
+		e->v.view_ofs[2] = pmove.viewheight;
+	client->crouched = pmove.crouched;
+	client->crouch_wanted = pmove.crouch_wanted;
+	client->crouch_stand_blocked = pmove.crouch_blocked;
+	client->crouch_amount = pmove.crouch_amount;
+	client->crouch_time_initialized = false;	/* engine path timing restarts if it takes over */
+}
 static void PF_both_pmove(edict_t *e)
 {
 	static vec3_t extents = {256, 256, 256};
 	vec3_t bounds[2];
 	eval_t *pmflags = GetEdictFieldValue(e, qcvm->extfields.pmove_flags);
 	unsigned int fl = (pmflags && pmflags->_float)?pmflags->_float:0;
+	client_t *crouch_client = PF_CrouchClient(e);
 
 //	memset(&pmove, 0xff, sizeof(pmove));
 #ifdef VALGRIND_MAKE_MEM_UNDEFINED
@@ -1931,7 +2013,9 @@ static void PF_both_pmove(edict_t *e)
 
 	PR_GetSetInputs(&pmove.cmd, false);	//set pmove.cmd to the input_* globals.
 
+	PF_CrouchToPmove(crouch_client, e);
 	PM_PlayerMove(1);
+	PF_CrouchFromPmove(crouch_client, e);
 
 	VectorCopy(pmove.safeorigin, e->v.oldorigin);
 	VectorCopy(pmove.origin, e->v.origin);
@@ -2078,29 +2162,17 @@ void PF_sv_pmove(void)
 {
 	edict_t	*e			= G_EDICT(OFS_PARM0);
 	movevars = svmovevars;
-	if (host_client && host_client->edict == e && host_client->crouched &&
-		!host_client->skate_active)
-		movevars.maxspeed = q_min(movevars.maxspeed, SV_CROUCH_MAX_SPEED);
+	/* PM_UpdateCrouch applies the crouch speed cap, and it must see the
+	 * uncapped sv_maxspeed so the predicting client, which receives the
+	 * same value as a movevar stat, computes identical movement. */
 	PF_both_pmove(e);
 }
 void PMSV_SetMoveStats(edict_t *plent, float *fstat, int *istat)
 {
+	/* The crouch speed cap is applied inside PM_UpdateCrouch, using the same
+ * uncapped movevars the predicting client gets, so both sides agree. */
 	float maxspeed = svmovevars.maxspeed;
-	int i;
 	eval_t *entgrav = GetEdictFieldValue(plent, qcvm->extfields.gravity);
-
-	if (svs.clients)
-	{
-		for (i = 0; i < svs.maxclients; i++)
-		{
-			if (svs.clients[i].edict == plent && svs.clients[i].crouched &&
-				!svs.clients[i].skate_active)
-			{
-				maxspeed = q_min(maxspeed, SV_CROUCH_MAX_SPEED);
-				break;
-			}
-		}
-	}
 
 	fstat[STAT_MOVEVARS_STEPHEIGHT] = svmovevars.stepheight;
 	istat[STAT_MOVEFLAGS] = svmovevars.flags;
@@ -5012,6 +5084,15 @@ static struct svcustomstat_s *PR_CustomStat(int idx, int type)
 		if (sv.customstats[i].idx == idx && (sv.customstats[i].type==ev_string) == (type==ev_string))
 			break;
 	}
+	if (i == sv.numcustomstats && idx < 32 && (STAT_RESERVED_ENGINE_STATS & (1u<<idx)))
+	{	//engine-owned stat: say so loudly instead of silently eating the mod's value
+		static unsigned int warned;
+		if (!(warned & (1u<<idx)))
+		{
+			warned |= 1u<<idx;
+			Con_Warning("clientstat: index %i is reserved by the engine and will keep its own value; pick an index outside 15/16/19/25-31\n", idx);
+		}
+	}
 	if (i == sv.numcustomstats)
 		sv.numcustomstats++;
 	sv.customstats[i].idx = idx;
@@ -5392,7 +5473,12 @@ static qpic_t *DrawQC_CachePic(const char *picname, unsigned int flags)
 		if (!strcmp(picname, qcpics[i].name))
 		{
 			if (qcpics[i].pic)
-				return qcpics[i].pic;
+				/* This table keeps the same qpic_t for the whole session,
+				 * so it is the one place that has to ask whether the picture
+				 * is still loaded: the engine's cache may have released its
+				 * texture while the interface was somewhere else.
+				 * Draw_RevivePic() loads it again into the same address. */
+				return Draw_RevivePic(qcpics[i].pic);
 			break;
 		}
 	}
@@ -6593,6 +6679,8 @@ static uri_response_t *dequeue_completed(void) {
     return r;
 }
 
+#if FEATURE_CURL
+
 static size_t URI_WriteCallback(void *contents, size_t size, size_t nmemb, void *userp) {
     size_t realsize = size * nmemb;
     uri_response_t *response = (uri_response_t *)userp;
@@ -6689,6 +6777,18 @@ static void URI_PerformCurl(const uri_request_t *req, uri_response_t *out) {
     if (headers) curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
 }
+
+#else	/* !FEATURE_CURL */
+
+/* uri_* builtins still exist so QuakeC that references them loads; they just
+ * report a transport failure to the callback. */
+static void URI_PerformCurl(const uri_request_t *req, uri_response_t *out) {
+    (void)req;
+    out->ok = 0;
+    out->http_status = 0;
+}
+
+#endif	/* FEATURE_CURL */
 
 static int URI_Worker(void *unused) {
     (void)unused;
@@ -8074,6 +8174,30 @@ void DrawSpinningModelToMenuPixels(const char* modelname,
 	float firstframe, float framecount,
 	float shootframe, float shootframes)
 {
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	/* The PSP port's stage M4 step 2 is the 2D interface only: there is
+	 * no 3D pipeline in front of the GE yet, so everything this renders
+	 * -- the model, its skins and the frustum it sets up -- arrives
+	 * through the 2D vertex path.  On the panel that is a tiled grid of
+	 * the model's polygons over the menu, which is not a picture of
+	 * anything.  Nothing is lost by skipping it: the preview comes back
+	 * with step 3, when glVertex3f has a real pipeline behind it. */
+	(void)modelname; (void)pixel_x; (void)pixel_y;
+	(void)pixel_w; (void)pixel_h; (void)afov; (void)zbias;
+	(void)firstframe; (void)framecount;
+	(void)shootframe; (void)shootframes;
+	return;
+#endif
+	/* Whatever 2D state the caller was drawing with, restored on the way
+	 * out: this function renders a 3D scene in between. */
+	GLfloat saved_projection[16], saved_modelview[16];
+	GLint saved_viewport[4];
+
+	glGetIntegerv(GL_VIEWPORT, saved_viewport);
+	glMatrixMode(GL_PROJECTION);
+	glGetFloatv(GL_PROJECTION_MATRIX, saved_projection);
+	glMatrixMode(GL_MODELVIEW);
+	glGetFloatv(GL_MODELVIEW_MATRIX, saved_modelview);
 	/* Offscreen FBO: render model, then draw textured quad at pixel rect. */
 	if (MenuPreviewFBO_Ensure((int)pixel_w, (int)pixel_h))
 	{
@@ -8113,6 +8237,12 @@ void DrawSpinningModelToMenuPixels(const char* modelname,
 		float mh = pixel_h / s;
 		GL_SetCanvas(CANVAS_MENU);
 		MenuPreview_DrawQuad(preview_fbo.color_tex, mx, my, mw, mh);
+
+		glMatrixMode(GL_PROJECTION);
+		glLoadMatrixf(saved_projection);
+		glMatrixMode(GL_MODELVIEW);
+		glLoadMatrixf(saved_modelview);
+		glDisable(GL_DEPTH_TEST);
 		return;
 	}
 
@@ -8125,6 +8255,22 @@ void DrawSpinningModelToMenuPixels(const char* modelname,
 		afov, zbias,
 		firstframe, framecount, shootframe, shootframes);
 	g_menu_vm_scale_override = prev_override;
+
+	/* PF_cl_renderscene() draws a 3D scene: it leaves a frustum in the
+	 * projection, a view matrix in the modelview, the viewport set to the
+	 * preview rectangle and the depth test on.  This function is called in
+	 * the middle of 2D menu and HUD drawing, so all four have to go back:
+	 * otherwise the next glVertex2f() goes through that frustum, and a menu
+	 * picture or a line of text lands wherever the projection throws it.
+	 * (That is what the large wedges over the menu were.)
+	 */
+	glMatrixMode(GL_PROJECTION);
+	glLoadMatrixf(saved_projection);
+	glMatrixMode(GL_MODELVIEW);
+	glLoadMatrixf(saved_modelview);
+	glViewport(saved_viewport[0], saved_viewport[1],
+	           saved_viewport[2], saved_viewport[3]);
+	glDisable(GL_DEPTH_TEST);
 }
 
 void PR_SetMenuPreviewLegacyColors(int top, int bottom)

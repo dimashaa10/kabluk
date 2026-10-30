@@ -92,6 +92,13 @@ void M_PrintRGBA (int cx, int cy, const char* str, plcolour_t c, float alpha, qb
 void M_PrintWhite (int cx, int cy, const char *str);
 
 void M_Draw (void);
+
+/* True when the next M_Draw() call is going to paint the console background
+ * over the whole panel -- which means anything drawn before it, the console's
+ * own text in particular, cannot be seen.  SCR_DrawConsole() asks this on the
+ * PSP so it does not draw that text (see the note there and in menu.c). */
+qboolean M_WillCoverConsole (void);
+qboolean M_IsSaveMenu (void);
 void M_DrawCharacter (int cx, int line, int num);
 
 void M_DrawPic (int x, int y, qpic_t *pic);

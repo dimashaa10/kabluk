@@ -1185,9 +1185,21 @@ void SV_BuildEntityState(client_t *client, edict_t *ent, entity_state_t *state)
 		state->solidsize = ES_SOLID_BSP;
 	else if (ent->v.solid == SOLID_BBOX || ent->v.solid == SOLID_SLIDEBOX || ent->v.skin < 0)
 	{
+		float mins2 = ent->v.mins[2], maxs2 = ent->v.maxs[2];
+
+		/* The local player's hull is crouched along with the collision box, but
+		 * prediction needs the *standing* hull to rebuild both states from, and
+		 * the crouch flag above tells it which one is active. Everyone else gets
+		 * the real (possibly crouched) hull, which is what you see and shoot. */
+		if (client && client->crouched && client->crouch_bounds_saved &&
+			client->edict == ent && client->usingpmove)
+		{
+			mins2 = client->crouch_stand_mins_z;
+			maxs2 = client->crouch_stand_maxs_z;
+		}
 		state->solidsize = CLAMP(0, (int)-ent->v.mins[0], 255);
-		state->solidsize |= CLAMP(0, (int)-ent->v.mins[2], 255)<<8;
-		state->solidsize |= CLAMP(0, (int)((ent->v.maxs[2]+32768)), 65535)<<16;	/*up can be negative*/
+		state->solidsize |= CLAMP(0, (int)-mins2, 255)<<8;
+		state->solidsize |= CLAMP(0, (int)((maxs2+32768)), 65535)<<16;	/*up can be negative*/
 		if (state->solidsize == 0x80000000)
 			state->solidsize = ES_SOLID_NOT;	//point sized stuff should just be non-solid. you'll thank me for splitscreens.
 	}
@@ -1335,9 +1347,11 @@ invisible:
 			{	//add some extra pmove flags...
 				eval_t *pmflags = GetEdictFieldValue(ent, qcvm->extfields.pmove_flags);
 				if ((int)ent->v.flags & FL_ONGROUND)	//nq likes to know this for bob states.
-					ents[numents].state.pmovetype |= 0x80;
+					ents[numents].state.pmovetype |= PMP_ONGROUND;
 				if ((int)pmflags->_float & 1)	//'jump_held' so no pogostick surprises.
-					ents[numents].state.pmovetype |= 0x40;
+					ents[numents].state.pmovetype |= PMP_JUMP_HELD;
+				if (client->crouched)	//so the predicting client rebuilds the same hull
+					ents[numents].state.pmovetype |= PMP_CROUCHED;
 			}
 			ents[numents].state.velocity[0] = ent->v.velocity[0]*8;
 			ents[numents].state.velocity[1] = ent->v.velocity[1]*8;
@@ -3121,12 +3135,28 @@ void SV_WriteClientdataToMessage (client_t *client, sizebuf_t *msg)
 		MSG_WriteByte (msg, ent->alpha); //for now, weaponalpha = client entity alpha
 	//johnfitz
 
-	// Repeat the small stock-compatible state in every legacy datagram so
-	// packet loss cannot leave the chase camera stuck on/off. Predinfo uses
-	// the normal acknowledged stat channel from SV_CalcStats instead.
-	MSG_WriteByte(msg, svc_updatestat);
-	MSG_WriteByte(msg, STAT_SKATE);
-	MSG_WriteLong(msg, SV_SkateStat(client));
+	// The skate state rides in the stat channel, which this legacy datagram
+	// does not otherwise delta. Send it when it changes (it changes every
+	// frame while riding, because of the lift) plus a few redundant repeats so
+	// a lost packet cannot leave the chase camera stuck on/off. When the player
+	// is not skating it costs nothing: the last value sent was 0.
+	{
+		int skate_stat = SV_SkateStat(client);
+
+		if (skate_stat != client->skate_stat_sent)
+		{
+			client->skate_stat_sent = skate_stat;
+			client->skate_stat_repeat = SV_SKATE_STAT_REPEATS;
+		}
+		if (skate_stat != 0 || client->skate_stat_repeat > 0)
+		{
+			if (client->skate_stat_repeat > 0)
+				client->skate_stat_repeat--;
+			MSG_WriteByte(msg, svc_updatestat);
+			MSG_WriteByte(msg, STAT_SKATE);
+			MSG_WriteLong(msg, skate_stat);
+		}
+	}
 }
 
 
@@ -3839,8 +3869,16 @@ void SV_SpawnServer (const char *server)
 
 // allocate server memory
 	/* Host_ClearMemory() called above already cleared the whole sv structure */
-	qcvm->max_edicts = CLAMP (MIN_EDICTS,(int)max_edicts.value,MAX_EDICTS); //johnfitz -- max_edicts cvar
-	qcvm->edicts = (edict_t *) malloc (qcvm->max_edicts*qcvm->edict_size); // ericw -- sv.edicts switched to use malloc()
+	/* johnfitz -- max_edicts cvar; the size now comes from what the platform has
+	 * (PR_AllocEdicts), and a failure is an error with numbers instead of a
+	 * NULL that the very next memset writes through -- the console died exactly
+	 * there, on 15000 * 1160 bytes. */
+	if (!PR_AllocEdicts (qcvm))
+	{
+		Con_Printf ("Couldn't spawn server, no memory for %d edicts\n", qcvm->max_edicts);
+		sv.active = false;
+		return;
+	}
 
 	sv.datagram.maxsize = sizeof(sv.datagram_buf);
 	sv.datagram.cursize = 0;
@@ -3905,27 +3943,37 @@ void SV_SpawnServer (const char *server)
 	sv.models[1] = qcvm->worldmodel;
 	qcvm->GetModel = SV_ModelForIndex;
 
+	/* What the map itself cost the hunk, before the models and sounds are
+	 * precached on top of it.  The console has one zone for all of it, and
+	 * "Cache_TryAlloc: 3536192 is greater then free hunk" (round 68) does not
+	 * say whether the map or the models hold it. */
+	Hunk_Report ("after the map loaded");
+
 	if (sv_mapcrc.value) // woods #mapcrc
 	{
 		Con_DPrintf("sv_mapcrc: Starting two-stage map CRC calculation for %s\n", sv.modelname);
 
-		unsigned path_id;
-		byte* map = COM_LoadMallocFile(sv.modelname, &path_id);
-		if (map)
+		unsigned quick_crc = 0, full_crc = 0;
+		int mapsize = 0;
+		// The whole .bsp used to be read into one malloc() here -- 17.4 MB
+		// of it for this game, against a 10 MB heap block (port/psp/psp_heap.c),
+		// which is the "malloc: NULL for 17400000 bytes" that ended the
+		// session at the top of every level.  A checksum does not need the
+		// file in memory, only its bytes in order (mdfour.c), so
+		// COM_BlockChecksumFile() reads it in 4 KB pieces and returns the
+		// same two numbers.
+		if (COM_BlockChecksumFile(sv.modelname, 4096, &quick_crc, &full_crc, &mapsize))
 		{
 			double start_time = Sys_DoubleTime();
 
 			// Quick CRC: first 4KB only
-			int quick_size = (com_filesize > 4096) ? 4096 : com_filesize;
-			sv.map_crc_quick = Com_BlockChecksum(map, quick_size);
+			int quick_size = (mapsize > 4096) ? 4096 : mapsize;
+			sv.map_crc_quick = quick_crc;
 			double quick_time = Sys_DoubleTime();
 
 			// Full CRC: entire file
-			sv.map_crc_full = Com_BlockChecksum(map, com_filesize);
+			sv.map_crc_full = full_crc;
 			double full_time = Sys_DoubleTime();
-
-			// Free the allocated memory
-			free(map);
 
 			// Publish both CRCs in serverinfo
 			Info_SetKey(svs.serverinfo, sizeof(svs.serverinfo),
@@ -3934,13 +3982,13 @@ void SV_SpawnServer (const char *server)
 				"*mapcrc_full", va("%u", sv.map_crc_full));
 
 			Con_DPrintf("=== SERVER MAP CRC CALCULATION ===\n");
-			Con_DPrintf("Map: %s (path_id: %u)\n", sv.modelname, path_id);
-			Con_DPrintf("File size: %d bytes\n", (int)com_filesize);
+			Con_DPrintf("Map: %s\n", sv.modelname);
+			Con_DPrintf("File size: %d bytes\n", mapsize);
 			Con_DPrintf("Quick CRC (%d bytes): %u (0x%08x) [%.1fms]\n",
 				quick_size, sv.map_crc_quick, sv.map_crc_quick,
 				(quick_time - start_time) * 1000.0);
 			Con_DPrintf("Full CRC (%d bytes):  %u (0x%08x) [%.1fms]\n",
-				(int)com_filesize, sv.map_crc_full, sv.map_crc_full,
+				mapsize, sv.map_crc_full, sv.map_crc_full,
 				(full_time - quick_time) * 1000.0);
 			Con_DPrintf("Total CRC time: %.1fms\n", (full_time - start_time) * 1000.0);
 			Con_DPrintf("==================================\n");

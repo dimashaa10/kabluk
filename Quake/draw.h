@@ -74,6 +74,27 @@ qpic_t *Draw_PicFromWad (const char *name);
 qpic_t *Draw_CachePic (const char *path);
 qpic_t *Draw_TryCachePic (const char *path, unsigned int texflags);
 void Draw_NewGame (void);
+/* Release the textures of cached pictures that nothing has asked for in the
+ * last min_idle_frames frames (see the note on cachepic_t in gl_draw.c).
+ * The pictures stay cached: the next request reloads them.  Returns how many
+ * were released.  Called by the PSP port when the picture arena is short on
+ * room and once in a while on a timer; a no-op before Draw_Init(). */
+int Draw_EvictCachePics (int min_idle_frames);
+/* A draw call is about to use this picture: remember that it was on screen and
+ * load it again if the cache had to release it (a released picture is zeroed,
+ * so without this it would draw nothing for ever).  Returns the qpic_t to draw,
+ * which for a cached picture is always the same address.  Cheap: arithmetic on
+ * the pointer, no search.  Called from the draw functions themselves and from
+ * the QuakeC picture cache, which hands out pointers it keeps. */
+qpic_t *Draw_RevivePic (qpic_t *pic);
+/* The texture manager has just released every texture there is (TexMgr_NewGame
+ * does exactly that).  The cached pictures still hold pointers into that
+ * texture list, so they are told to forget them: without this the next
+ * Draw_NewGame()/Draw_EvictCachePics() hands TexMgr_FreeTexture() a pointer to a
+ * gltexture_t that no longer exists -- or worse, one that has been reused by a
+ * different texture, which is a live texture deleted by mistake.  Names are
+ * kept, so the next Draw_CachePic() reloads into the same slot. */
+void Draw_ForgetTextures (void);
 void Draw_ReloadLocalizedPics (void);
 void Draw_GetMenuTransform(vrect_t* bounds, vrect_t* viewport); // woods #mousemenu (iw)
 qboolean Draw_ReloadTextures(qboolean force);
