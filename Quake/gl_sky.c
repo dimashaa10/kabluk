@@ -1282,15 +1282,20 @@ void Sky_ProcessEntities (void)
 Sky_EmitSkyBoxVertex
 ==============
 */
+/* sqrt(3) as a float constant: see Sky_GetTexCoord for why no double may
+ * appear in a vertex path on this CPU.  sqrt(3.0) in the expression made every
+ * one of these three lines a double division, and the divisor a double. */
+#define SKY_BOX_SCALE  ((float)1.73205080756887729353)
+
 void Sky_EmitSkyBoxVertex (float s, float t, int axis)
 {
 	vec3_t		v, b;
 	int			j, k;
 	float		w, h;
 
-	b[0] = s * gl_farclip.value / sqrt(3.0);
-	b[1] = t * gl_farclip.value / sqrt(3.0);
-	b[2] = gl_farclip.value / sqrt(3.0);
+	b[0] = s * gl_farclip.value / SKY_BOX_SCALE;
+	b[1] = t * gl_farclip.value / SKY_BOX_SCALE;
+	b[2] = gl_farclip.value / SKY_BOX_SCALE;
 
 	for (j=0 ; j<3 ; j++)
 	{
@@ -1392,9 +1397,9 @@ void Sky_SetBoxVert (float s, float t, int axis, vec3_t v)
 	vec3_t		b;
 	int			j, k;
 
-	b[0] = s * gl_farclip.value / sqrt(3.0);
-	b[1] = t * gl_farclip.value / sqrt(3.0);
-	b[2] = gl_farclip.value / sqrt(3.0);
+	b[0] = s * gl_farclip.value / SKY_BOX_SCALE;
+	b[1] = t * gl_farclip.value / SKY_BOX_SCALE;
+	b[2] = gl_farclip.value / SKY_BOX_SCALE;
 
 	for (j=0 ; j<3 ; j++)
 	{
@@ -1412,25 +1417,59 @@ void Sky_SetBoxVert (float s, float t, int axis, vec3_t v)
 Sky_GetTexCoord
 =============
 */
+/* Nothing in here may be DOUBLE precision.
+ *
+ * The PSP's CPU (Allegrex) has a single-precision FPU and no .d format at all
+ * -- "COP1: an FPU with 32 registers, single precision only.  No .d format"
+ * (ppsspp.org/docs/psp-hardware/cpu/allegrex-overview, and the same sentence in
+ * the ps2-to-psp porting notes: "VFPU: Vector FPU (Single Precision)").  Every
+ * double is therefore EMULATED in software, and the emulation is not a
+ * rounding detail, it is hundreds of cycles.
+ *
+ * This function is called four times for every quad of every visible sky face:
+ * 4 x 1364 = ~5500 times a frame on the maps that use the scrolling sky.  It
+ * used to say
+ *
+ *     length = sqrt (length);            // sqrt() takes a double: the
+ *                                        // argument is converted up, a
+ *                                        // software double sqrt runs, the
+ *                                        // result is converted back down
+ *     *s = (scroll + dir[0] * length) * (1.0/128);   // 1.0 is a double, so
+ *                                        // this mul becomes double too
+ *
+ * and the round-87 hardware log priced exactly that:
+ *
+ *     prof: frame 1920, scene 124.3 ms (sky 102.6: flat 1.9,
+ *                                      5 faces 1364 quads 16 draws)
+ *
+ * -- 102 ms of the 124 ms frame spent inside the sky's own vertex loop, with
+ * only 16 draw calls (0.8 ms in sceGuDrawArray, so it is not the GE) and 1.9 ms
+ * in the bounds pass.  ~19 microseconds per vertex is not arithmetic, it is
+ * emulation.  sqrtf() and float literals are the same numbers to within float
+ * rounding and a good deal cheaper.
+ *
+ * (sqrtf is still a software square root on this CPU -- the Allegrex has no
+ * hardware square-root instruction -- but a 32-bit one, and it does not drag
+ * the surrounding expression into emulated double arithmetic as well.) */
 void Sky_GetTexCoord (vec3_t v, float speed, float *s, float *t)
 {
 	vec3_t	dir;
 	float	length, scroll;
 
-	float clamped_skyspeed = CLAMP(0, r_skyspeed.value, 100); // woods #skyspeed
+	float clamped_skyspeed = CLAMP(0.0f, r_skyspeed.value, 100.0f); // woods #skyspeed
 
 	VectorSubtract (v, r_origin, dir);
-	dir[2] *= 3;	// flatten the sphere
+	dir[2] *= 3.0f;	// flatten the sphere
 
 	length = dir[0]*dir[0] + dir[1]*dir[1] + dir[2]*dir[2];
-	length = sqrt (length);
-	length = 6*63/length;
+	length = sqrtf (length);
+	length = (6.0f * 63.0f) / length;
 
 	scroll = cl.time * speed * clamped_skyspeed; // woods #skyspeed
 	scroll -= (int)scroll & ~127;
 
-	*s = (scroll + dir[0] * length) * (1.0/128);
-	*t = (scroll + dir[1] * length) * (1.0/128);
+	*s = (scroll + dir[0] * length) * (1.0f / 128.0f);
+	*t = (scroll + dir[1] * length) * (1.0f / 128.0f);
 }
 
 /*

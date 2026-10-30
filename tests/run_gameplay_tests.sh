@@ -2560,3 +2560,64 @@ fi
 echo "PASS: gl_sky.c includes arch_def.h, so PLATFORM_PSP and __psp__ agree,"
 echo "PASS: the batched sky survives preprocessing with __psp__ alone, and no"
 echo "PASS: engine file has a PLATFORM_PSP branch that the console never sees."
+
+# ---- no double-precision arithmetic in the sky's vertex path ------------
+#
+# The Allegrex (the PSP's CPU) has a single-precision FPU and no .d format --
+# "COP1: an FPU with 32 registers, single precision only.  No .d format"
+# (ppsspp.org/docs/psp-hardware/cpu/allegrex-overview; the ps2-to-psp porting
+# notes say the same of the VFPU).  Every double is emulated in software.
+#
+# Sky_GetTexCoord() runs four times per quad of every visible sky face (~5500
+# times a frame on the scrolling-sky maps) and used sqrt(), whose argument is
+# promoted to double: a software double square root per vertex, plus the
+# 1.0/128 double multiply next to it.  The round-87 log priced it exactly:
+#
+#     prof: frame 1920, scene 124.3 ms (sky 102.6: flat 1.9,
+#                                      5 faces 1364 quads 16 draws)
+#
+# 102 ms in the vertex loop, 0.8 ms in sceGuDrawArray, 1.9 ms in the bounds
+# pass -- ~19 microseconds per vertex, which is emulation, not arithmetic.
+awk '/^void Sky_GetTexCoord/,/^}/' Quake/gl_sky.c > /tmp/skytex.txt
+[ -s /tmp/skytex.txt ] || {
+    echo "FAIL: Sky_GetTexCoord is gone"
+    exit 1
+}
+grep -q 'sqrtf (length)' /tmp/skytex.txt || {
+    echo "FAIL: the sky's per-vertex square root is not single precision"
+    exit 1
+}
+grep -q 'sqrtf' /tmp/skytex.txt && ! grep -qE '[^f]sqrt *\(' /tmp/skytex.txt || {
+    echo "FAIL: Sky_GetTexCoord still calls double sqrt()"
+    exit 1
+}
+grep -q '1.0f / 128.0f' /tmp/skytex.txt || {
+    echo "FAIL: the 0..1 conversion is still done in double precision"
+    exit 1
+}
+grep -q '3.0f' /tmp/skytex.txt || {
+    echo "FAIL: the sphere flattening is still a double multiply"
+    exit 1
+}
+# And the same rule for the rest of the file: any square root in it is float.
+# (comment lines are skipped: `/*`, `*` and `//` at the start)
+grep -nE '[^a-z_]sqrt *\(' Quake/gl_sky.c |
+    grep -vE '^[0-9]+: *(\*|/\*|//)' > /tmp/dsqrt.txt || true
+if true; then
+    if [ -s /tmp/dsqrt.txt ]; then
+        echo "FAIL: a double sqrt() is still in gl_sky.c:"
+        head -3 /tmp/dsqrt.txt
+        exit 1
+    fi
+fi
+grep -n 'sqrt(3.0)' Quake/gl_sky.c | grep -vE '^[0-9]+: *(\*|/\*|//)' > /tmp/d3.txt || true
+if [ -s /tmp/d3.txt ]; then
+    echo "FAIL: the sky box still divides by a double sqrt(3.0)"
+    exit 1
+fi
+grep -q '#define SKY_BOX_SCALE' Quake/gl_sky.c || {
+    echo "FAIL: the sky box has no float sqrt(3) constant"
+    exit 1
+}
+echo "PASS: the sky's vertex path is single precision throughout -- no software"
+echo "PASS: double sqrt or double multiply per vertex (Allegrex has no .d)."
