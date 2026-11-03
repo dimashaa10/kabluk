@@ -724,8 +724,8 @@ static void Config_PrintPreamble(FILE* f)
 	Config_PrintBorder(f);
 	Config_PrintLine(f, "", 3);
 	Config_PrintLine(f, "", 3);
-	Config_PrintLine(f, "Q S S M   C O N F I G U R A T I O N", 3);
-	Config_PrintLine(f, "https://qssm.quakeone.com", 3);
+	Config_PrintLine(f, "Kabluk configuration", 3);
+	Config_PrintLine(f, "https://t.me/dimtencorp", 3);
 	Config_PrintLine(f, "", 3);
 	Config_PrintLine(f, "", 3);
 	Config_PrintBorder(f);
