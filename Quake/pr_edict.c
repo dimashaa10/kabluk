@@ -1238,6 +1238,12 @@ static void PR_MergeEngineFieldDefs (void)
 		//{"fatness",		ev_float},	//bloated rendering...
 		//{"gravitydir",	ev_vector},	//says which direction gravity should act for this ent...
 		{"pmove_flags",		ev_float},	//if runstandardplayerphysics is to work, it needs somewhere to track a couple of flags.
+		//tag for a later stage: 0/absent = ordinary entity, 1 = physically
+		//dynamic object (one that may be pushed and thrown). Nothing in the
+		//engine reads it yet - it is here so maps and QC can mark entities
+		//now, and so a later physics stage needs no progs change. QC still
+		//needs ".float physdynamic;" in defs.qc before it can name the field.
+		{"physdynamic",	ev_float},
 
 	};
 	int maxofs = qcvm->progs->entityfields;

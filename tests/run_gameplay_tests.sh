@@ -3429,3 +3429,118 @@ grep -q 'other.origin_z - 24 >= self.absmax_z' /tmp/prop_touch.txt || {
 echo "PASS: the prop falls (BOUNCE, with a real setsize), blocks and reports"
 echo "PASS: touches as SOLID_BBOX, and a shove clears FL_ONGROUND first, so it"
 echo "PASS: actually moves -- with tumble, and not when the player stands on it."
+
+# ---- physdynamic: the entity tag exists, once, with the right type --------
+#
+# The engine registers extra entity fields in PR_MergeEngineFieldDefs()
+# (pr_edict.c): for every entry it looks the name up in progs.dat
+# (ED_FindFieldOffset) and appends it only if the mod has not declared it, so a
+# mod's own ".float physdynamic;" and this table never both allocate the field
+# (pr_edict.c:1250-1259).  The type matters: ev_float allocates one float,
+# ev_vector allocates four, and QC declaring ".float" against an ev_vector
+# registration would read the wrong slot.
+pe=Quake/pr_edict.c
+qd=Misc/qc/defs_physdynamic.qc
+[ -f "$pe" ] && [ -f "$qd" ] || {
+    echo "FAIL: the physdynamic tag is missing (pr_edict.c or defs snippet)"
+    exit 1
+}
+# Exactly one registration in the whole engine: a second one would allocate a
+# second field and leave the first permanently 0.
+pd_hits=$(grep -c '{"physdynamic"' Quake/*.c Quake/*.h 2>/dev/null | awk -F: '{s+=$2} END {print s+0}')
+if [ "$pd_hits" -eq 0 ]; then
+    echo "FAIL: nothing in the engine registers physdynamic, so no entity has"
+    echo "FAIL: the tag and a map that writes it gets \"not a field\""
+    exit 1
+fi
+if [ "$pd_hits" -ne 1 ]; then
+    echo "FAIL: physdynamic is registered $pd_hits times, so entities carry two"
+    echo "FAIL: fields with that name and one of them stays 0 forever"
+    exit 1
+fi
+# ...and it must sit inside the extrafields table, not some unrelated array.
+awk '/^static void PR_MergeEngineFieldDefs/,/^}/' "$pe" > /tmp/pd_merge.txt
+grep -q '{"physdynamic",' /tmp/pd_merge.txt || {
+    echo "FAIL: physdynamic is not in the extrafields table of"
+    echo "FAIL: PR_MergeEngineFieldDefs, so it is never added to progs.dat"
+    exit 1
+}
+# Compile the real table, body extracted from pr_edict.c, and check it by
+# running it.  A grep for "ev_float" alone would pass on a table that no
+# longer compiles.
+# The brace of the initialiser is on its own line after "} extrafields[] =", and
+# this test writes its own "{", so drop it.
+awk '/extrafields\[\] =/{f=1; next} f && /^[ \t]*};$/{exit} f{print}' "$pe" \
+    | sed '1{/^[[:space:]]*{/d}' > /tmp/pd_body.inc
+[ -s /tmp/pd_body.inc ] || {
+    echo "FAIL: could not extract the extrafields table from $pe"
+    exit 1
+}
+{
+    echo '#include <stdio.h>'
+    echo '#include <string.h>'
+    echo 'typedef enum { ev_void, ev_string, ev_float, ev_vector, ev_entity, ev_field, ev_function, ev_pointer } etype_t;'
+    echo 'static const struct { const char *fname; etype_t type; int newidx; } extrafields[] = {'
+    cat /tmp/pd_body.inc
+    echo '};'
+    cat <<'EOC'
+int main (void)
+{
+    size_t i, j, n = sizeof(extrafields) / sizeof(extrafields[0]);
+    int hits = 0;
+    for (i = 0; i < n; i++)
+        if (!strcmp (extrafields[i].fname, "physdynamic"))
+        {
+            hits++;
+            if (extrafields[i].type != ev_float)
+            {
+                printf ("FAIL: physdynamic is not ev_float -- a vector takes four\n");
+                printf ("FAIL: slots and QC's '.float physdynamic' reads one\n");
+                return 1;
+            }
+        }
+    if (hits != 1)
+    {
+        printf ("FAIL: physdynamic appears %d times in the extrafields table\n", hits);
+        return 1;
+    }
+    for (i = 0; i < n; i++)
+        for (j = i + 1; j < n; j++)
+            if (!strcmp (extrafields[i].fname, extrafields[j].fname))
+            {
+                printf ("FAIL: duplicated field '%s' in the extrafields table\n",
+                        extrafields[i].fname);
+                return 1;
+            }
+    return 0;
+}
+EOC
+} > /tmp/pd_table.c
+cc -O0 -o /tmp/pd_table /tmp/pd_table.c 2>/tmp/pd_cc.err || {
+    echo "FAIL: the extrafields table in $pe does not compile:"
+    sed 's/^/FAIL:   /' /tmp/pd_cc.err | head -5
+    exit 1
+}
+/tmp/pd_table || exit 1
+# The QC side must declare the same type, or the mod cannot name the tag.
+tr -d '\r' < "$qd" > /tmp/pd_qc.txt
+grep -q '^\.float physdynamic;$' /tmp/pd_qc.txt || {
+    echo "FAIL: $qd does not declare '.float physdynamic;', so a mod that"
+    echo "FAIL: pastes it into defs.qc still cannot say self.physdynamic"
+    exit 1
+}
+# The snippet must be a single paste-ready declaration: comments are stripped
+# first (the file is mostly explanation, which is the point of it), and what is
+# left has to be the one line.  A nested "*/" inside the block comment would
+# end the comment early and leave prose as live code -- the extractor below
+# catches exactly that, and it caught it once already.
+qc_nocomments "$qd" | grep -v '^[[:space:]]*$' > /tmp/pd_live.txt
+if [ "$(grep -c . /tmp/pd_live.txt)" -ne 1 ] || ! grep -q '^\.float physdynamic;$' /tmp/pd_live.txt; then
+    echo "FAIL: $qd is not a paste-ready single declaration; the live code is:"
+    sed 's/^/FAIL:   /' /tmp/pd_live.txt
+    exit 1
+fi
+echo "PASS: physdynamic is registered once, as ev_float, inside the engine's"
+echo "PASS: extrafields table (table compiled from the real source and run), the"
+echo "PASS: QC snippet is one paste-ready '.float physdynamic;', so a map can set"
+echo "PASS: the tag today and QC can name it after that one line in defs.qc."
