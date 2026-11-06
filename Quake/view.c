@@ -951,11 +951,28 @@ static void V_EmitCigaretteSmoke (entity_t *view)
 
 	next_smoke_time = cl.time + SIGA_SMOKE_INTERVAL;
 
-	// Eight particles per burst, three times as often as the old thin smoke.
-	// The namespaced particle loads particles/qssm.cfg even when another
-	// particle profile is selected. Keep a matching dense classic fallback
-	// for mods which intentionally remove the QSS-M particle pack.
-	if (PScript_RunParticleEffectTypeString(smokeorg, smoke_dir, SIGA_SMOKE_COUNT, SIGA_SMOKE_EFFECT))
+	/* The dense QSS-M smoke belongs to the QSS-M particle profile, and this is
+	 * where that went wrong: asking for "qssm.cigarette_smoke" BY NAME makes
+	 * PScript_FindParticleType() load particles/qssm.cfg on the spot, and once
+	 * that file was in memory every engine effect that asks for a bare name
+	 * (TE_GUNSHOT, TE_EXPLOSION, te_spike, ...) found the QSS-M definition --
+	 * so smoking one cigarette switched the entire game to the modern effects,
+	 * with no way back but reloading particles.  Reported exactly that way.
+	 *
+	 * So the modern smoke is used only if the player has SELECTED a particle
+	 * profile that already provides it (r_particledesc "qssm"/"qssmc", which
+	 * loads particles/qssm.cfg from its own cvar callback).  Otherwise the
+	 * cigarette emits plain vanilla smoke, and asks for nothing that would load
+	 * a namespace as a side effect.  The engine now also refuses to let an
+	 * implicitly loaded namespace take over bare-name lookups
+	 * (P_ConfigSelected() in r_part_fte.c), so this cannot come back through
+	 * some other effect.
+	 *
+	 * Eight particles per burst, three times as often as the old thin smoke,
+	 * and sixteen for the classic path so the plume reads the same. */
+	if (PScript_ParticleTypeLoaded (SIGA_SMOKE_EFFECT))
+		PScript_RunParticleEffectTypeString(smokeorg, smoke_dir, SIGA_SMOKE_COUNT, SIGA_SMOKE_EFFECT);
+	else
 		R_RunParticleEffect(smokeorg, smoke_dir, SIGA_SMOKE_COLOR, SIGA_SMOKE_CLASSIC_COUNT);
 }
 

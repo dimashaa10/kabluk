@@ -402,6 +402,10 @@ typedef struct part_type_s {
 typedef struct pcfg_s
 {
 	struct pcfg_s *next;
+	/* Was this config loaded because the PLAYER'S PROFILE asked for it (or a
+	 * per-map config did), or only because some effect name happened to carry
+	 * its namespace?  See P_ConfigSelected(). */
+	qboolean selected;
 	char name[1];
 } pcfg_t;
 static pcfg_t *loadedconfigs;
@@ -1137,6 +1141,90 @@ static void PScript_RetintEffect(part_type_t *to, part_type_t *from, const char 
 }
 
 //public interface. get without creating.
+/*
+=================
+P_ConfigSelected
+
+Is this namespace part of what the player's particle profile selected?
+
+The bug this exists for: V_EmitCigaretteSmoke asks for "qssm.cigarette_smoke",
+and asking for a NAMESPACED effect name loads that namespace (particles/qssm.cfg)
+on demand.  Once that file is in memory every engine effect that asks for a BARE
+name -- TE_GUNSHOT, TE_EXPLOSION, te_spike, ... -- found the QSS-M definition,
+because the bare-name search below used to accept a type from ANY loaded
+namespace.  So smoking one cigarette silently switched the whole game from the
+vanilla effects to the modern ones, and there was no way back except reloading
+particles.
+
+A namespace that arrived as a SIDE EFFECT of one effect name is not a selection:
+it may serve the effect that named it, and nothing else.
+=================
+*/
+static qboolean P_ConfigSelected(const char *name)
+{
+	pcfg_t	*cfg;
+
+	if (!name || !*name)
+		return true;	/* a type created at run time belongs to no config */
+
+	for (cfg = loadedconfigs; cfg; cfg = cfg->next)
+	{
+		if (!strcmp(cfg->name, name))
+			return cfg->selected ? true : false;
+	}
+
+	return false;
+}
+
+/*
+=================
+PScript_ParticleTypeLoaded
+
+Does the particle profile the player SELECTED provide this effect right now?
+No loading, no side effects -- PScript_FindParticleType() loads the namespace if
+the name carries one, which is precisely what a caller must be able to ask
+about first.
+
+A namespace that is in memory only because some other effect name mentioned it
+does not count: see P_ConfigSelected.  The cigarette smoke is the caller that
+matters (view.c): it must emit vanilla particles unless the player actually
+picked a profile with the QSS-M smoke in it.
+=================
+*/
+qboolean PScript_ParticleTypeLoaded (const char *fullname)
+{
+	const char	*dot;
+	char		cfg[MAX_QPATH];
+	const char	*name = fullname;
+	int			i;
+
+	if (!fullname || !*fullname)
+		return false;
+
+	dot = strchr (fullname, '.');
+	if (dot && (dot - fullname) < MAX_QPATH - 1)
+	{
+		memcpy (cfg, fullname, dot - fullname);
+		cfg[dot - fullname] = 0;
+		name = dot + 1;
+	}
+	else
+		*cfg = 0;
+
+	for (i = 0; i < numparticletypes; i++)
+	{
+		if (!part_type[i].loaded || q_strcasecmp (part_type[i].name, name))
+			continue;
+		if (*cfg && q_strcasecmp (part_type[i].config, cfg))
+			continue;
+		if (!P_ConfigSelected (part_type[i].config))
+			continue;
+		return true;
+	}
+
+	return false;
+}
+
 int PScript_FindParticleType(const char *fullname)
 {
 	int i;
@@ -1198,11 +1286,15 @@ int PScript_FindParticleType(const char *fullname)
 	}
 	else
 	{
-		//but be prepared to load it from any namespace if its not got a namespace specified.
+		/* Search the namespaces the profile SELECTED, not every namespace that
+		 * happens to be in memory -- an implicitly loaded one (see
+		 * P_ConfigSelected) may not take over the engine's own effects. */
 		for (i = 0; i < numparticletypes; i++)
 		{
 			if (!q_strcasecmp(part_type[i].name, name))
 			{
+				if (!P_ConfigSelected(part_type[i].config))
+					continue;
 				ptype = &part_type[i];
 				if (ptype->loaded)	//(mostly) ignore ones that are not currently loaded
 					break;
@@ -3870,6 +3962,10 @@ static qboolean P_LoadParticleSet(char *name, qboolean implicit, qboolean showwa
 	if (!cfg)
 		return false;
 	strcpy(cfg->name, name);
+	/* `implicit` is the whole difference: the profile callback and the per-map
+	 * config pass false, PScript_FindParticleType passes true when it loads a
+	 * namespace just because an effect name mentioned one. */
+	cfg->selected = implicit ? false : true;
 	cfg->next = loadedconfigs;
 	loadedconfigs = cfg;
 

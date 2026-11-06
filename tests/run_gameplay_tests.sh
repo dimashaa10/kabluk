@@ -3208,3 +3208,113 @@ grep -q 'self.health = self.max_health;' /tmp/btn_killed.txt || {
 }
 echo "PASS: buttons.qc honours wait = -1, does not steal self.enemy from a"
 echo "PASS: moving button, and leaves a shootable button shootable."
+
+# ---- an implicitly loaded particle namespace may not hijack bare names ----
+#
+# Reported: smoking a cigarette switched the whole game's effects to the
+# modern QSS-M ones.  Cause: V_EmitCigaretteSmoke asks for
+# "qssm.cigarette_smoke", and a NAMESPACED effect name makes
+# PScript_FindParticleType() load particles/qssm.cfg on demand.  The bare-name
+# search (the one the engine's own TE_* effects use) accepted a type from ANY
+# loaded namespace, so from the first puff on, TE_GUNSHOT and friends resolved
+# to the QSS-M versions.
+#
+# P_ConfigSelected() is the rule that fixes it, and it is extracted from the
+# real source and driven here: a namespace is "selected" only when the profile
+# callback or the per-map config loaded it, never when an effect name did.
+# r_part_fte.c is a CRLF file: strip the CRs first, or every anchored pattern
+# below matches nothing and the block quietly checks zero functions.
+tr -d '\r' < Quake/r_part_fte.c > /tmp/rpart_unix.c
+awk '/^typedef struct pcfg_s$/,/^static pcfg_t \*loadedconfigs;$/' /tmp/rpart_unix.c \
+    > /tmp/pcfg_decl.txt
+awk '/^static qboolean P_ConfigSelected\(const char \*name\)$/,/^}$/' /tmp/rpart_unix.c \
+    > /tmp/pcfg_sel.txt
+[ -s /tmp/pcfg_decl.txt ] && [ -s /tmp/pcfg_sel.txt ] || {
+    echo "FAIL: the particle namespace rule is gone"
+    exit 1
+}
+{
+    echo '#include <stdio.h>'
+    echo '#include <string.h>'
+    echo 'typedef int qboolean;'
+    echo '#define false 0'
+    echo '#define true 1'
+    cat /tmp/pcfg_decl.txt
+    cat /tmp/pcfg_sel.txt
+    cat <<'PC'
+/* pcfg_t ends in char name[1] -- the allocate-extra idiom (see
+ * P_LoadParticleSet: Z_Malloc(sizeof(*cfg) + strlen(name))), so each one is
+ * carved out of its own buffer, exactly as the engine does it. */
+static char pcfg_buf[4][64];
+static int fail;
+#define EXPECT(expr, want, what) do { \
+    if (P_ConfigSelected (expr) != (want)) \
+    { printf ("%s: got %d\n", what, P_ConfigSelected (expr)); fail = 1; } \
+} while (0)
+int main (void)
+{
+    pcfg_t *c0 = (pcfg_t *)pcfg_buf[0], *c1 = (pcfg_t *)pcfg_buf[1];
+    pcfg_t *c2 = (pcfg_t *)pcfg_buf[2];
+
+    memset (pcfg_buf, 0, sizeof (pcfg_buf));
+    /* the player selected "classic"; "qssm" arrived only because an effect
+     * name mentioned its namespace; "map_eblan_old" is a per-map config */
+    strcpy (c0->name, "classic");       c0->selected = true;
+    strcpy (c1->name, "qssm");          c1->selected = false;
+    strcpy (c2->name, "map_eblan_old"); c2->selected = true;
+    c0->next = c1;
+    c1->next = c2;
+    c2->next = NULL;
+    loadedconfigs = c0;
+
+    EXPECT ("classic",       1, "the profile's own namespace");
+    EXPECT ("map_eblan_old", 1, "a per-map config");
+    EXPECT ("qssm",          0, "a namespace loaded as a side effect");
+    EXPECT ("",              1, "a type with no config at all");
+    EXPECT ("notloaded",     0, "a namespace that is not loaded");
+    EXPECT (NULL,            1, "a NULL name");
+    return fail;
+}
+PC
+} > /tmp/pcfgmain.c
+cc -O1 -std=gnu11 -o /tmp/pcfgtest /tmp/pcfgmain.c || {
+    echo "FAIL: the extracted namespace rule does not compile on its own"
+    exit 1
+}
+/tmp/pcfgtest || {
+    echo "FAIL: an implicitly loaded namespace is treated as selected, so one"
+    echo "FAIL: effect name can still switch every bare-name effect"
+    exit 1
+}
+
+# The bare-name lookup must actually consult it.
+awk '/^int PScript_FindParticleType\(const char \*fullname\)$/,/^}$/' /tmp/rpart_unix.c \
+    > /tmp/findtype.txt
+grep -q 'if (!P_ConfigSelected(part_type\[i\].config))' /tmp/findtype.txt || {
+    echo "FAIL: the bare-name search still accepts types from namespaces the"
+    echo "FAIL: profile never selected"
+    exit 1
+}
+# The namespace load must record why it happened.
+grep -q 'cfg->selected = implicit ? false : true;' Quake/r_part_fte.c || {
+    echo "FAIL: a loaded config does not remember whether the profile asked for it"
+    exit 1
+}
+# And the cigarette must ask whether the smoke already exists before naming it.
+tr -d '\r' < Quake/view.c | awk '/^static void V_EmitCigaretteSmoke \(entity_t \*view\)$/,/^}$/' \
+    > /tmp/cigsmoke.txt
+[ -s /tmp/cigsmoke.txt ] || { echo "FAIL: V_EmitCigaretteSmoke is gone"; exit 1; }
+guard=$(grep -n 'PScript_ParticleTypeLoaded (SIGA_SMOKE_EFFECT)' /tmp/cigsmoke.txt | head -1 | cut -d: -f1)
+emit=$(grep -n 'PScript_RunParticleEffectTypeString' /tmp/cigsmoke.txt | head -1 | cut -d: -f1)
+[ -n "$guard" ] && [ -n "$emit" ] && [ "$guard" -lt "$emit" ] || {
+    echo "FAIL: the cigarette names the QSS-M effect unconditionally, which is"
+    echo "FAIL: what loads particles/qssm.cfg in the first place"
+    exit 1
+}
+grep -q 'R_RunParticleEffect(smokeorg, smoke_dir, SIGA_SMOKE_COLOR, SIGA_SMOKE_CLASSIC_COUNT);' /tmp/cigsmoke.txt || {
+    echo "FAIL: there is no vanilla path any more"
+    exit 1
+}
+echo "PASS: the cigarette smoke is vanilla unless the player selected a profile"
+echo "PASS: that provides the QSS-M effect, and a namespace loaded on the sly"
+echo "PASS: can no longer take over the engine's own effects."

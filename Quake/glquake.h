@@ -111,6 +111,7 @@ typedef struct particle_s
 	void PScript_RunParticleWeather(vec3_t minb, vec3_t maxb, vec3_t dir, float count, int colour, const char *efname);
 	void PScript_EmitSkyEffectTris(qmodel_t *mod, msurface_t 	*fa, int ptype);
 	int PScript_FindParticleType(const char *fullname);
+	qboolean PScript_ParticleTypeLoaded (const char *fullname);
 	int PScript_RunParticleEffectTypeString (vec3_t org, vec3_t dir, float count, const char *name);
 	int PScript_EntParticleTrail(vec3_t oldorg, entity_t *ent, const char *name);
 	int PScript_RunParticleEffect (vec3_t org, vec3_t dir, int color, int count);
@@ -121,6 +122,7 @@ typedef struct particle_s
 #else
 	#define PScript_RunParticleEffectState(o,d,c,t,s) true
 	#define PScript_RunParticleEffectTypeString(o,d,c,n) true	//just unconditionally returns an error
+	#define PScript_ParticleTypeLoaded(n) false	//no scripted particles at all
 	#define PScript_EntParticleTrail(o,e,n) true
 	#define PScript_ParticleTrail(o,e,t,d,a,s) true
 	#define PScript_EntParticleTrail(o,e,n) true
