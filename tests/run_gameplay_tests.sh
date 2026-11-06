@@ -3124,3 +3124,87 @@ grep -q 'if (client->use_nexttime > qcvm->time + SV_USE_COOLDOWN)' Quake/sv_user
 }
 echo "PASS: a level spawn clears the action key's clock-bound state, and a"
 echo "PASS: cooldown can never outlive itself even if the clock restarts."
+
+# ---- buttons.qc: the three bugs the map authors could hit ----------------
+#
+# The QuakeC in Misc/qc/buttons.qc is the game's, not the engine's, and there is
+# no QC compiler in this tree -- so these checks are structural, and the real
+# proof is playing the map.  They still catch the thing that actually happened:
+# a fix that was written in a comment but not in code.
+qc=Misc/qc/buttons.qc
+[ -f "$qc" ] || { echo "FAIL: $qc is missing"; exit 1; }
+# Braces balance, otherwise nothing else in this block means anything.
+[ "$(tr -cd '{' < "$qc" | wc -c)" -eq "$(tr -cd '}' < "$qc" | wc -c)" ] || {
+    echo "FAIL: $qc has unbalanced braces"
+    exit 1
+}
+# Comments are dropped first: the comment above the fix QUOTES the broken line,
+# and a test that counts comment lines would be testing its own documentation.
+qc_nocomments ()
+{
+    sed -e 's://.*::' "$1" | awk '
+    {
+        line = $0; out = ""
+        while (1)
+        {
+            if (incomment)
+            {
+                p = index (line, "*/")
+                if (!p) { line = ""; break }
+                line = substr (line, p + 2); incomment = 0
+            }
+            else
+            {
+                p = index (line, "/*")
+                if (!p) { out = out line; break }
+                out = out substr (line, 1, p - 1); line = substr (line, p + 2)
+                incomment = 1
+            }
+        }
+        print out
+    }'
+}
+qc_nocomments "$qc" > /tmp/btn_nc.txt
+
+# 1. wait = -1 must not schedule the return.
+awk '/^void\(\) button_wait =$/,/^};$/' /tmp/btn_nc.txt > /tmp/btn_wait.txt
+grep -q 'if (self.wait == -1)' /tmp/btn_wait.txt || {
+    echo "FAIL: button_wait still schedules button_return at ltime + wait, so"
+    echo "FAIL: wait = -1 returns the button on the very next frame"
+    exit 1
+}
+# The unconditional assignment must not be back.
+grep -qE '^	self.nextthink = self.ltime \+ self.wait;' /tmp/btn_wait.txt && {
+    echo "FAIL: the unconditional 'nextthink = ltime + wait' is back"
+    exit 1
+}
+# 2. self.enemy must not be written before the state check.
+awk '/^void\(\) button_use =$/,/^};$/' /tmp/btn_nc.txt > /tmp/btn_use.txt
+awk '/^void\(\) button_touch =$/,/^};$/' /tmp/btn_nc.txt > /tmp/btn_touch.txt
+for f in /tmp/btn_use.txt /tmp/btn_touch.txt; do
+    idle=$(grep -n 'button_idle ()' "$f" | head -1 | cut -d: -f1)
+    enemy=$(grep -n 'self.enemy =' "$f" | head -1 | cut -d: -f1)
+    [ -n "$idle" ] && [ -n "$enemy" ] && [ "$idle" -lt "$enemy" ] || {
+        echo "FAIL: $f writes self.enemy before it checks whether the press"
+        echo "FAIL: will be ignored, so a press on a moving button credits the"
+        echo "FAIL: wrong activator in the deferred SUB_UseTargets"
+        exit 1
+    }
+done
+# 3. button_killed must not disable damage on a button it did not fire.
+awk '/^void\(\) button_killed =$/,/^};$/' /tmp/btn_nc.txt > /tmp/btn_killed.txt
+idle=$(grep -n 'button_idle ()' /tmp/btn_killed.txt | head -1 | cut -d: -f1)
+dam=$(grep -n 'DAMAGE_NO' /tmp/btn_killed.txt | head -1 | cut -d: -f1)
+[ -n "$idle" ] && [ -n "$dam" ] && [ "$idle" -lt "$dam" ] || {
+    echo "FAIL: button_killed clears takedamage before it knows whether it"
+    echo "FAIL: fired, so a shot at an already-pressed button can leave it"
+    echo "FAIL: unshootable for good"
+    exit 1
+}
+# And it must restore health, which is what makes the next shot work.
+grep -q 'self.health = self.max_health;' /tmp/btn_killed.txt || {
+    echo "FAIL: button_killed does not restore health"
+    exit 1
+}
+echo "PASS: buttons.qc honours wait = -1, does not steal self.enemy from a"
+echo "PASS: moving button, and leaves a shootable button shootable."
