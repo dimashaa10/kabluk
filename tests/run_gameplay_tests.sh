@@ -3358,3 +3358,74 @@ grep -q 'sound(self,' /tmp/kick.txt || {
 echo "PASS: a kicked gib gets angular velocity on all three axes, has its"
 echo "PASS: FL_ONGROUND cleared so the engine will integrate it, and cannot be"
 echo "PASS: kicked again until it has come to rest."
+
+# ---- prop_phystest: a prop that falls and can be shoved ----------------
+#
+# The engine does the physics in SV_Physics_Toss() (sv_phys.c): it returns
+# immediately while FL_ONGROUND is set (1473), adds gravity (1479), integrates
+# avelocity (1488), clips and bounces with backoff 1.5 for MOVETYPE_BOUNCE
+# (1499), and zeroes velocity AND avelocity when a non-bouncy body comes to
+# rest (1515-1516).  So "it falls" is a movetype, "it can be pushed along the
+# floor" is BOUNCE rather than TOSS (TOSS stops at the first floor contact),
+# and "the first shove does something" is clearing FL_ONGROUND in the touch.
+qp=Misc/qc/prop_phystest.qc
+[ -f "$qp" ] || { echo "FAIL: $qp is missing"; exit 1; }
+tr -d '\r' < "$qp" > /tmp/prop_unix.qc
+[ "$(tr -cd '{' < /tmp/prop_unix.qc | wc -c)" -eq "$(tr -cd '}' < /tmp/prop_unix.qc | wc -c)" ] || {
+    echo "FAIL: $qp has unbalanced braces"
+    exit 1
+}
+awk '/^void\(\) prop_phystest =$/,/^};$/' /tmp/prop_unix.qc > /tmp/prop_spawn.txt
+awk '/^void\(\) prop_phystest_touch =$/,/^};$/' /tmp/prop_unix.qc > /tmp/prop_touch.txt
+[ -s /tmp/prop_spawn.txt ] && [ -s /tmp/prop_touch.txt ] || {
+    echo "FAIL: prop_phystest or its touch is missing"
+    exit 1
+}
+grep -q 'self.movetype = MOVETYPE_BOUNCE;' /tmp/prop_spawn.txt || {
+    echo "FAIL: the prop has no movetype, so SV_Physics_Toss never touches it"
+    echo "FAIL: and it hangs in the air (MOVETYPE_NONE is what the old code got)"
+    exit 1
+}
+grep -q 'self.solid = SOLID_BBOX;' /tmp/prop_spawn.txt || {
+    echo "FAIL: not SOLID_BBOX, so pmove neither blocks on it nor reports it"
+    echo "FAIL: as touched, and it can never be pushed"
+    exit 1
+}
+grep -q 'setsize(self,' /tmp/prop_spawn.txt || {
+    echo "FAIL: setmodel on a .mdl leaves a -16..16 cube on all three axes"
+    echo "FAIL: (pr_cmds.c:347), which does not sit on the floor"
+    exit 1
+}
+grep -q 'self.touch = prop_phystest_touch;' /tmp/prop_spawn.txt || {
+    echo "FAIL: the prop has no touch, so a player walking into it does nothing"
+    exit 1
+}
+# FL_MONSTER may only be SUBTRACTED from, never added: with it the engine and
+# the QC treat the prop as a living thing (monsters target it, damage paths
+# change).  grep -c, because "grep -q | grep" tests the pipeline, not the file.
+if [ "$(grep -c 'flags = self.flags | FL_MONSTER' /tmp/prop_spawn.txt)" -ne 0 ]; then
+    echo "FAIL: FL_MONSTER is set again -- the prop is not a monster"
+    exit 1
+fi
+# The touch must clear the ground flag BEFORE it sets velocity, or the engine
+# discards the shove on the very next frame.
+ground=$(grep -n 'self.flags = self.flags - (self.flags & FL_ONGROUND)' /tmp/prop_touch.txt | head -1 | cut -d: -f1)
+setv=$(grep -n 'self.velocity_x = ' /tmp/prop_touch.txt | head -1 | cut -d: -f1)
+[ -n "$ground" ] && [ -n "$setv" ] && [ "$ground" -lt "$setv" ] || {
+    echo "FAIL: the touch does not clear FL_ONGROUND before pushing, so the"
+    echo "FAIL: engine's first check (sv_phys.c:1473) throws the shove away"
+    exit 1
+}
+grep -q 'self.avelocity_x = ' /tmp/prop_touch.txt || {
+    echo "FAIL: a shoved prop does not tumble"
+    exit 1
+}
+# Standing on top must not shove it out from under the player.
+grep -q 'other.origin_z - 24 >= self.absmax_z' /tmp/prop_touch.txt || {
+    echo "FAIL: a player standing ON the prop would push it out from under"
+    echo "FAIL: himself (pmove reports the ground entity as a touch too)"
+    exit 1
+}
+echo "PASS: the prop falls (BOUNCE, with a real setsize), blocks and reports"
+echo "PASS: touches as SOLID_BBOX, and a shove clears FL_ONGROUND first, so it"
+echo "PASS: actually moves -- with tumble, and not when the player stands on it."
