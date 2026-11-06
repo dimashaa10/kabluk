@@ -3044,3 +3044,45 @@ done
 echo "PASS: no double literal in the sky's per-quad or per-vertex functions,"
 echo "PASS: so the only extra precision in that path is the clock, and it is"
 echo "PASS: read in exactly one place (the scroll cache)."
+
+# ---- +use leaves one line in the log per press, and no more --------------
+#
+# The action key works (test_use_button.c drives the real SV_UsePress against a
+# tiny world), but on the console there was no way to tell "the key is not
+# wired" from "there is no button here".  SV_UseTrace answers that: one line per
+# press of the key, edge-triggered, so holding it writes nothing.
+awk '/^static void SV_UseTrace \(edict_t \*player, qboolean pressed\)$/,/^}$/' \
+    Quake/sv_user.c > /tmp/usetrace.txt
+[ -s /tmp/usetrace.txt ] || {
+    echo "FAIL: +use logs nothing, so a press that finds no button is"
+    echo "FAIL: indistinguishable from a key that is not wired at all"
+    exit 1
+}
+grep -q 'psp_tracef ("use: pressed %s #%d, %d units' /tmp/usetrace.txt || {
+    echo "FAIL: a successful press does not name what it pressed"
+    exit 1
+}
+grep -q 'use: nothing pressed -- nearest %s #%d is %d units away' /tmp/usetrace.txt || {
+    echo "FAIL: a failed press does not say how far the nearest button was"
+    exit 1
+}
+# It must be called from the edge branch, NOT from anywhere that runs per frame.
+awk '/SV_UseInputEdge \(host_client, buttonbits\)\)/,/^\t}/' Quake/sv_user.c > /tmp/useedge.txt
+grep -q 'SV_UseTrace (host_client->edict, pressed);' /tmp/useedge.txt || {
+    echo "FAIL: the trace is not inside the edge-triggered branch, so it would"
+    echo "FAIL: be written every frame the key is held"
+    exit 1
+}
+[ "$(grep -c 'SV_UseTrace (' Quake/sv_user.c)" -eq 2 ] || {
+    echo "FAIL: SV_UseTrace is called from more than the one edge branch"
+    exit 1
+}
+# The press itself still goes through SV_UsePress, which is what the
+# asset-free test drives -- the log must not have replaced the real path.
+grep -q 'qboolean pressed = SV_UsePress (host_client->edict);' Quake/sv_user.c || {
+    echo "FAIL: reading the log must not have bypassed SV_UsePress (its health"
+    echo "FAIL: and movetype checks are the rules the tests assert)"
+    exit 1
+}
+echo "PASS: +use logs one line per press -- what was pressed and how far, or"
+echo "PASS: how far the nearest button was and which rule it failed."

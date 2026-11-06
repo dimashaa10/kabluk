@@ -2204,6 +2204,129 @@ static float SV_UsePointBoxDistance (const vec3_t mins, const vec3_t maxs, const
 	return sqrtf (dist2);
 }
 
+#if defined(PLATFORM_PSP) || defined(__psp__)
+/*
+===================
+SV_UseTrace
+
+One line in the port's log per press of the action key, so that "the button can
+be pressed" is something the log shows instead of something I claim.
+
+Rules for this log line, because a log that fills the panel is worse than no
+log at all: it is written ONLY on the edge of the key (see SV_UseInputEdge, which
+already rate-limits at SV_USE_COOLDOWN), never per frame -- holding the key down
+writes nothing.  A press that finds nothing says why, including how far away the
+nearest thing that LOOKS like a button was, because "nothing happens" on the
+console is otherwise indistinguishable from "the key is not wired at all".
+===================
+*/
+static void SV_UseTrace (edict_t *player, qboolean pressed)
+{
+	vec3_t		eye, forward, right, up, center;
+	edict_t	*nearest = NULL;
+	const char	*nearest_class = "?";
+	const char	*why = "out of reach";
+	float		near_dist = 1.0e9f;
+	int			near_num = 0, i;
+
+	extern void psp_tracef (const char *fmt, ...);
+	/* SV_UseFindTarget is a query: it reads the world and changes nothing, so
+	 * asking it a second time here for the entity's name is safe. */
+	edict_t	*aimed = SV_UseFindTarget (player);
+
+	if (pressed)
+	{
+		float	dx, dy, dz;
+
+		if (!aimed)
+		{
+			psp_tracef ("use: a press was consumed but nothing was in reach");
+			return;
+		}
+
+		VectorAdd (player->v.origin, player->v.view_ofs, eye);
+		VectorAdd (aimed->v.absmin, aimed->v.absmax, center);
+		VectorScale (center, 0.5f, center);
+
+		dx = center[0] - eye[0];
+		dy = center[1] - eye[1];
+		dz = center[2] - eye[2];
+
+		/* Whole units: nothing in the port asks the console's printf for
+		 * float formatting, and this line must not be the first. */
+		psp_tracef ("use: pressed %s #%d, %d units to its centre (range %d)",
+		            PR_GetString (aimed->v.classname),
+		            (int)(((byte *)aimed - (byte *)qcvm->edicts) /
+		                  (size_t)qcvm->edict_size),
+		            (int)sqrtf (dx*dx + dy*dy + dz*dz), (int)SV_USE_RANGE);
+		return;
+	}
+
+	/* Why was nothing pressed?  The first two answers are about the player,
+	 * not about what he is aiming at. */
+	if (player->v.health <= 0)
+	{
+		psp_tracef ("use: nothing pressed -- the player is dead");
+		return;
+	}
+	if (player->v.movetype == MOVETYPE_NONE || player->v.movetype == MOVETYPE_NOCLIP)
+	{
+		psp_tracef ("use: nothing pressed -- movetype %d cannot use things",
+		            (int)player->v.movetype);
+		return;
+	}
+
+	/* Nothing was pressed.  Find the nearest entity the map calls a button and
+	 * say which test it failed -- that is the difference between "aim higher"
+	 * and "this map has no buttons". */
+	AngleVectors (player->v.v_angle, forward, right, up);
+	VectorAdd (player->v.origin, player->v.view_ofs, eye);
+
+	for (i = 1; i < qcvm->num_edicts; i++)
+	{
+		edict_t	*e = (edict_t *)((byte *)qcvm->edicts + (size_t)i * qcvm->edict_size);
+		const char *classname;
+		float	d;
+
+		if (e->free || e == player || !e->v.classname)
+			continue;
+		classname = PR_GetString (e->v.classname);
+		if (!classname || !SV_UseClassListed (SV_USE_CLASSES, classname))
+			continue;
+
+		d = SV_UsePointBoxDistance (e->v.absmin, e->v.absmax, eye);
+		if (d >= near_dist)
+			continue;
+
+		near_dist = d;
+		nearest = e;
+		nearest_class = classname;
+		near_num = i;
+	}
+
+	if (!nearest)
+	{
+		psp_tracef ("use: nothing pressed -- this map has no %s within "
+		            "qcvm->num_edicts %d (cannot open a door with it by design)",
+		            SV_USE_CLASSES, qcvm->num_edicts);
+		return;
+	}
+
+	if (nearest->v.health > 0)
+		why = "shoot-only (health is set)";
+	else if (!nearest->v.use)
+		why = "no use function";
+	else if (nearest->v.solid != SOLID_BSP || nearest->v.movetype != MOVETYPE_PUSH)
+		why = "not a push brush";
+	else if (near_dist > SV_USE_RANGE)
+		why = "out of range";
+
+	psp_tracef ("use: nothing pressed -- nearest %s #%d is %d units away, "
+	            "range %d: %s",
+	            nearest_class, near_num, (int)near_dist, (int)SV_USE_RANGE, why);
+}
+#endif
+
 /*
 ===================
 SV_UseFindTarget
@@ -2502,9 +2625,22 @@ void SV_ReadClientMove (usercmd_t *move)
 	}
 
 	// The action key (+use, button bit 2) presses a nearby button instead of
-	// requiring the player to walk into it.
+	// requiring the player to walk into it.  The result is logged once per
+	// press on the console (SV_UseTrace): one line, edge-triggered, never
+	// once per frame.
 	if (SV_UseInputEdge (host_client, buttonbits))
-		SV_UsePress (host_client->edict);
+	{
+		qboolean pressed = SV_UsePress (host_client->edict);
+
+#if defined(PLATFORM_PSP) || defined(__psp__)
+		/* One line per press of the key, never per frame: holding it writes
+		 * nothing (SV_UseInputEdge is edge-triggered and rate-limited), so
+		 * the log stays readable. */
+		SV_UseTrace (host_client->edict, pressed);
+#else
+		(void)pressed;
+#endif
+	}
 
 	eval = GetEdictFieldValue(host_client->edict, qcvm->extfields.movement);
 	if (eval)
