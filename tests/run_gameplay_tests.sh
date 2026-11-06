@@ -3086,3 +3086,41 @@ grep -q 'qboolean pressed = SV_UsePress (host_client->edict);' Quake/sv_user.c |
 }
 echo "PASS: +use logs one line per press -- what was pressed and how far, or"
 echo "PASS: how far the nearest button was and which rule it failed."
+
+# ---- the action-key state is cleared whenever a level restarts the clock --
+#
+# use_nexttime is an absolute time in the QCVM's clock.  SV_SpawnServer() sets
+# that clock back to 1.0 (sv_main.c) while client_t survives a changelevel:
+# Host_ClearMemory() does not clear svs.clients, and only Host_ShutdownServer()
+# -- which a save load runs -- does.  So a press on the old map used to freeze
+# +use on the next map for as long as the player had been playing, and only a
+# save and reload cleared it.  test_use_button.c proves the behaviour; these
+# checks prove the engine actually wires the reset to the level spawn.
+grep -q 'SV_ResetActionKey' Quake/server.h || {
+    echo "FAIL: SV_ResetActionKey is not declared"
+    exit 1
+}
+awk '/^void SV_SendServerinfo \(client_t \*client\)$/,/^}/' Quake/sv_main.c > /tmp/sendserverinfo.txt
+# Anchored and uncommented: a commented-out call is exactly how this would be
+# broken, and a bare grep matches it inside /* ... */.
+grep -q '^[[:space:]]*SV_ResetActionKey(client);$' /tmp/sendserverinfo.txt || {
+    echo "FAIL: a level spawn does not clear the action key's state, so the"
+    echo "FAIL: cooldown from the previous map (an absolute time in a clock"
+    echo "FAIL: that just restarted at 1.0) leaves +use dead on the new map"
+    exit 1
+}
+awk '/^void SV_ResetActionKey \(client_t \*client\)$/,/^}/' Quake/sv_user.c > /tmp/resetuse.txt
+[ -s /tmp/resetuse.txt ] || { echo "FAIL: SV_ResetActionKey has no body"; exit 1; }
+grep -q 'client->use_nexttime = 0.0;' /tmp/resetuse.txt || {
+    echo "FAIL: the reset does not clear the absolute cooldown time"
+    exit 1
+}
+# ... and the invariant that keeps it impossible even if some other code
+# restarts the clock: a cooldown may never last longer than SV_USE_COOLDOWN.
+grep -q 'if (client->use_nexttime > qcvm->time + SV_USE_COOLDOWN)' Quake/sv_user.c || {
+    echo "FAIL: nothing bounds a stale use_nexttime, so any future clock restart"
+    echo "FAIL: brings the same bug back"
+    exit 1
+}
+echo "PASS: a level spawn clears the action key's clock-bound state, and a"
+echo "PASS: cooldown can never outlive itself even if the clock restarts."

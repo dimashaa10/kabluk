@@ -2186,6 +2186,12 @@ retry:
 
 	SVFTE_SetupFrames(client);
 
+	/* The action key's state is expressed in the clock that was just restarted
+	 * (SV_SpawnServer sets qcvm->time = 1.0) and it lives in client_t, which
+	 * this level spawn does NOT recreate -- see SV_UseInputEdge.  Clearing it
+	 * here is what makes +use work on the new map. */
+	SV_ResetActionKey(client);
+
 	if (client->message.overflowed && client->limit_models > 64 && cantruncate)
 	{
 		if (!host_client->protocol_pext2 || truncated)

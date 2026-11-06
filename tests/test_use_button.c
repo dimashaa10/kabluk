@@ -492,6 +492,68 @@ static void TestOtherButtonsDoNotPress (void)
 	assert(SV_UseInputEdge (&client, 4));		/* +use */
 }
 
+/* ---- a new level restarts the clock, not the client -------------------
+ *
+ * The bug this test was written for: press buttons on one map, walk into a
+ * changelevel trigger, and on the next map +use does nothing -- until the game
+ * is saved and loaded.  The cause is that use_nexttime is an ABSOLUTE time in
+ * the QCVM's clock, SV_SpawnServer() resets that clock to 1.0 (sv_main.c:3912),
+ * and client_t outlives a changelevel (Host_ClearMemory() does not clear
+ * svs.clients; only Host_ShutdownServer() does, and that is what a save load
+ * runs).  So the cooldown left over from the previous map -- up to as many
+ * seconds as the player had been playing -- refused every press.
+ *
+ * Both halves of the fix are checked here: the reset that a level spawn now
+ * performs, and the invariant that a cooldown may never outlive SV_USE_COOLDOWN
+ * even if some other code restarts the clock.
+ */
+static void TestChangelevelKeepsUseWorking (void)
+{
+	int i;
+
+	ResetWorld();
+	AddBrush("func_button");
+
+	/* Play on the first map for a while, pressing its buttons. */
+	test_qcvm.time = 412.5;
+	assert(SV_UseInputEdge (&client, 4));
+	assert(!SV_UseInputEdge (&client, 0));
+	assert(client.use_nexttime == 412.5 + 0.2);
+
+	/* changelevel: SV_SpawnServer restarts the clock at 1.0.  The client
+	 * struct is the same one, exactly as it is on a real listen server. */
+	test_qcvm.time = 1.0;
+	assert(client.use_nexttime > test_qcvm.time);
+
+	/* With the reset a level spawn performs, the first press works. */
+	SV_ResetActionKey (&client);
+	assert(!client.use_held);
+	assert(client.use_nexttime == 0.0);
+	assert(SV_UseInputEdge (&client, 4));
+	assert(!SV_UseInputEdge (&client, 0));
+
+	/* And even WITHOUT the reset, the stale value must not be able to refuse
+	 * for longer than one cooldown: on the new map, 0.2 s later, the key
+	 * works again. */
+	test_qcvm.time = 500.0;
+	assert(SV_UseInputEdge (&client, 4));
+	assert(!SV_UseInputEdge (&client, 0));       /* let go of the key */
+	test_qcvm.time = 1.0;                       /* a second changelevel */
+	assert(client.use_nexttime == 500.0 + 0.2);
+	for (i = 0, test_qcvm.time = 1.0; i < 4; i++)
+		test_qcvm.time += 0.05;                  /* 0.2 s of the new map */
+	assert(SV_UseInputEdge (&client, 4));       /* stale cooldown ignored */
+
+	/* The cooldown itself still works after all that. */
+	assert(!SV_UseInputEdge (&client, 4));      /* still held: no repeat */
+	assert(!SV_UseInputEdge (&client, 0));      /* release */
+	test_qcvm.time += 0.01;                     /* inside the cooldown now */
+	assert(!SV_UseInputEdge (&client, 4));      /* refused, not "forgotten" */
+	assert(!SV_UseInputEdge (&client, 0));
+	test_qcvm.time += 0.25;                     /* past it */
+	assert(SV_UseInputEdge (&client, 4));
+}
+
 int main (void)
 {
 	TestClassnameList();
@@ -506,10 +568,13 @@ int main (void)
 	TestPlayerState();
 	TestEdgeTrigger();
 	TestOtherButtonsDoNotPress();
+	TestChangelevelKeepsUseWorking();
 
 	puts("PASS: +use presses func_button and never a door, with the whitelist and reach");
 	puts("PASS: fixed in the engine rather than tunable from the console;");
 	puts("PASS: it reaches a button flush with the wall, ignores what is out of range,");
 	puts("PASS: behind the player or shoot-only, and holding the key is one press.");
+	puts("PASS: and after a changelevel restarts the server's clock the key still");
+	puts("PASS: works on the new map -- the cooldown cannot outlive itself.");
 	return 0;
 }

@@ -426,6 +426,7 @@ edict_t *SV_UseFindTarget (edict_t *player);
 void SV_UseExecute (edict_t *player, edict_t *target);
 qboolean SV_UsePress (edict_t *player);
 qboolean SV_UseInputEdge (client_t *client, unsigned int buttonbits);
+void SV_ResetActionKey (client_t *client);
 void SV_AddClientToServer (struct qsocket_s	*ret);
 
 void SV_ClientPrintf (const char *fmt, ...) FUNC_PRINTF(1,2);

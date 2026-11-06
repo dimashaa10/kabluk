@@ -2442,12 +2442,44 @@ exactly once per key press: holding the key must not fire the button every
 frame, and a client that spams the bit is limited to one attempt per 0.2 s.
 ===================
 */
+void SV_ResetActionKey (client_t *client)
+{
+	if (!client)
+		return;
+
+	/* Both fields are expressed in qcvm->time's clock, and that clock is
+	 * restarted at every level spawn -- see the note above SV_UseInputEdge. */
+	client->use_held = false;
+	client->use_nexttime = 0.0;
+}
+
 qboolean SV_UseInputEdge (client_t *client, unsigned int buttonbits)
 {
 	qboolean	use_down = (buttonbits & SV_USE_BUTTONBIT) != 0;
 	qboolean	edge = use_down && !client->use_held;
 
 	client->use_held = use_down;
+
+	/* A cooldown may never outlive SV_USE_COOLDOWN.
+	 *
+	 * use_nexttime is an ABSOLUTE time in the QCVM's clock, and qcvm->time
+	 * is reset to 1.0 at every level spawn (sv_main.c:3912).  A client_t
+	 * survives a changelevel -- Host_ClearMemory() (host.c:1108) does not
+	 * touch svs.clients, and Host_Reconnect_Sv_f() (host_cmd.c:2861) only
+	 * resets the signon, it does not drop the connection -- so a press made
+	 * at 415 seconds on the old map left use_nexttime = 415.2, and every
+	 * press on the new map was refused until that map's OWN clock reached
+	 * 415 seconds.  It looked permanent, and it was reported that way: the
+	 * only thing that cleared it was a save and a reload, because loading
+	 * calls Host_ShutdownServer() (host_cmd.c:3357), the one place that
+	 * memsets svs.clients (host.c:1096).
+	 *
+	 * SV_SendServerinfo() now calls SV_ResetActionKey() for every level, so
+	 * the stale value should not exist at all; this line is the invariant
+	 * that makes it impossible rather than unlikely -- whatever code
+	 * restarts the clock next. */
+	if (client->use_nexttime > qcvm->time + SV_USE_COOLDOWN)
+		client->use_nexttime = 0.0;
 
 	if (!edge || qcvm->time < client->use_nexttime)
 		return false;
