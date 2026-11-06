@@ -186,6 +186,14 @@ eval_t *GetEdictFieldValue (edict_t *ent, int field)
 	return NULL;
 }
 
+/* The action key also carries physdynamic props, and SV_UsePress() (linked in
+ * through SV_ReadClientMove) looks up what a player holds by entity number.
+ * This test never presses use and GetEdictFieldValue() above always answers
+ * "no such field", so both of these are unreachable and only satisfy the
+ * linker. */
+edict_t *EDICT_NUM (int num) { (void)num; assert(!"unexpected edict lookup"); return NULL; }
+int NUM_FOR_EDICT (edict_t *ent) { (void)ent; assert(!"unexpected edict number"); return 0; }
+
 /* Newly shared player-think hooks must remain inactive in cigarette tests. */
 void PR_SwitchQCVM (qcvm_t *vm) { qcvm = vm; }
 void ED_Free (edict_t *ent) { (void)ent; assert(!"unexpected skateboard cleanup"); }

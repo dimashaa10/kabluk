@@ -330,6 +330,11 @@ struct pr_extfields_s
 	QCEXTFIELD(SendEntity,				".float(entity to, float changedflags)")			/*function*/	\
 	QCEXTFIELD(SendFlags,				".float")			/*float. :( */	\
 	QCEXTFIELD(pvsflags,				".float")			/*float*/	\
+	/*sv_phys/sv_user: the physdynamic tag, what a player is holding, and the\
+	 *movetype to restore when he lets go. See the carry section in sv_user.c.*/\
+	QCEXTFIELD(physdynamic,			".float")			/*float*/	\
+	QCEXTFIELD(physcarry,			".float")			/*float*/	\
+	QCEXTFIELD(physmovetype,		".float")			/*float*/	\
 	//end of list
 
 #define QCEXTFIELD(n,t) int n;

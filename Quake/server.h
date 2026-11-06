@@ -427,6 +427,17 @@ void SV_UseExecute (edict_t *player, edict_t *target);
 qboolean SV_UsePress (edict_t *player);
 qboolean SV_UseInputEdge (client_t *client, unsigned int buttonbits);
 void SV_ResetActionKey (client_t *client);
+
+/* Carrying a physdynamic prop on the action key (sv_user.c, the carry section).
+ * The hold distance is fixed for the same reason the use range is: it is the
+ * game's behaviour, not a setting. */
+#define	SV_CARRY_DIST	48.0f	// how far in front of the eyes a held prop hangs
+
+qboolean SV_CarryCanGrab (const edict_t *target);
+edict_t *SV_CarryHeld (edict_t *player);
+qboolean SV_CarryGrab (edict_t *player, edict_t *prop);
+qboolean SV_CarryRelease (edict_t *player);
+void SV_CarryUpdate (edict_t *prop, edict_t *carrier);
 void SV_AddClientToServer (struct qsocket_s	*ret);
 
 void SV_ClientPrintf (const char *fmt, ...) FUNC_PRINTF(1,2);

@@ -92,6 +92,33 @@ void SV_LinkEdict (edict_t *ent, qboolean touch_triggers)
 	(void)touch_triggers;
 }
 
+/* ---- entity numbering and entity fields ----
+ * The action key also owns carrying a physdynamic prop, and that code reads its
+ * QC fields through cached offsets. There is no progs here, so every offset is
+ * -1 and every read says "this entity has no such field" -- which is exactly
+ * "no prop here is tagged", and is the state every test in this file wants.
+ */
+edict_t *EDICT_NUM (int n)
+{
+	assert(n >= 0 && n < MAX_TEST_EDICTS);
+	return &edicts[n];
+}
+
+int NUM_FOR_EDICT (edict_t *e)
+{
+	int n = (int)(e - edicts);
+
+	assert(n >= 0 && n < MAX_TEST_EDICTS);
+	return n;
+}
+
+eval_t *GetEdictFieldValue (edict_t *ed, int ofs)
+{
+	(void)ed;
+	assert(ofs < 0);	/* every field offset is -1 without progs */
+	return NULL;
+}
+
 trace_t SV_Move (vec3_t start, vec3_t mins, vec3_t maxs, vec3_t end,
 	int type, edict_t *passedict)
 {
@@ -147,6 +174,17 @@ static void ResetWorld (void)
 	test_qcvm.edicts = edicts;
 	test_qcvm.edict_size = sizeof(edict_t);
 	test_qcvm.num_edicts = MAX_TEST_EDICTS;
+
+	/* -1 for every cached entity-field offset: no progs, no fields (see
+	 * GetEdictFieldValue above). memset leaves 0, which is a real offset. */
+	{
+		int *ex = (int *)&test_qcvm.extfields;
+		int  n = (int)(sizeof(test_qcvm.extfields) / sizeof(int));
+		int  k;
+
+		for (k = 0; k < n; k++)
+			ex[k] = -1;
+	}
 	test_qcvm.globals = (float *)global_words;
 	pr_global_struct = &test_globals;
 

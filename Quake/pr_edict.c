@@ -1243,7 +1243,9 @@ static void PR_MergeEngineFieldDefs (void)
 		//engine reads it yet - it is here so maps and QC can mark entities
 		//now, and so a later physics stage needs no progs change. QC still
 		//needs ".float physdynamic;" in defs.qc before it can name the field.
-		{"physdynamic",	ev_float},
+		{"physdynamic",	ev_float},	//tag: 1 = this entity is a physics prop
+		{"physcarry",	ev_float},	//on a player: entity number he is holding
+		{"physmovetype",	ev_float},	//on a prop: movetype to restore on release
 
 	};
 	int maxofs = qcvm->progs->entityfields;

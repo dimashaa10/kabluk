@@ -59,6 +59,11 @@ compile "$repo/tests/test_speed_info.c" "$work/sv_user.o" "$work/mathlib.o" \
 compile "$repo/tests/test_use_button.c" "$work/sv_user.o" "$work/mathlib.o" \
     ${LDFLAGS:-} -Wl,--gc-sections -lm -o "$work/use_button"
 "$work/use_button"
+# Carrying a physdynamic prop on the action key: grab, hold point, wall clamp,
+# release, and every reason a prop must NOT be grabbed.
+compile "$repo/tests/test_physcarry.c" "$work/sv_user.o" "$work/mathlib.o" \
+    ${LDFLAGS:-} -Wl,--gc-sections -lm -o "$work/physcarry"
+"$work/physcarry"
 # Controls menu / default bindings: +use must be bindable and default to E.
 compile -DREPO_DIR=\"$repo\" "$repo/tests/test_bind_defaults.c" \
     ${LDFLAGS:-} -Wl,--gc-sections -lm -o "$work/bind_defaults"
@@ -3529,14 +3534,18 @@ grep -q '^\.float physdynamic;$' /tmp/pd_qc.txt || {
     echo "FAIL: pastes it into defs.qc still cannot say self.physdynamic"
     exit 1
 }
-# The snippet must be a single paste-ready declaration: comments are stripped
-# first (the file is mostly explanation, which is the point of it), and what is
-# left has to be the one line.  A nested "*/" inside the block comment would
-# end the comment early and leave prose as live code -- the extractor below
-# catches exactly that, and it caught it once already.
+# The snippet must be paste-ready declarations and nothing else: comments are
+# stripped first (the file is mostly explanation, which is the point of it), and
+# what is left has to be exactly the three entity fields -- no prose, no
+# statements.  A nested "*/" inside the block comment would end the comment
+# early and leave prose as live code; the extractor below catches exactly that,
+# and it caught it once already.
 qc_nocomments "$qd" | grep -v '^[[:space:]]*$' > /tmp/pd_live.txt
-if [ "$(grep -c . /tmp/pd_live.txt)" -ne 1 ] || ! grep -q '^\.float physdynamic;$' /tmp/pd_live.txt; then
-    echo "FAIL: $qd is not a paste-ready single declaration; the live code is:"
+if [ "$(grep -c . /tmp/pd_live.txt)" -ne 3 ] \
+   || ! grep -qx '\.float physdynamic;' /tmp/pd_live.txt \
+   || ! grep -qx '\.float physcarry;' /tmp/pd_live.txt \
+   || ! grep -qx '\.float physmovetype;' /tmp/pd_live.txt; then
+    echo "FAIL: $qd is not three paste-ready declarations; the live code is:"
     sed 's/^/FAIL:   /' /tmp/pd_live.txt
     exit 1
 fi
@@ -3544,3 +3553,80 @@ echo "PASS: physdynamic is registered once, as ev_float, inside the engine's"
 echo "PASS: extrafields table (table compiled from the real source and run), the"
 echo "PASS: QC snippet is one paste-ready '.float physdynamic;', so a map can set"
 echo "PASS: the tag today and QC can name it after that one line in defs.qc."
+
+# ---- carrying a physdynamic prop: the wiring the C test cannot see ----------
+#
+# test_physcarry.c drives SV_Carry*/SV_UsePress directly, so it proves the rules
+# but not that the ENGINE uses them. These checks cover the three connections:
+# the action key calls the carry code first, the physics dispatcher hands a held
+# prop to SV_CarryUpdate, and the API the other files call is declared.
+su=Quake/sv_user.c
+sp=Quake/sv_phys.c
+sh=Quake/server.h
+for f in "$su" "$sp" "$sh"; do
+    [ -f "$f" ] || { echo "FAIL: $f is missing"; exit 1; }
+done
+tr -d '\r' < "$su" > /tmp/carry_su.txt
+tr -d '\r' < "$sp" > /tmp/carry_sp.txt
+tr -d '\r' < "$sh" > /tmp/carry_sh.txt
+# 1. server.h: fixed hold distance, and the API the physics file calls.
+grep -q '#define[[:space:]]*SV_CARRY_DIST[[:space:]]*48' /tmp/carry_sh.txt || {
+    echo "FAIL: SV_CARRY_DIST is not defined as a constant in server.h, so the"
+    echo "FAIL: hold distance has become tunable behaviour nobody asked for"
+    exit 1
+}
+grep -q 'void SV_CarryUpdate (edict_t \*prop, edict_t \*carrier);' /tmp/carry_sh.txt || {
+    echo "FAIL: SV_CarryUpdate is not declared in server.h, so sv_phys.c cannot"
+    echo "FAIL: hand a held prop to it"
+    exit 1
+}
+# 2. SV_UsePress: release, then grab, then the button path. The order is the
+#    behaviour -- release first means one press cannot drop and re-grab.
+awk '/^qboolean SV_UsePress \(edict_t \*player\)$/,/^}$/' /tmp/carry_su.txt > /tmp/carry_press.txt
+[ -s /tmp/carry_press.txt ] || { echo "FAIL: SV_UsePress is missing"; exit 1; }
+rel=$(grep -n 'return SV_CarryRelease (player);' /tmp/carry_press.txt | head -1 | cut -d: -f1)
+grab=$(grep -n 'return SV_CarryGrab (player, target);' /tmp/carry_press.txt | head -1 | cut -d: -f1)
+btn=$(grep -n 'SV_UseFindTarget (player)' /tmp/carry_press.txt | head -1 | cut -d: -f1)
+[ -n "$rel" ] && [ -n "$grab" ] && [ -n "$btn" ] && [ "$rel" -lt "$grab" ] && [ "$grab" -lt "$btn" ] || {
+    echo "FAIL: SV_UsePress must put a held prop down first, then pick one up,"
+    echo "FAIL: and only then press a button (found release=$rel grab=$grab button=$btn)"
+    exit 1
+}
+grep -q 'if (SV_CarryHeld (player))' /tmp/carry_press.txt || {
+    echo "FAIL: SV_UsePress does not check the hands at all, so a held prop can"
+    echo "FAIL: never be put down with +use"
+    exit 1
+}
+# 3. sv_phys.c: a MOVETYPE_FOLLOW entity that carries the tag goes to the carry
+#    code, and does NOT fall through to the attachment maths.
+awk '/^static void SV_Physics_Follow \(edict_t \*ent\)$/,/^}$/' /tmp/carry_sp.txt > /tmp/carry_follow.txt
+[ -s /tmp/carry_follow.txt ] || { echo "FAIL: SV_Physics_Follow is missing"; exit 1; }
+grep -q 'GetEdictFieldValue (ent, qcvm->extfields.physdynamic)' /tmp/carry_follow.txt || {
+    echo "FAIL: SV_Physics_Follow never looks at the physdynamic tag, so a held"
+    echo "FAIL: prop is positioned by the attachment maths instead"
+    exit 1
+}
+upd=$(grep -n 'SV_CarryUpdate (ent, e);' /tmp/carry_follow.txt | head -1 | cut -d: -f1)
+punch=$(grep -n 'ent->v.punchangle\[0\]' /tmp/carry_follow.txt | head -1 | cut -d: -f1)
+[ -n "$upd" ] && [ -n "$punch" ] && [ "$upd" -lt "$punch" ] || {
+    echo "FAIL: the carry hook is missing from SV_Physics_Follow or comes after"
+    echo "FAIL: the punchangle maths it is meant to replace"
+    exit 1
+}
+# 4. The three QC fields must exist on the engine side too, or none of the
+#    above can find anything.
+for field in physcarry physmovetype; do
+    grep -q "{\"$field\",[[:space:]]*ev_float}" Quake/pr_edict.c || {
+        echo "FAIL: the engine does not register the '$field' field, so the"
+        echo "FAIL: carry code reads offset -1 and the feature is dead"
+        exit 1
+    }
+    grep -q "QCEXTFIELD($field," Quake/progs.h || {
+        echo "FAIL: '$field' has no cached offset in progs.h, so the engine has"
+        echo "FAIL: no fast way to read it"
+        exit 1
+    }
+done
+echo "PASS: +use puts a held prop down before it grabs or presses anything, the"
+echo "PASS: FOLLOW dispatcher hands a tagged prop to SV_CarryUpdate before the"
+echo "PASS: attachment maths, and all three QC fields are registered and cached."

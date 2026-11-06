@@ -2490,9 +2490,330 @@ qboolean SV_UseInputEdge (client_t *client, unsigned int buttonbits)
 
 /*
 ===================
+Carrying a physdynamic prop
+
+An entity with `physdynamic` set is a physics prop (see Misc/qc/prop_phystest.qc).
+The action key picks one up, holds it in front of the player, and puts it down
+again. This is engine behaviour on purpose: the tag has to work for a map that
+has no idea the game has a carrying system, and the mod's QC needs no code for
+it beyond ".float physdynamic;" in defs.qc if it wants to read the tag itself.
+
+WHAT "HELD" MEANS IN THE ENTITY, because every one of these is load-bearing:
+
+  prop->v.movetype = MOVETYPE_FOLLOW (12)   the marker, and the per-frame hook:
+                                            SV_Physics() dispatches it to
+                                            SV_Physics_Follow(), which
+                                            SV_CarryUpdate() takes over
+                                            (sv_phys.c). Nothing else in the
+                                            engine positions a held prop.
+  prop->v.aiment   = player                 what FOLLOW follows in general;
+                                            SV_CarryUpdate re-derives the real
+                                            point from the view instead, so the
+                                            normal FOLLOW maths never runs for
+                                            a physdynamic entity
+  prop->v.solid    = SOLID_NOT              a solid box hung in front of the
+                                            face stops the owner from moving:
+                                            pmove would report it as a touch
+                                            and SV_Impact would shove the prop
+                                            into him every frame
+  prop->v.owner    = player                 who is holding it; also blocks a
+                                            second grab and hides it from the
+                                            owner's own pmove clip list
+  player->physcarry = entity number         O(1) lookup for "what is in my
+                                            hands", instead of a scan of every
+                                            edict on every press
+  prop->physmovetype = saved movetype       restored on release, so a prop that
+                                            was a TOSS stays a TOSS
+
+The prop is deliberately NOT given a new movetype number: MOVETYPE_FOLLOW is a
+documented QC value, and inventing a number the progs have never seen would
+break the moment some mod's QC looks at movetype.
+===================
+*/
+
+/* Read/write a QC entity field by cached offset. GetEdictFieldValue() returns
+ * NULL for an offset of -1, which is exactly what an entity field the mod does
+ * not declare looks like -- so a missing field reads as 0 and is not written. */
+static float SV_CarryFieldFloat (const edict_t *ent, int ofs)
+{
+	eval_t	*val = GetEdictFieldValue ((edict_t *)ent, ofs);
+
+	return val ? val->_float : 0.0f;
+}
+
+static void SV_CarrySetFieldFloat (edict_t *ent, int ofs, float value)
+{
+	eval_t	*val = GetEdictFieldValue (ent, ofs);
+
+	if (val)
+		val->_float = value;
+}
+
+/*
+===================
+SV_CarryCanGrab
+
+Is this something the action key may pick up? Narrow on purpose, and every test
+below corresponds to a way the carry loop could otherwise break:
+
+  * the tag: without it +use is a button press, exactly as before;
+  * SOLID_BBOX: a BSP brush or a trigger is part of the map, not a prop;
+  * no FL_MONSTER: a monster must never be carried (and id1's monsters would
+    fight the follow movetype);
+  * not NONE/NOCLIP: those movetypes mean "does not move" and "ignores the
+    world", so there is no physics to give back on release;
+  * not FOLLOW: already in someone's hands;
+  * no owner: a rocket or a thrown object belongs to somebody.
+===================
+*/
+qboolean SV_CarryCanGrab (const edict_t *target)
+{
+	if (!target || target->free)
+		return false;
+	if (!SV_CarryFieldFloat (target, qcvm->extfields.physdynamic))
+		return false;
+	if (target->v.solid != SOLID_BBOX)
+		return false;
+	if ((int)target->v.flags & FL_MONSTER)
+		return false;
+	if (target->v.movetype == MOVETYPE_EXT_FOLLOW || target->v.movetype == MOVETYPE_NONE
+	    || target->v.movetype == MOVETYPE_NOCLIP)
+		return false;
+	if (target->v.owner)
+		return false;
+	if (!target->v.modelindex)
+		return false;
+	return true;
+}
+
+/*
+===================
+SV_CarryHeld
+
+What is in this player's hands, if anything. The number is checked against the
+entity itself rather than trusted: an entity can be freed (or the field left
+over from a previous level) while the player still has the number.
+===================
+*/
+edict_t *SV_CarryHeld (edict_t *player)
+{
+	edict_t	*prop;
+	int		num;
+
+	if (!player || player->free)
+		return NULL;
+
+	num = (int)SV_CarryFieldFloat (player, qcvm->extfields.physcarry);
+	if (num <= 0 || num >= qcvm->num_edicts)
+		return NULL;
+
+	prop = EDICT_NUM (num);
+	if (prop->free || prop->v.movetype != MOVETYPE_EXT_FOLLOW)
+		return NULL;
+	if (prop->v.owner != EDICT_TO_PROG (player))
+		return NULL;
+
+	return prop;
+}
+
+/*
+===================
+SV_CarryFindTarget
+
+What would the action key pick up? First the thing actually under the crosshair,
+then -- because a crate on the floor sits below a horizontal look -- the nearest
+prop within reach that is in front of the player and not behind a wall.
+
+The aim trace uses MOVE_NORMAL, not MOVE_NOMONSTERS: in this engine
+MOVE_NOMONSTERS only collides with SOLID_BSP (world.c:1250), so a SOLID_BBOX
+prop is invisible to it. That matters -- reusing SV_UseFindTarget's trace here
+would mean the crosshair never sees the very entities this feature is for.
+
+The second pass uses MOVE_NOMONSTERS for the opposite reason: for "can I see
+it?" only world geometry may say no, never another prop or a corpse.
+===================
+*/
+static edict_t *SV_CarryFindTarget (edict_t *player)
+{
+	vec3_t	forward, right, up, eye, end, center, delta;
+	trace_t	trace, los;
+	edict_t	*best = NULL;
+	float	best_dist = SV_USE_RANGE + 0.01f;
+	int		i;
+
+	AngleVectors (player->v.v_angle, forward, right, up);
+	VectorAdd (player->v.origin, player->v.view_ofs, eye);
+	VectorMA (eye, SV_USE_RANGE, forward, end);
+
+	trace = SV_Move (eye, vec3_origin, vec3_origin, end, MOVE_NORMAL, player);
+	if (trace.ent && !trace.ent->free && trace.ent != player && SV_CarryCanGrab (trace.ent))
+		return trace.ent;
+
+	for (i = 1; i < qcvm->num_edicts; i++)
+	{
+		edict_t	*e = EDICT_NUM (i);
+		float	d;
+
+		if (e->free || e == player || !SV_CarryCanGrab (e))
+			continue;
+
+		d = SV_UsePointBoxDistance (e->v.absmin, e->v.absmax, eye);
+		if (d > SV_USE_RANGE || d >= best_dist)
+			continue;
+
+		VectorAdd (e->v.absmin, e->v.absmax, center);
+		VectorScale (center, 0.5f, center);
+		VectorSubtract (center, eye, delta);
+		if (DotProduct (delta, forward) <= 0)
+			continue;	// behind the player: never grab backwards
+
+		los = SV_Move (eye, vec3_origin, vec3_origin, center, MOVE_NOMONSTERS, player);
+		if (los.fraction < 1 && los.ent != e)
+			continue;	// a wall is in the way
+
+		best = e;
+		best_dist = d;
+	}
+	return best;
+}
+
+/*
+===================
+SV_CarryUpdate
+
+Place the held prop for this frame. Called from SV_Physics_Follow() only for
+entities carrying the physdynamic tag, which is why the normal FOLLOW maths is
+not used: FOLLOW keys off aiment->angles (yaw only, no pitch) and treats
+view_ofs as a punchangle-rotated offset, none of which is what "held in front
+of the eyes" means.
+
+The trace is a hull trace with the prop's own box from the eye to the hold
+point, so the prop stops at a wall instead of being pushed through it. It is
+MOVE_NOMONSTERS because two props must not block each other while carried --
+only the world matters here.
+===================
+*/
+void SV_CarryUpdate (edict_t *prop, edict_t *carrier)
+{
+	vec3_t	eye, forward, right, up, desired;
+	trace_t	trace;
+
+	if (!prop || prop->free)
+		return;
+
+	/* The hand that held it may be gone: dead, disconnected, or nocliping
+	 * through walls. Let go rather than drag a prop behind a corpse. */
+	if (!carrier || carrier->free || carrier->v.health <= 0
+	    || carrier->v.movetype == MOVETYPE_NONE || carrier->v.movetype == MOVETYPE_NOCLIP)
+	{
+		if (prop->v.owner)
+			SV_CarryRelease (PROG_TO_EDICT (prop->v.owner));
+		return;
+	}
+
+	VectorAdd (carrier->v.origin, carrier->v.view_ofs, eye);
+	AngleVectors (carrier->v.v_angle, forward, right, up);
+	VectorMA (eye, SV_CARRY_DIST, forward, desired);
+
+	trace = SV_Move (eye, prop->v.mins, prop->v.maxs, desired, MOVE_NOMONSTERS, prop);
+	VectorCopy ((trace.fraction < 1) ? trace.endpos : desired, prop->v.origin);
+
+	/* Yaw only: a crate that pitches with the view ends up standing on its
+	 * corner and reads as a bug, even though the box never rotates. */
+	prop->v.angles[0] = 0;
+	prop->v.angles[1] = carrier->v.v_angle[1];
+	prop->v.angles[2] = 0;
+
+	SV_LinkEdict (prop, false);
+}
+
+/*
+===================
+SV_CarryGrab
+
+Take the prop. Returns false (and changes nothing) if the hands are full or the
+entity is not carriable.
+===================
+*/
+qboolean SV_CarryGrab (edict_t *player, edict_t *prop)
+{
+	if (!player || player->free || !prop || prop->free)
+		return false;
+	if (SV_CarryHeld (player))
+		return false;
+	if (!SV_CarryCanGrab (prop))
+		return false;
+
+	/* Remembered before the movetype is overwritten: this is the only copy of
+	 * what the prop was, and the release path has nothing else to restore. */
+	SV_CarrySetFieldFloat (prop, qcvm->extfields.physmovetype, prop->v.movetype);
+	SV_CarrySetFieldFloat (player, qcvm->extfields.physcarry, (float)NUM_FOR_EDICT (prop));
+
+	prop->v.owner = EDICT_TO_PROG (player);
+	prop->v.aiment = EDICT_TO_PROG (player);
+	prop->v.movetype = MOVETYPE_EXT_FOLLOW;
+	prop->v.solid = SOLID_NOT;
+	prop->v.flags = (int)prop->v.flags & ~FL_ONGROUND;
+	prop->v.groundentity = 0;
+	VectorClear (prop->v.velocity);
+	VectorClear (prop->v.avelocity);
+	/* FOLLOW adds these; SV_CarryUpdate does not, so keep the prop's own
+	 * numbers out of the way before anything reads them. */
+	VectorClear (prop->v.view_ofs);
+	VectorClear (prop->v.v_angle);
+
+	SV_CarryUpdate (prop, player);
+	return true;
+}
+
+/*
+===================
+SV_CarryRelease
+
+Put the prop down where it is: same place the hold trace had it, with the
+player's own velocity so it keeps his momentum, and back to the movetype it had
+before it was picked up. Nothing is thrown -- releasing is not a throw.
+===================
+*/
+qboolean SV_CarryRelease (edict_t *player)
+{
+	edict_t	*prop;
+	int		movetype;
+
+	prop = SV_CarryHeld (player);
+	if (!prop)
+		return false;
+
+	SV_CarrySetFieldFloat (player, qcvm->extfields.physcarry, 0);
+
+	movetype = (int)SV_CarryFieldFloat (prop, qcvm->extfields.physmovetype);
+	SV_CarrySetFieldFloat (prop, qcvm->extfields.physmovetype, 0);
+	/* FOLLOW/NONE/NOCLIP cannot be "restored" into anything that moves, and
+	 * are also the three values that would leave the prop glued or inert, so
+	 * they fall back to a bouncing prop -- which is what a physics prop is. */
+	if (movetype == MOVETYPE_EXT_FOLLOW || movetype == MOVETYPE_NONE
+	    || movetype == MOVETYPE_NOCLIP)
+		movetype = MOVETYPE_BOUNCE;
+
+	prop->v.movetype = movetype;
+	prop->v.solid = SOLID_BBOX;
+	prop->v.owner = 0;
+	prop->v.aiment = 0;
+	prop->v.flags = (int)prop->v.flags & ~FL_ONGROUND;
+	prop->v.groundentity = 0;
+	VectorClear (prop->v.avelocity);
+	VectorCopy (player->v.velocity, prop->v.velocity);
+
+	SV_LinkEdict (prop, true);
+	return true;
+}
+
+/*
+===================
 SV_UsePress
 
-The action key was pressed this command: press whatever is in reach.
+The action key was pressed this command: put down what is in hand, or pick up a
+physics prop in reach, or press whatever is in reach.
 ===================
 */
 qboolean SV_UsePress (edict_t *player)
@@ -2505,6 +2826,18 @@ qboolean SV_UsePress (edict_t *player)
 		return false;	// dead players do not open doors
 	if (player->v.movetype == MOVETYPE_NONE || player->v.movetype == MOVETYPE_NOCLIP)
 		return false;
+
+	// Hands full: the same key puts the prop down, and does nothing else.
+	// Checked first so that a prop cannot be dropped and re-grabbed by one
+	// press, and so that a held crate does not hide a button behind it.
+	if (SV_CarryHeld (player))
+		return SV_CarryRelease (player);
+
+	// A physics prop in reach is picked up before anything is pressed: the tag
+	// is the map's way of saying "this object is meant to be handled".
+	target = SV_CarryFindTarget (player);
+	if (target)
+		return SV_CarryGrab (player, target);
 
 	target = SV_UseFindTarget (player);
 	if (!target)
