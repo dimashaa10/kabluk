@@ -3318,3 +3318,43 @@ grep -q 'R_RunParticleEffect(smokeorg, smoke_dir, SIGA_SMOKE_COLOR, SIGA_SMOKE_C
 echo "PASS: the cigarette smoke is vanilla unless the player selected a profile"
 echo "PASS: that provides the QSS-M effect, and a namespace loaded on the sly"
 echo "PASS: can no longer take over the engine's own effects."
+
+# ---- kick_touch: a kicked gib has to spin --------------------------------
+#
+# The engine integrates angles += avelocity * frametime (sv_phys.c:1488), skips
+# an entity entirely while FL_ONGROUND is set (1473), and ZEROES avelocity when
+# a tumbling body comes to rest (1516).  So a kick that only clears FL_ONGROUND
+# and adds velocity makes the gib fly but never turn: avelocity is what turns
+# it, and it has to be set on every kick.
+qf=Misc/qc/kick_touch.qc
+[ -f "$qf" ] || { echo "FAIL: $qf is missing"; exit 1; }
+[ "$(tr -cd '{' < "$qf" | wc -c)" -eq "$(tr -cd '}' < "$qf" | wc -c)" ] || {
+    echo "FAIL: $qf has unbalanced braces"
+    exit 1
+}
+tr -d '\r' < "$qf" | awk '/^void\(\) kick_touch =$/,/^};$/' > /tmp/kick.txt
+[ -s /tmp/kick.txt ] || { echo "FAIL: kick_touch is gone"; exit 1; }
+grep -q 'self.avelocity_x = ' /tmp/kick.txt && grep -q 'self.avelocity_y = ' /tmp/kick.txt \
+    && grep -q 'self.avelocity_z = ' /tmp/kick.txt || {
+    echo "FAIL: the kick sets no angular velocity, so the gib does not spin"
+    exit 1
+}
+# The order matters: FL_ONGROUND must be cleared, or SV_Physics_Toss returns
+# before it ever integrates avelocity.
+ground=$(grep -n 'FL_ONGROUND' /tmp/kick.txt | head -1 | cut -d: -f1)
+spin=$(grep -n 'self.avelocity_x = ' /tmp/kick.txt | head -1 | cut -d: -f1)
+[ -n "$ground" ] && [ -n "$spin" ] || { echo "FAIL: kick_touch lost its ground/spin code"; exit 1; }
+# A touch fires every frame the gib overlaps the player.
+grep -q 'fabs(self.velocity_x)' /tmp/kick.txt || {
+    echo "FAIL: nothing stops a resting gib being kicked every frame it"
+    echo "FAIL: overlaps the player"
+    exit 1
+}
+grep -q 'sound(self,' /tmp/kick.txt || {
+    echo "FAIL: the kick sound is played on the player again, where CHAN_ITEM"
+    echo "FAIL: collides with item pickups"
+    exit 1
+}
+echo "PASS: a kicked gib gets angular velocity on all three axes, has its"
+echo "PASS: FL_ONGROUND cleared so the engine will integrate it, and cannot be"
+echo "PASS: kicked again until it has come to rest."
