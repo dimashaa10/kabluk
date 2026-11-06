@@ -157,7 +157,21 @@ static qboolean Image_RefuseHugePixels (const char *path, long w, long h)
 #else
 #define IMG_MARK(x)	do { } while (0)
 #define IMG_REFUSE_IF_HUGE(path)	do { } while (0)
-#define IMG_REFUSE_IF_HUGE_PIXELS(path, w, h)	do { } while (0)
+/* FOUR parameters, the same as the console variant above.
+ *
+ * It took three, and every call site in this file passes four -- the name, the
+ * width, the height and the FILE* the decoder is reading.  The console build
+ * uses the four-argument form and compiled fine; a PC build stopped at
+ *
+ *     image.c:460:75: error: macro "IMG_REFUSE_IF_HUGE_PIXELS" passed 4
+ *                    arguments, but takes just 3
+ *
+ * and repeated it at all six call sites.  That is a build break, not a warning,
+ * so the desktop build has not compiled at all since the console's pixel guard
+ * was added.  Nothing about the desktop build needs to close that file, so the
+ * body is empty -- but the signature has to match the callers. */
+#define IMG_REFUSE_IF_HUGE_PIXELS(path, w, h, stream) \
+	do { (void)(path); (void)(w); (void)(h); (void)(stream); } while (0)
 #endif
 
 extern cvar_t gl_load24bit_skins; // woods #loadskins
