@@ -41,7 +41,6 @@ float	*velocity;
 
 qboolean	onground;
 qboolean	prevonground; // woods #qwbunnyhop
-vec3_t velocitybeforethink; // woods #qwbunnyhop
 
 usercmd_t	cmd;
 
@@ -336,21 +335,32 @@ void SV_NoclipMove (void)
 	}
 }
 
-static void SV_UpdateSpeedInfo (void) // woods #speedometer
+/*
+===================
+SV_UpdateSpeedInfo
+
+Publishes the horizontal speed for the HUD speedometer. Callers must pass the
+velocity *after* the frame's movement: on the engine path that is the velocity
+SV_AirMove/SV_WaterMove/SV_SkateMove produced, on the pmove path the one the
+shared move wrote back into the edict. Missing the pmove call is what kept the
+speedometer permanently hidden for pmove clients.
+===================
+*/
+void SV_UpdateSpeedInfo (const vec3_t vel, const usercmd_t *ucmd, qboolean grounded) // woods #speedometer
 {
 	float fmove, smove;
 
-	fmove = cmd.forwardmove;
-	smove = cmd.sidemove;
+	fmove = ucmd->forwardmove;
+	smove = ucmd->sidemove;
 
 	// If jumping record whether directional keys pressed, to indicate a bad power bunny hop.
-	if (onground && sv_player->v.button2)
+	if (grounded && sv_player->v.button2)
 	{
  		speed_info.jump_fmove = fmove;
 		speed_info.jump_smove = smove;
 	}
 
-	speed_info.speed = sqrt(velocity[0] * velocity[0] + velocity[1] * velocity[1]);
+	speed_info.speed = sqrt(vel[0] * vel[0] + vel[1] * vel[1]);
 }
 
 /*
@@ -386,7 +396,7 @@ void SV_AirMove (void)
 	wishspeed = VectorNormalize(wishdir);
 	maxspeed = sv_maxspeed.value;
 	if (host_client && host_client->crouched && !host_client->skate_active &&
-		sv_player->v.movetype == MOVETYPE_WALK)
+		!host_client->usingpmove && sv_player->v.movetype == MOVETYPE_WALK && onground)
 		maxspeed = q_min(maxspeed, SV_CROUCH_MAX_SPEED);
 	if (wishspeed > maxspeed)
 	{
@@ -430,6 +440,14 @@ static void SV_ClampCrouchSpeed (client_t *client, edict_t *ent)
 
 	if (!client || !ent || !client->crouched || client->skate_active ||
 		ent->v.health <= 0 || ent->v.movetype != MOVETYPE_WALK)
+		return;
+
+	// Crouching only limits ground movement. Clamping airborne or swimming
+	// velocity used to cancel crouch-jumps, bunny hops and every horizontal
+	// push (rocket jumps, triggers, teleports) for anyone holding crouch.
+	// The pmove path applies its own wish-speed cap and must not be second
+	// guessed here, or the client prediction would disagree with the server.
+	if (client->usingpmove || !((int)ent->v.flags & FL_ONGROUND) || ent->v.waterlevel >= 2)
 		return;
 
 	speed = sqrtf(ent->v.velocity[0] * ent->v.velocity[0] +
@@ -593,6 +611,17 @@ void SV_UpdateCrouchAnimation (client_t *client, edict_t *ent)
 
 	if (!client || !ent)
 		return;
+	/* This is the only crouch bookkeeping that runs for pmove clients (the hull
+	 * itself is handled inside PM_UpdateCrouch), so it is also the place that
+	 * has to hand the standing hull back when the player can no longer crouch:
+	 * death, respawn, noclip/spectator, or a skate transition. */
+	if (!client->spawned || ent->v.health <= 0 || ent->v.deadflag != DEAD_NO ||
+		ent->v.movetype != MOVETYPE_WALK)
+	{
+		if (client->crouch_bounds_saved)
+			SV_ResetCrouch(client, ent);
+		return;
+	}
 	if (!client->crouched || !client->crouch_bounds_saved || client->skate_active)
 	{
 		SV_ResetCrouchAnimation(client);
@@ -784,7 +813,10 @@ void SV_ClientThink (void)
 {
 	vec3_t		v_angle;
 
-	if (host_client && sv_player)
+	// Movement handled by the shared pmove crouches there, so the engine path
+	// must keep its hands off the hull. Otherwise it would snap the bounds and
+	// speed that the client already predicted.
+	if (host_client && sv_player && !host_client->usingpmove)
 		SV_UpdateCrouch(host_client, sv_player, host_client->cmd.upmove);
 
 	if (sv_player->v.movetype == MOVETYPE_NONE)
@@ -798,8 +830,6 @@ void SV_ClientThink (void)
 
 	origin = sv_player->v.origin;
 	velocity = sv_player->v.velocity;
-
-	for (int i = 0;i < 3;i++) velocitybeforethink[i] = velocity[i]; // woods #qwbunnyhop
 
 	DropPunchAngle ();
 
@@ -858,7 +888,7 @@ void SV_ClientThink (void)
 	//johnfitz
 
 	SV_ClampCrouchSpeed(host_client, sv_player);
-	SV_UpdateSpeedInfo (); // woods #speedometer
+	SV_UpdateSpeedInfo (velocity, &cmd, onground); // woods #speedometer
 }
 
 
@@ -944,7 +974,10 @@ static int SV_SkateAnimationFrame (client_t *client, const edict_t *ent)
 
 	// Airborne poses take priority over firing and locomotion. A jump climbs
 	// through 150-154, cycles 154-155 while falling, then lands on 156-158.
-	if (!grounded || rising)
+	// Only FL_ONGROUND decides this: a board rolling up a slope has an upward
+	// clipped velocity while it is still on the ground, and playing the jump
+	// and landing poses there looked like a phantom hop on every incline.
+	if (!grounded)
 	{
 		if (state != SKATE_ANIM_JUMP_ASCENT && state != SKATE_ANIM_JUMP_FALL)
 			SV_SkateAnimationBegin(client,
@@ -1091,7 +1124,9 @@ void SV_SkateStop (client_t *client)
 	client->skate_yaw = 0;
 	client->skate_grounded = false;
 	client->skate_jump_active = false;
+	client->skate_jump_input = false;
 	client->skate_slide_armed = false;
+	client->skate_slide_next_toggle = 0;
 	SV_SkateSlideClear(client);
 	SV_SkateAnimationReset(client);
 	client->skate_flip_active = false;
@@ -1144,6 +1179,14 @@ static float SV_SkateGroundLift (edict_t *ent, const qmodel_t *model)
 	return CLAMP(SKATE_GROUND_CLEARANCE, lift, SKATE_MAX_LIFT);
 }
 
+/* +jump is button2. Latch it from the input packet so QuakeC cannot clear the
+ * field before the takeoff is observed; bots and engine-path players fall back
+ * to the edict field. */
+static qboolean SV_SkateJumpPressed (const client_t *client, const edict_t *ent)
+{
+	return client->skate_jump_input || ent->v.button2 != 0;
+}
+
 static float SV_SkateJumpRoll (client_t *client, const edict_t *ent)
 {
 	qboolean grounded = !!((int)ent->v.flags & FL_ONGROUND);
@@ -1154,15 +1197,19 @@ static float SV_SkateJumpRoll (client_t *client, const edict_t *ent)
 		client->skate_jump_active = false;
 		client->skate_flip_active = false;
 		client->skate_flip_start_time = 0;
+		client->skate_jump_input = false; // rearm on the next press
 	}
 	else if (client->skate_grounded && ent->v.velocity[2] > 0 &&
-		!((int)ent->v.flags & FL_WATERJUMP))
+		!((int)ent->v.flags & FL_WATERJUMP) && SV_SkateJumpPressed(client, ent))
 	{
-		// An upward takeoff, not merely holding jump or falling off an edge.
-		// Normal QuakeC/native jump physics have already run at this point.
+		// A real upward takeoff: jumped this frame, so the rider is no longer
+		// touching ground. Rising without +jump (a slope, a jump pad, a push
+		// trigger) must not award a flip. Normal QuakeC/native jump physics
+		// have already run at this point.
 		client->skate_jump_active = true;
 		client->skate_flip_active = true;
 		client->skate_flip_start_time = qcvm->time;
+		client->skate_jump_input = false; // one flip per press
 	}
 	client->skate_grounded = grounded;
 	if (!client->skate_flip_active)
@@ -1370,7 +1417,7 @@ static qboolean SV_SkateSlideTopProbe (edict_t *ent, edict_t *surface,
 }
 
 static qboolean SV_SkateFindTopEdge (edict_t *ent, edict_t *surface,
-	float nx, float ny, float *edge_height)
+	float nx, float ny, float max_up, float *edge_height)
 {
 	vec3_t wallpoint;
 	float feet_z = ent->v.origin[2] + ent->v.mins[2];
@@ -1378,11 +1425,15 @@ static qboolean SV_SkateFindTopEdge (edict_t *ent, edict_t *surface,
 	float inset = radius + SKATE_SLIDE_EDGE_INSET;
 	float height, wall_distance;
 
+	// max_up is how far above the feet the lip may sit: a wall impact may
+	// mantle the full SKATE_SLIDE_EDGE_SNAP_UP, a tap only a small curb.
+	if (max_up > SKATE_SLIDE_EDGE_SNAP_UP)
+		max_up = SKATE_SLIDE_EDGE_SNAP_UP;
 	if (!SV_SkateSlideTopProbe(ent, surface, nx, ny, inset,
-		feet_z + SKATE_SLIDE_EDGE_SNAP_UP + SKATE_SLIDE_EDGE_SEARCH_PADDING,
+		feet_z + max_up + SKATE_SLIDE_EDGE_SEARCH_PADDING,
 		feet_z - SKATE_SLIDE_EDGE_SNAP_DOWN - SKATE_SLIDE_EDGE_SEARCH_PADDING,
 		&height) || height < feet_z - SKATE_SLIDE_EDGE_SNAP_DOWN ||
-		height > feet_z + SKATE_SLIDE_EDGE_SNAP_UP + SKATE_SLIDE_EDGE_SEARCH_PADDING)
+		height > feet_z + max_up + SKATE_SLIDE_EDGE_SEARCH_PADDING)
 		return false;
 
 	// A real upper corner has the same nearby wall face below the cap, but
@@ -1520,7 +1571,8 @@ static qboolean SV_SkateWallSlideInternal (edict_t *ent, edict_t *surface,
 	if (!from_tap && (speed < SKATE_SLIDE_MIN_SPEED ||
 		normal_speed > -SKATE_SLIDE_MIN_IMPACT_SPEED))
 		return false;
-	if (!SV_SkateFindTopEdge(ent, surface, nx, ny, &edge_height))
+	if (!SV_SkateFindTopEdge(ent, surface, nx, ny,
+		from_tap ? SKATE_SLIDE_TAP_SNAP_UP : SKATE_SLIDE_EDGE_SNAP_UP, &edge_height))
 		return false;
 
 	// First lift clear of the wall, then move the rider's center onto the
@@ -1591,12 +1643,20 @@ static qboolean SV_SkateTryAttachNearbyEdge (client_t *client)
 	vec3_t zero = {0, 0, 0}, start, end, best_normal = {0, 0, 0};
 	edict_t *ent, *best_surface = NULL;
 	float best_distance = SKATE_SLIDE_PROBE_DISTANCE + 1.0f;
-	float edge_height, angle, dx, dy, nx, ny, distance;
+	float edge_height, angle, dx, dy, nx, ny, distance, speed;
 	int direction, height;
 	trace_t trace;
 
 	if (!client || !client->active || !client->skate_active ||
 		!client->skate_slide_armed || client->skate_sliding || !(ent = client->edict))
+		return false;
+
+	// Tapping is a latch for a rider who is already rolling from the ground.
+	// Without this a standing player could alternate tap/tap-again and climb
+	// any vertical brush one lip at a time.
+	speed = sqrtf(ent->v.velocity[0] * ent->v.velocity[0] +
+		ent->v.velocity[1] * ent->v.velocity[1]);
+	if (!((int)ent->v.flags & FL_ONGROUND) || speed < SKATE_SLIDE_TAP_MIN_SPEED)
 		return false;
 
 	// Sweep radial point probes around the rider at several body heights. This
@@ -1625,7 +1685,7 @@ static qboolean SV_SkateTryAttachNearbyEdge (client_t *client)
 				(trace.endpos[1] - ent->v.origin[1]) *
 				(trace.endpos[1] - ent->v.origin[1]));
 			if (distance >= best_distance ||
-				!SV_SkateFindTopEdge(ent, trace.ent, nx, ny, &edge_height))
+				!SV_SkateFindTopEdge(ent, trace.ent, nx, ny, SKATE_SLIDE_TAP_SNAP_UP, &edge_height))
 				continue;
 			best_distance = distance;
 			best_surface = trace.ent;
@@ -1652,8 +1712,12 @@ qboolean SV_SkateWallBounce (edict_t *ent, const vec3_t normal, const vec3_t inc
 
 	// Only rebound from vertical surfaces during a real jump, not from floors,
 	// ceilings, walking into a wall, or simply falling off an edge.
-	if (((int)ent->v.flags & (FL_ONGROUND | FL_WATERJUMP)) ||
-		!(client->skate_jump_active || (client->skate_grounded && ent->v.velocity[2] > 0)))
+	// FL_ONGROUND is cleared by SV_WalkMove before the sweep, so "still on the
+	// ground" has to come from the previous skate update. That also rules out
+	// riding up a slope, where the clipped velocity points upward while the
+	// rider never leaves the ground.
+	if (((int)ent->v.flags & (FL_ONGROUND | FL_WATERJUMP)) || client->skate_grounded ||
+		!(client->skate_jump_active || ent->v.velocity[2] > 0))
 		return false;
 
 	if (fabsf(normal[2]) > SKATE_WALL_BOUNCE_MAX_NORMAL_Z)
@@ -1696,6 +1760,16 @@ static client_t *SV_SkateSlideCommandClient (qboolean require_skate)
 
 static void SV_SkateSlideToggle (client_t *client, qboolean report)
 {
+	// Bound how often a client can toggle: each attach runs dozens of brush
+	// probes, and unthrottled taps turned +skate_slide into a climbing lift.
+	if (qcvm && qcvm->time < client->skate_slide_next_toggle)
+	{
+		if (report)
+			SV_ClientPrintf("Wait a moment before toggling the slide again.\n");
+		return;
+	}
+	client->skate_slide_next_toggle = (qcvm ? qcvm->time : 0) + SKATE_SLIDE_TOGGLE_COOLDOWN;
+
 	if (client->skate_slide_armed || client->skate_sliding)
 	{
 		client->skate_slide_armed = false;
@@ -1821,7 +1895,9 @@ void SV_Skate_f (void)
 	host_client->skate_yaw = ent->v.v_angle[YAW];
 	host_client->skate_grounded = !!((int)ent->v.flags & FL_ONGROUND);
 	host_client->skate_jump_active = false;
+	host_client->skate_jump_input = ent->v.button2 != 0;
 	host_client->skate_slide_armed = false;
+	host_client->skate_slide_next_toggle = 0;
 	SV_SkateSlideClear(host_client);
 	SV_SkateAnimationReset(host_client);
 	host_client->skate_flip_active = false;
@@ -1990,6 +2066,820 @@ void SV_CigarettePostThink (client_t *client, edict_t *ent, float saved_button0,
 
 /*
 ===================
+Use (action) key
+
+Half-Life style: +use presses a nearby button instead of the player having to
+walk into it.
+
+The important part is *what* may be pressed. Almost everything interactive in a
+Quake-derived progs carries a `.use` function - func_door sets door_use, secret
+doors set their own, and so on - so "call .use on whatever is in front of the
+player" would let the action key open doors that the map meant to open only from
+a trigger or a key. The action key therefore only considers entities whose
+classname is in SV_USE_CLASSES (plain `func_button`, the one entity type the map
+authors make explicitly pressable), and it trusts the progs with everything else:
+the button's own use function still runs the target's key check, so a key-locked
+button behaves exactly as if it had been walked into.
+
+This is deliberately fixed behaviour rather than something the player (or a
+server admin) can tune: nerfing the range or widening the classname list would
+either make the key useless or let it open things the map did not intend. The
+values live here as constants and are not registered as cvars.
+
+Pressed entities must also look pressable, which filters out the rest:
+  * brush solid (SOLID_BSP) and MOVETYPE_PUSH - a real button/switch brush,
+  * has a .use function to invoke,
+  * not shoot-only: a func_button with `health` set is meant to be shot,
+    not pressed (see the func_button documentation in id's buttons.qc).
+===================
+*/
+/* SV_USE_CLASSES / SV_USE_RANGE live in server.h so the rules are visible next to
+ * the prototypes, and so tests can assert them. These two are private here. */
+#define	SV_USE_SLOP		8.0f	// how far the aim point may be from a button brush
+#define	SV_USE_COOLDOWN	0.2		// seconds between two presses of one client
+#define	SV_USE_BUTTONBIT	4u	// button bit 2: +use (also self.button3 for QC)
+
+/*
+===================
+SV_UseClassListed
+
+Does the space/comma separated classname list contain this exact classname?
+Case insensitive, because map classnames are not written consistently.
+===================
+*/
+static qboolean SV_UseNameEquals (const char *a, const char *b, size_t len)
+{
+	size_t	 i;
+
+	for (i = 0; i < len; i++)
+	{
+		int	ca = (unsigned char)a[i];
+		int	cb = (unsigned char)b[i];
+
+		if (ca >= 'A' && ca <= 'Z')
+			ca += 'a' - 'A';
+		if (cb >= 'A' && cb <= 'Z')
+			cb += 'a' - 'A';
+		if (ca != cb)
+			return false;
+	}
+	return true;
+}
+
+qboolean SV_UseClassListed (const char *list, const char *classname)
+{
+	const char	*p = list;
+	size_t		len;
+
+	if (!list || !classname || !*classname)
+		return false;
+
+	len = strlen (classname);
+	while (*p)
+	{
+		const char	*start;
+		size_t		curlen;
+
+		while (*p == ' ' || *p == '\t' || *p == ',' || *p == ';')
+			p++;
+		if (!*p)
+			break;
+
+		start = p;
+		while (*p && *p != ' ' && *p != '\t' && *p != ',' && *p != ';')
+			p++;
+
+		curlen = (size_t)(p - start);
+		if (curlen == len && SV_UseNameEquals (start, classname, len))
+			return true;
+	}
+	return false;
+}
+
+/*
+===================
+SV_UseEntityAllowed
+
+Is this something the action key may press? Deliberately narrow: only the
+classnames the map/game marked as buttons, only brush solids that push, only
+things with a use function, and never shoot-only buttons.
+===================
+*/
+qboolean SV_UseEntityAllowed (const edict_t *target)
+{
+	const char	*classname;
+
+	if (!target || target->free)
+		return false;
+
+	if (target->v.solid != SOLID_BSP || target->v.movetype != MOVETYPE_PUSH)
+		return false;
+	if (!target->v.use)
+		return false;
+	if (target->v.health > 0)
+		return false;	// shoot-only button: the map wants a bullet, not a hand
+
+	if (!target->v.classname)
+		return false;
+	classname = PR_GetString (target->v.classname);
+	if (!classname || !*classname)
+		return false;
+
+	return SV_UseClassListed (SV_USE_CLASSES, classname);
+}
+
+/* Shortest distance from a point to an entity's axis-aligned box. */
+static float SV_UsePointBoxDistance (const vec3_t mins, const vec3_t maxs, const vec3_t point)
+{
+	float	dist2 = 0;
+	int		i;
+
+	for (i = 0; i < 3; i++)
+	{
+		if (point[i] < mins[i])
+			dist2 += (mins[i] - point[i]) * (mins[i] - point[i]);
+		else if (point[i] > maxs[i])
+			dist2 += (point[i] - maxs[i]) * (point[i] - maxs[i]);
+	}
+	return sqrtf (dist2);
+}
+
+#if defined(PLATFORM_PSP) || defined(__psp__)
+/*
+===================
+SV_UseTrace
+
+One line in the port's log per press of the action key, so that "the button can
+be pressed" is something the log shows instead of something I claim.
+
+Rules for this log line, because a log that fills the panel is worse than no
+log at all: it is written ONLY on the edge of the key (see SV_UseInputEdge, which
+already rate-limits at SV_USE_COOLDOWN), never per frame -- holding the key down
+writes nothing.  A press that finds nothing says why, including how far away the
+nearest thing that LOOKS like a button was, because "nothing happens" on the
+console is otherwise indistinguishable from "the key is not wired at all".
+===================
+*/
+static void SV_UseTrace (edict_t *player, qboolean pressed)
+{
+	vec3_t		eye, forward, right, up, center;
+	edict_t	*nearest = NULL;
+	const char	*nearest_class = "?";
+	const char	*why = "out of reach";
+	float		near_dist = 1.0e9f;
+	int			near_num = 0, i;
+
+	extern void psp_tracef (const char *fmt, ...);
+	/* SV_UseFindTarget is a query: it reads the world and changes nothing, so
+	 * asking it a second time here for the entity's name is safe. */
+	edict_t	*aimed = SV_UseFindTarget (player);
+
+	if (pressed)
+	{
+		float	dx, dy, dz;
+
+		if (!aimed)
+		{
+			psp_tracef ("use: a press was consumed but nothing was in reach");
+			return;
+		}
+
+		VectorAdd (player->v.origin, player->v.view_ofs, eye);
+		VectorAdd (aimed->v.absmin, aimed->v.absmax, center);
+		VectorScale (center, 0.5f, center);
+
+		dx = center[0] - eye[0];
+		dy = center[1] - eye[1];
+		dz = center[2] - eye[2];
+
+		/* Whole units: nothing in the port asks the console's printf for
+		 * float formatting, and this line must not be the first. */
+		psp_tracef ("use: pressed %s #%d, %d units to its centre (range %d)",
+		            PR_GetString (aimed->v.classname),
+		            (int)(((byte *)aimed - (byte *)qcvm->edicts) /
+		                  (size_t)qcvm->edict_size),
+		            (int)sqrtf (dx*dx + dy*dy + dz*dz), (int)SV_USE_RANGE);
+		return;
+	}
+
+	/* Why was nothing pressed?  The first two answers are about the player,
+	 * not about what he is aiming at. */
+	if (player->v.health <= 0)
+	{
+		psp_tracef ("use: nothing pressed -- the player is dead");
+		return;
+	}
+	if (player->v.movetype == MOVETYPE_NONE || player->v.movetype == MOVETYPE_NOCLIP)
+	{
+		psp_tracef ("use: nothing pressed -- movetype %d cannot use things",
+		            (int)player->v.movetype);
+		return;
+	}
+
+	/* Nothing was pressed.  Find the nearest entity the map calls a button and
+	 * say which test it failed -- that is the difference between "aim higher"
+	 * and "this map has no buttons". */
+	AngleVectors (player->v.v_angle, forward, right, up);
+	VectorAdd (player->v.origin, player->v.view_ofs, eye);
+
+	for (i = 1; i < qcvm->num_edicts; i++)
+	{
+		edict_t	*e = (edict_t *)((byte *)qcvm->edicts + (size_t)i * qcvm->edict_size);
+		const char *classname;
+		float	d;
+
+		if (e->free || e == player || !e->v.classname)
+			continue;
+		classname = PR_GetString (e->v.classname);
+		if (!classname || !SV_UseClassListed (SV_USE_CLASSES, classname))
+			continue;
+
+		d = SV_UsePointBoxDistance (e->v.absmin, e->v.absmax, eye);
+		if (d >= near_dist)
+			continue;
+
+		near_dist = d;
+		nearest = e;
+		nearest_class = classname;
+		near_num = i;
+	}
+
+	if (!nearest)
+	{
+		psp_tracef ("use: nothing pressed -- this map has no %s within "
+		            "qcvm->num_edicts %d (cannot open a door with it by design)",
+		            SV_USE_CLASSES, qcvm->num_edicts);
+		return;
+	}
+
+	if (nearest->v.health > 0)
+		why = "shoot-only (health is set)";
+	else if (!nearest->v.use)
+		why = "no use function";
+	else if (nearest->v.solid != SOLID_BSP || nearest->v.movetype != MOVETYPE_PUSH)
+		why = "not a push brush";
+	else if (near_dist > SV_USE_RANGE)
+		why = "out of range";
+
+	psp_tracef ("use: nothing pressed -- nearest %s #%d is %d units away, "
+	            "range %d: %s",
+	            nearest_class, near_num, (int)near_dist, (int)SV_USE_RANGE, why);
+}
+#endif
+
+/*
+===================
+SV_UseFindTarget
+
+What would +use press right now, if anything? Traces from the eye along the
+view for SV_USE_RANGE units and then accepts a pressable brush touching the aim
+point. The second step matters because a button is normally a brush set into a
+wall: the trace can stop on the wall face, or on the shared plane between the
+wall and the button, and either of those is still "aiming at the button".
+===================
+*/
+edict_t *SV_UseFindTarget (edict_t *player)
+{
+	vec3_t		forward, right, up, eye, end, center, delta;
+	trace_t		trace;
+	edict_t		*best = NULL;
+	float		best_dist = SV_USE_SLOP + 0.01f;
+	int			i;
+
+	if (!player || player->free)
+		return NULL;
+
+	AngleVectors (player->v.v_angle, forward, right, up);	// this one wants all three
+	VectorAdd (player->v.origin, player->v.view_ofs, eye);
+	VectorMA (eye, SV_USE_RANGE, forward, end);
+
+	// MOVE_NOMONSTERS: monsters, items and triggers must not swallow the press.
+	trace = SV_Move (eye, vec3_origin, vec3_origin, end, MOVE_NOMONSTERS, player);
+	if (trace.fraction == 1 && !trace.startsolid)
+		return NULL;	// nothing within reach
+
+	if (trace.ent && !trace.ent->free && trace.ent != player && SV_UseEntityAllowed (trace.ent))
+		return trace.ent;
+
+	for (i = 1; i < qcvm->num_edicts; i++)
+	{
+		edict_t	*e = (edict_t *)((byte *)qcvm->edicts + (size_t)i * qcvm->edict_size);
+		float	d;
+
+		if (e->free || e == player || !SV_UseEntityAllowed (e))
+			continue;
+
+		d = SV_UsePointBoxDistance (e->v.absmin, e->v.absmax, trace.endpos);
+		if (d >= best_dist)
+			continue;
+
+		// Must be in front of the player, not a button behind or under him.
+		VectorAdd (e->v.absmin, e->v.absmax, center);
+		VectorScale (center, 0.5f, center);
+		VectorSubtract (center, eye, delta);
+		if (DotProduct (delta, forward) <= 0)
+			continue;
+
+		best = e;
+		best_dist = d;
+	}
+	return best;
+}
+
+/*
+===================
+SV_UseExecute
+
+Runs the entity's use function with the player as both `other` and the progs'
+`activator` global, which is what button_use/door_use read to decide who is
+pressing and which keys he carries.
+===================
+*/
+void SV_UseExecute (edict_t *player, edict_t *target)
+{
+	int		old_self, old_other;
+	float	old_time;
+	int		*activator = NULL;
+	int		old_activator = 0;
+	ddef_t	*def;
+
+	if (!target || target->free || !target->v.use || !player || player->free)
+		return;
+
+	// `activator` is declared by the progs (id1 and QW both do); if this game
+	// does not declare it, `other` is still set the same way.
+	def = ED_FindGlobal ("activator");
+	if (def)
+	{
+		activator = (int *)qcvm->globals + def->ofs;
+		old_activator = *activator;
+		*activator = EDICT_TO_PROG(player);
+	}
+
+	old_self = pr_global_struct->self;
+	old_other = pr_global_struct->other;
+	old_time = pr_global_struct->time;
+
+	pr_global_struct->self = EDICT_TO_PROG(target);
+	pr_global_struct->other = EDICT_TO_PROG(player);
+	pr_global_struct->time = qcvm->time;
+	PR_ExecuteProgram (target->v.use);
+
+	pr_global_struct->self = old_self;
+	pr_global_struct->other = old_other;
+	pr_global_struct->time = old_time;
+
+	if (activator)
+		*activator = old_activator;
+}
+
+/*
+===================
+SV_UseInputEdge
+
+Called once per client command with that command's button bits. Returns true
+exactly once per key press: holding the key must not fire the button every
+frame, and a client that spams the bit is limited to one attempt per 0.2 s.
+===================
+*/
+void SV_ResetActionKey (client_t *client)
+{
+	if (!client)
+		return;
+
+	/* Both fields are expressed in qcvm->time's clock, and that clock is
+	 * restarted at every level spawn -- see the note above SV_UseInputEdge. */
+	client->use_held = false;
+	client->use_nexttime = 0.0;
+}
+
+qboolean SV_UseInputEdge (client_t *client, unsigned int buttonbits)
+{
+	qboolean	use_down = (buttonbits & SV_USE_BUTTONBIT) != 0;
+	qboolean	edge = use_down && !client->use_held;
+
+	client->use_held = use_down;
+
+	/* A cooldown may never outlive SV_USE_COOLDOWN.
+	 *
+	 * use_nexttime is an ABSOLUTE time in the QCVM's clock, and qcvm->time
+	 * is reset to 1.0 at every level spawn (sv_main.c:3912).  A client_t
+	 * survives a changelevel -- Host_ClearMemory() (host.c:1108) does not
+	 * touch svs.clients, and Host_Reconnect_Sv_f() (host_cmd.c:2861) only
+	 * resets the signon, it does not drop the connection -- so a press made
+	 * at 415 seconds on the old map left use_nexttime = 415.2, and every
+	 * press on the new map was refused until that map's OWN clock reached
+	 * 415 seconds.  It looked permanent, and it was reported that way: the
+	 * only thing that cleared it was a save and a reload, because loading
+	 * calls Host_ShutdownServer() (host_cmd.c:3357), the one place that
+	 * memsets svs.clients (host.c:1096).
+	 *
+	 * SV_SendServerinfo() now calls SV_ResetActionKey() for every level, so
+	 * the stale value should not exist at all; this line is the invariant
+	 * that makes it impossible rather than unlikely -- whatever code
+	 * restarts the clock next. */
+	if (client->use_nexttime > qcvm->time + SV_USE_COOLDOWN)
+		client->use_nexttime = 0.0;
+
+	if (!edge || qcvm->time < client->use_nexttime)
+		return false;
+
+	client->use_nexttime = qcvm->time + SV_USE_COOLDOWN;
+	return true;
+}
+
+/*
+===================
+Carrying a physdynamic prop
+
+An entity with `physdynamic` set is a physics prop (see Misc/qc/prop_phystest.qc).
+The action key picks one up, holds it in front of the player, and puts it down
+again. This is engine behaviour on purpose: the tag has to work for a map that
+has no idea the game has a carrying system, and the mod's QC needs no code for
+it beyond ".float physdynamic;" in defs.qc if it wants to read the tag itself.
+
+WHAT "HELD" MEANS IN THE ENTITY, because every one of these is load-bearing:
+
+  prop->v.movetype = MOVETYPE_FOLLOW (12)   the marker, and the per-frame hook:
+                                            SV_Physics() dispatches it to
+                                            SV_Physics_Follow(), which
+                                            SV_CarryUpdate() takes over
+                                            (sv_phys.c). Nothing else in the
+                                            engine positions a held prop.
+  prop->v.aiment   = player                 what FOLLOW follows in general;
+                                            SV_CarryUpdate re-derives the real
+                                            point from the view instead, so the
+                                            normal FOLLOW maths never runs for
+                                            a physdynamic entity
+  prop->v.solid    = SOLID_NOT              a solid box hung in front of the
+                                            face stops the owner from moving:
+                                            pmove would report it as a touch
+                                            and SV_Impact would shove the prop
+                                            into him every frame
+  prop->v.owner    = player                 who is holding it; also blocks a
+                                            second grab and hides it from the
+                                            owner's own pmove clip list
+  player->physcarry = entity number         O(1) lookup for "what is in my
+                                            hands", instead of a scan of every
+                                            edict on every press
+  prop->physmovetype = saved movetype       restored on release, so a prop that
+                                            was a TOSS stays a TOSS
+
+The prop is deliberately NOT given a new movetype number: MOVETYPE_FOLLOW is a
+documented QC value, and inventing a number the progs have never seen would
+break the moment some mod's QC looks at movetype.
+===================
+*/
+
+/* Read/write a QC entity field by cached offset. GetEdictFieldValue() returns
+ * NULL for an offset of -1, which is exactly what an entity field the mod does
+ * not declare looks like -- so a missing field reads as 0 and is not written. */
+static float SV_CarryFieldFloat (const edict_t *ent, int ofs)
+{
+	eval_t	*val = GetEdictFieldValue ((edict_t *)ent, ofs);
+
+	return val ? val->_float : 0.0f;
+}
+
+static void SV_CarrySetFieldFloat (edict_t *ent, int ofs, float value)
+{
+	eval_t	*val = GetEdictFieldValue (ent, ofs);
+
+	if (val)
+		val->_float = value;
+}
+
+/*
+===================
+SV_CarryCanGrab
+
+Is this something the action key may pick up? Narrow on purpose, and every test
+below corresponds to a way the carry loop could otherwise break:
+
+  * the tag: without it +use is a button press, exactly as before;
+  * SOLID_BBOX or SOLID_TRIGGER: two kinds of prop, and no others. A brush
+    (SOLID_BSP) is map geometry and must never be lifted out of a wall, and
+    SOLID_NOT is not a thing in the world at all. SOLID_TRIGGER is here for
+    gibs: id's ThrowGib/ThrowHead make them triggers with a zero-size box on
+    purpose (`// myach`), so refusing triggers would mean refusing exactly the
+    objects that look most like something to pick up;
+  * no LIVE monster: FL_MONSTER with health above zero is a monster that would
+    fight the follow movetype. The same flag with health at zero is the head
+    gib ThrowHead() reuses a dead monster's own edict for, and that is a prop;
+  * not NONE/NOCLIP: those movetypes mean "does not move" and "ignores the
+    world", so there is no physics to give back on release;
+  * not FOLLOW: already in someone's hands;
+  * no owner: a rocket or a thrown object belongs to somebody.
+===================
+*/
+qboolean SV_CarryCanGrab (const edict_t *target)
+{
+	if (!target || target->free)
+		return false;
+	if (!SV_CarryFieldFloat (target, qcvm->extfields.physdynamic))
+		return false;
+	if (target->v.solid != SOLID_BBOX && target->v.solid != SOLID_TRIGGER)
+		return false;
+	/* A dead monster's own edict is what ThrowHead() turns into a head gib:
+	 * same edict, FL_MONSTER still set, health already zeroed. Live monsters
+	 * stay out, corpse heads do not. */
+	if (((int)target->v.flags & FL_MONSTER) && target->v.health > 0)
+		return false;
+	if (target->v.movetype == MOVETYPE_EXT_FOLLOW || target->v.movetype == MOVETYPE_NONE
+	    || target->v.movetype == MOVETYPE_NOCLIP)
+		return false;
+	if (target->v.owner)
+		return false;
+	if (!target->v.modelindex)
+		return false;
+	return true;
+}
+
+/*
+===================
+SV_CarryHeld
+
+What is in this player's hands, if anything. The number is checked against the
+entity itself rather than trusted: an entity can be freed (or the field left
+over from a previous level) while the player still has the number.
+===================
+*/
+edict_t *SV_CarryHeld (edict_t *player)
+{
+	edict_t	*prop;
+	int		num;
+
+	if (!player || player->free)
+		return NULL;
+
+	num = (int)SV_CarryFieldFloat (player, qcvm->extfields.physcarry);
+	if (num <= 0 || num >= qcvm->num_edicts)
+		return NULL;
+
+	prop = EDICT_NUM (num);
+	if (prop->free || prop->v.movetype != MOVETYPE_EXT_FOLLOW)
+		return NULL;
+	if (prop->v.owner != EDICT_TO_PROG (player))
+		return NULL;
+
+	return prop;
+}
+
+/*
+===================
+SV_CarryFindTarget
+
+What would the action key pick up? First the thing actually under the crosshair,
+then -- because a crate on the floor sits below a horizontal look -- the nearest
+prop within reach that is in front of the player and not behind a wall.
+
+The aim trace uses MOVE_NORMAL, not MOVE_NOMONSTERS: in this engine
+MOVE_NOMONSTERS only collides with SOLID_BSP (world.c:1250), so a SOLID_BBOX
+prop is invisible to it. That matters -- reusing SV_UseFindTarget's trace here
+would mean the crosshair never sees the very entities this feature is for.
+
+A SOLID_TRIGGER prop (a gib) is invisible to the crosshair trace for a different
+reason: triggers live in their own list (SV_LinkEdict, world.c), and no
+SV_Move() ever clips against them. A gib is therefore only ever found by the
+scan below -- which is fine, because a gib lies on the floor and the scan is
+exactly the "what is lying near my feet in front of me" question.
+
+The second pass uses MOVE_NOMONSTERS for the opposite reason: for "can I see
+it?" only world geometry may say no, never another prop or a corpse.
+===================
+*/
+static edict_t *SV_CarryFindTarget (edict_t *player)
+{
+	vec3_t	forward, right, up, eye, end, center, delta;
+	trace_t	trace, los;
+	edict_t	*best = NULL;
+	float	best_dist = SV_USE_RANGE + 0.01f;
+	int		i;
+
+	AngleVectors (player->v.v_angle, forward, right, up);
+	VectorAdd (player->v.origin, player->v.view_ofs, eye);
+	VectorMA (eye, SV_USE_RANGE, forward, end);
+
+	trace = SV_Move (eye, vec3_origin, vec3_origin, end, MOVE_NORMAL, player);
+	if (trace.ent && !trace.ent->free && trace.ent != player && SV_CarryCanGrab (trace.ent))
+		return trace.ent;
+
+	for (i = 1; i < qcvm->num_edicts; i++)
+	{
+		edict_t	*e = EDICT_NUM (i);
+		float	d;
+
+		if (e->free || e == player || !SV_CarryCanGrab (e))
+			continue;
+
+		d = SV_UsePointBoxDistance (e->v.absmin, e->v.absmax, eye);
+		if (d > SV_USE_RANGE || d >= best_dist)
+			continue;
+
+		VectorAdd (e->v.absmin, e->v.absmax, center);
+		VectorScale (center, 0.5f, center);
+		VectorSubtract (center, eye, delta);
+		if (DotProduct (delta, forward) <= 0)
+			continue;	// behind the player: never grab backwards
+
+		los = SV_Move (eye, vec3_origin, vec3_origin, center, MOVE_NOMONSTERS, player);
+		if (los.fraction < 1 && los.ent != e)
+			continue;	// a wall is in the way
+
+		best = e;
+		best_dist = d;
+	}
+	return best;
+}
+
+/*
+===================
+SV_CarryUpdate
+
+Place the held prop for this frame. Called from SV_Physics_Follow() only for
+entities carrying the physdynamic tag, which is why the normal FOLLOW maths is
+not used: FOLLOW keys off aiment->angles (yaw only, no pitch) and treats
+view_ofs as a punchangle-rotated offset, none of which is what "held in front
+of the eyes" means.
+
+The trace is a hull trace with the prop's own box from the eye to the hold
+point, so the prop stops at a wall instead of being pushed through it. A gib's
+box is zero sized (ThrowGib sets it on purpose), which turns this into the same
+point trace the engine would do for a bullet: the gib's ORIGIN stops at the
+wall, and the model -- which is bigger than the box -- may poke into it. That
+is the model's box being wrong, not the hold code; giving the gib a real
+setsize is the fix, and it also makes kicking it more reliable. It is
+MOVE_NOMONSTERS because two props must not block each other while carried --
+only the world matters here.
+===================
+*/
+void SV_CarryUpdate (edict_t *prop, edict_t *carrier)
+{
+	vec3_t	eye, forward, right, up, desired;
+	trace_t	trace;
+
+	if (!prop || prop->free)
+		return;
+
+	/* The hand that held it may be gone: dead, disconnected, or nocliping
+	 * through walls. Let go rather than drag a prop behind a corpse. */
+	if (!carrier || carrier->free || carrier->v.health <= 0
+	    || carrier->v.movetype == MOVETYPE_NONE || carrier->v.movetype == MOVETYPE_NOCLIP)
+	{
+		if (prop->v.owner)
+			SV_CarryRelease (PROG_TO_EDICT (prop->v.owner));
+		return;
+	}
+
+	VectorAdd (carrier->v.origin, carrier->v.view_ofs, eye);
+	AngleVectors (carrier->v.v_angle, forward, right, up);
+	VectorMA (eye, SV_CARRY_DIST, forward, desired);
+
+	trace = SV_Move (eye, prop->v.mins, prop->v.maxs, desired, MOVE_NOMONSTERS, prop);
+	VectorCopy ((trace.fraction < 1) ? trace.endpos : desired, prop->v.origin);
+
+	/* Yaw only: a crate that pitches with the view ends up standing on its
+	 * corner and reads as a bug, even though the box never rotates. */
+	prop->v.angles[0] = 0;
+	prop->v.angles[1] = carrier->v.v_angle[1];
+	prop->v.angles[2] = 0;
+
+	SV_LinkEdict (prop, false);
+}
+
+/*
+===================
+SV_CarryGrab
+
+Take the prop. Returns false (and changes nothing) if the hands are full or the
+entity is not carriable.
+===================
+*/
+qboolean SV_CarryGrab (edict_t *player, edict_t *prop)
+{
+	if (!player || player->free || !prop || prop->free)
+		return false;
+	if (SV_CarryHeld (player))
+		return false;
+	if (!SV_CarryCanGrab (prop))
+		return false;
+
+	/* Remembered before they are overwritten: this is the only copy of what
+	 * the prop was, and the release path has nothing else to restore. The
+	 * solid matters just as much as the movetype -- a gib must go back to
+	 * SOLID_TRIGGER, not to the SOLID_BBOX it would otherwise be released as,
+	 * which for a zero-size box is an invisible obstacle on the floor. */
+	SV_CarrySetFieldFloat (prop, qcvm->extfields.physmovetype, prop->v.movetype);
+	SV_CarrySetFieldFloat (prop, qcvm->extfields.physsolid, prop->v.solid);
+	SV_CarrySetFieldFloat (player, qcvm->extfields.physcarry, (float)NUM_FOR_EDICT (prop));
+
+	prop->v.owner = EDICT_TO_PROG (player);
+	prop->v.aiment = EDICT_TO_PROG (player);
+	prop->v.movetype = MOVETYPE_EXT_FOLLOW;
+	prop->v.solid = SOLID_NOT;
+	prop->v.flags = (int)prop->v.flags & ~FL_ONGROUND;
+	prop->v.groundentity = 0;
+	VectorClear (prop->v.velocity);
+	VectorClear (prop->v.avelocity);
+	/* FOLLOW adds these; SV_CarryUpdate does not, so keep the prop's own
+	 * numbers out of the way before anything reads them. */
+	VectorClear (prop->v.view_ofs);
+	VectorClear (prop->v.v_angle);
+
+	SV_CarryUpdate (prop, player);
+	return true;
+}
+
+/*
+===================
+SV_CarryRelease
+
+Put the prop down where it is: same place the hold trace had it, with the
+player's own velocity so it keeps his momentum, and back to the movetype it had
+before it was picked up. Nothing is thrown -- releasing is not a throw.
+===================
+*/
+qboolean SV_CarryRelease (edict_t *player)
+{
+	edict_t	*prop;
+	int		movetype, solid;
+
+	prop = SV_CarryHeld (player);
+	if (!prop)
+		return false;
+
+	SV_CarrySetFieldFloat (player, qcvm->extfields.physcarry, 0);
+
+	movetype = (int)SV_CarryFieldFloat (prop, qcvm->extfields.physmovetype);
+	SV_CarrySetFieldFloat (prop, qcvm->extfields.physmovetype, 0);
+	/* FOLLOW/NONE/NOCLIP cannot be "restored" into anything that moves, and
+	 * are also the three values that would leave the prop glued or inert, so
+	 * they fall back to a bouncing prop -- which is what a physics prop is. */
+	if (movetype == MOVETYPE_EXT_FOLLOW || movetype == MOVETYPE_NONE
+	    || movetype == MOVETYPE_NOCLIP)
+		movetype = MOVETYPE_BOUNCE;
+
+	prop->v.movetype = movetype;
+	/* Back to what it was: a gib returns to SOLID_TRIGGER. Anything that is
+	 * not a carriable solid (should not happen -- only those two can be
+	 * picked up) falls back to a box, which is what a prop is. */
+	solid = (int)SV_CarryFieldFloat (prop, qcvm->extfields.physsolid);
+	SV_CarrySetFieldFloat (prop, qcvm->extfields.physsolid, 0);
+	if (solid != SOLID_BBOX && solid != SOLID_TRIGGER)
+		solid = SOLID_BBOX;
+	prop->v.solid = solid;
+	prop->v.owner = 0;
+	prop->v.aiment = 0;
+	prop->v.flags = (int)prop->v.flags & ~FL_ONGROUND;
+	prop->v.groundentity = 0;
+	VectorClear (prop->v.avelocity);
+	VectorCopy (player->v.velocity, prop->v.velocity);
+
+	SV_LinkEdict (prop, true);
+	return true;
+}
+
+/*
+===================
+SV_UsePress
+
+The action key was pressed this command: put down what is in hand, or pick up a
+physics prop in reach, or press whatever is in reach.
+===================
+*/
+qboolean SV_UsePress (edict_t *player)
+{
+	edict_t	*target;
+
+	if (!player || player->free)
+		return false;
+	if (player->v.health <= 0)
+		return false;	// dead players do not open doors
+	if (player->v.movetype == MOVETYPE_NONE || player->v.movetype == MOVETYPE_NOCLIP)
+		return false;
+
+	// Hands full: the same key puts the prop down, and does nothing else.
+	// Checked first so that a prop cannot be dropped and re-grabbed by one
+	// press, and so that a held crate does not hide a button behind it.
+	if (SV_CarryHeld (player))
+		return SV_CarryRelease (player);
+
+	// A physics prop in reach is picked up before anything is pressed: the tag
+	// is the map's way of saying "this object is meant to be handled".
+	target = SV_CarryFindTarget (player);
+	if (target)
+		return SV_CarryGrab (player, target);
+
+	target = SV_UseFindTarget (player);
+	if (!target)
+		return false;
+
+	SV_UseExecute (player, target);
+	return true;
+}
+
+/*
+===================
 SV_ReadClientMove
 ===================
 */
@@ -2089,12 +2979,21 @@ void SV_ReadClientMove (usercmd_t *move)
 	move->forwardmove = movevalues[0];
 	move->sidemove = movevalues[1];
 	move->upmove = movevalues[2];
-	SV_UpdateCrouch(host_client, host_client->edict, move->upmove);
+
+	//decide if we're going independant or not (needed before crouch handling)
+	host_client->usingpmove = !host_client->skate_active &&
+		(!!qcvm->extfuncs.SV_RunClientCommand || (!sv_nqplayerphysics.value && (*sv_nqplayerphysics.string||deathmatch.value)));
+
+	if (!host_client->usingpmove)
+		SV_UpdateCrouch(host_client, host_client->edict, move->upmove);
 
 // read buttons
 	host_client->edict->v.button0 = (buttonbits & 1)>>0;
 	//button1 was meant to be 'use', but got reused by too many mods to get implemented now
 	host_client->edict->v.button2 = (buttonbits & 2)>>1;
+	// Latch +jump for the skate takeoff test: QuakeC is free to clear the
+	// edict field while handling the jump, but the flip still belongs to it.
+	host_client->skate_jump_input = (buttonbits & 2) != 0;
 	if ((val = GetEdictFieldValue(host_client->edict, qcvm->extfields.button3)))
 		val->_float = (buttonbits & 4)>>2;
 	if ((val = GetEdictFieldValue(host_client->edict, qcvm->extfields.button4)))
@@ -2121,6 +3020,24 @@ void SV_ReadClientMove (usercmd_t *move)
 		host_client->edict->v.impulse = newimpulse;
 	}
 
+	// The action key (+use, button bit 2) presses a nearby button instead of
+	// requiring the player to walk into it.  The result is logged once per
+	// press on the console (SV_UseTrace): one line, edge-triggered, never
+	// once per frame.
+	if (SV_UseInputEdge (host_client, buttonbits))
+	{
+		qboolean pressed = SV_UsePress (host_client->edict);
+
+#if defined(PLATFORM_PSP) || defined(__psp__)
+		/* One line per press of the key, never per frame: holding it writes
+		 * nothing (SV_UseInputEdge is edge-triggered and rate-limited), so
+		 * the log stays readable. */
+		SV_UseTrace (host_client->edict, pressed);
+#else
+		(void)pressed;
+#endif
+	}
+
 	eval = GetEdictFieldValue(host_client->edict, qcvm->extfields.movement);
 	if (eval)
 	{
@@ -2128,10 +3045,6 @@ void SV_ReadClientMove (usercmd_t *move)
 		eval->vector[1] = move->sidemove;
 		eval->vector[2] = move->upmove;
 	}
-
-	//decide if we're going independant or not
-	host_client->usingpmove = !host_client->skate_active &&
-		(!!qcvm->extfuncs.SV_RunClientCommand || (!sv_nqplayerphysics.value && (*sv_nqplayerphysics.string||deathmatch.value)));
 
 	//and give them their independance here.
 	if (host_client->usingpmove && host_client->knowntoqc)
@@ -2205,7 +3118,11 @@ void SV_ReadClientMove (usercmd_t *move)
 		SV_CigarettePostThink(host_client, host_client->edict, saved_button0, equip_cigarette);
 		SV_SkateUpdate(host_client);
 		SV_UpdateCrouchAnimation(host_client, host_client->edict);
-		SV_ClampCrouchSpeed(host_client, host_client->edict);
+
+		// The speedometer used to be engine-path only, so pmove clients always read
+		// -1 and never drew it. Report the velocity the move just produced.
+		SV_UpdateSpeedInfo(host_client->edict->v.velocity, move,
+			((int)host_client->edict->v.flags & FL_ONGROUND) != 0);
 	}
 }
 

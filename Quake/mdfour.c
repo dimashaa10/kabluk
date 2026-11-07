@@ -29,35 +29,16 @@
 
 #include <string.h>		/* XoXus: needed for memset call */
 
-
-
-
-#ifndef _MDFOUR_H
-#define _MDFOUR_H
-
-#ifndef int32
-#define int32 int
-#endif
-
-#if SIZEOF_INT > 4
-#define LARGE_INT32
-#endif
-
-#ifndef uint32
-#define uint32 unsigned int32
-#endif
-
-struct mdfour {
-	uint32 A, B, C, D;
-	size_t totalN;
-};
+/* struct mdfour and the streaming Com_BlockChecksum* API now live in
+ * mdfour.h: the type is public because a checksum of a file that is never
+ * held in memory is built up by the caller (Quake/common.c,
+ * COM_BlockChecksumFile), and a public type cannot be a private one. */
+#include "mdfour.h"
 
 static void mdfour_begin(struct mdfour *md); // old: MD4Init
 static void mdfour_update(struct mdfour *md, const unsigned char *in, size_t n); //old: MD4Update
 static void mdfour_result(struct mdfour *md, unsigned char *out); // old: MD4Final
 static void mdfour(unsigned char *out, const unsigned char *in, size_t n);
-
-#endif	// _MDFOUR_H
 
 
 
@@ -240,6 +221,85 @@ unsigned Com_BlockChecksum (const void *buffer, size_t length)
 	unsigned 		val;
 
 	mdfour ( (unsigned char *) digest, (const unsigned char *) buffer, length );
+
+	val = digest[0] ^ digest[1] ^ digest[2] ^ digest[3];
+
+	return val;
+}
+
+/*
+================================================================================
+
+	THE SAME CHECKSUM, IN PIECES
+
+================================================================================
+*/
+
+/* mdfour_update() above always ends the chain (it calls mdfour_tail(), which
+ * pads and folds in the length), so it can be called once and only once.  A
+ * file that is read in windows needs the opposite: fold every whole 64-byte
+ * block as it arrives, keep the remainder, and pad once at the end, which is
+ * exactly what Com_BlockChecksumEnd() does.  The state is four words and one
+ * block, so a caller can hold one on the stack -- no allocation, and no size
+ * of file can make it fail. */
+void Com_BlockChecksumBegin (com_checksum_t *c)
+{
+	mdfour_begin (&c->md);
+	c->used = 0;
+}
+
+void Com_BlockChecksumUpdate (com_checksum_t *c, const void *data, size_t len)
+{
+	const unsigned char *in = (const unsigned char *)data;
+	uint32 M[16];
+
+	if (!c || !in || !len)
+		return;
+
+	/* Top the block up first: the bytes arriving now may complete one. */
+	if (c->used)
+	{
+		while (c->used < 64 && len)
+		{
+			c->block[c->used++] = *in++;
+			len--;
+		}
+
+		if (c->used < 64)
+			return;
+
+		copy64 (M, c->block);
+		mdfour64 (&c->md, M);
+		c->md.totalN += 64;
+		c->used = 0;
+	}
+
+	/* Then the whole blocks that arrived in this window. */
+	while (len >= 64)
+	{
+		copy64 (M, in);
+		mdfour64 (&c->md, M);
+		c->md.totalN += 64;
+		in += 64;
+		len -= 64;
+	}
+
+	/* And the tail of the window, which waits for its neighbours. */
+	while (len--)
+		c->block[c->used++] = *in++;
+}
+
+unsigned Com_BlockChecksumEnd (com_checksum_t *c)
+{
+	int		digest[4];
+	unsigned	val;
+
+	/* mdfour_tail() adds the remaining bytes to totalN itself and pads, so
+	 * this is the same end mdfour() reaches in one piece. */
+	mdfour_tail (&c->md, c->block, (size_t)c->used);
+	c->used = 0;
+
+	mdfour_result (&c->md, (unsigned char *)digest);
 
 	val = digest[0] ^ digest[1] ^ digest[2] ^ digest[3];
 

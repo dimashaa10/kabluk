@@ -437,8 +437,15 @@ static void TestSlideCommand (void)
 	assert(client.skate_slide_armed && strstr(printed, "armed"));
 	SV_SkateSlideUp_f();
 	assert(client.skate_slide_armed); // releasing the key does not cancel the tap
+
+	// Toggling is rate limited so +skate_slide cannot be spammed for probes.
+	printed[0] = 0;
+	SV_SkateSlide_f();
+	assert(client.skate_slide_armed && strstr(printed, "Wait")); // rejected, still armed
+	qcvm->time += SKATE_SLIDE_TOGGLE_COOLDOWN;
 	SV_SkateSlide_f();
 	assert(!client.skate_slide_armed && strstr(printed, "OFF")); // another press cancels the request
+	qcvm->time += SKATE_SLIDE_TOGGLE_COOLDOWN;
 	SV_SkateSlide_f();
 	assert(client.skate_slide_armed && strstr(printed, "armed"));
 
@@ -446,6 +453,7 @@ static void TestSlideCommand (void)
 	client.skate_sliding = true;
 	client.skate_slide_surface = &pool[0];
 	client.skate_slide_edge_height = 64;
+	qcvm->time += SKATE_SLIDE_TOGGLE_COOLDOWN;
 	SV_SkateSlideDown_f();
 	assert(!client.skate_slide_armed && !client.skate_sliding && !client.skate_slide_surface &&
 		client.skate_slide_edge_height == 0 && strstr(printed, "OFF"));
@@ -530,37 +538,80 @@ static void TestSlideNeedsUpperEdge (void)
 	SV_FlyMove(client.edict, 0.05f, NULL);
 	assert(!client.skate_sliding); // a wall that continues above its apparent cap has no upper edge
 }
-static void TestWallSlideLatchRadius (void)
+static void TestWallSlideTapGuards (void)
 {
 	vec3_t normal = {-1, 0, 0};
-	vec3_t incoming = {100, 0, 0}; // a nearby tap attaches without needing a wall impact
+	vec3_t incoming = {SKATE_SLIDE_TAP_MIN_SPEED + 80, 0, 0}; // already rolling
 
+	// A standing player cannot tap-climb: a tap without momentum is not a latch.
 	Reset(); Command(NULL);
-	client.edict->v.origin[0] = 67; // 63 units from the lip: beyond the old probe radius
+	client.edict->v.origin[0] = 67;
+	VectorCopy(normal, wall_normal);
+	wall_plane_point[0] = 130;
+	wall_top_z = 8;
+	wall_support = top_support = true;
+	SV_SkateSlideDown_f();
+	assert(!client.skate_sliding && client.skate_slide_armed);
+	assert(strstr(printed, "armed")); // the toggle stays on for a real attempt
+
+	// Airborne taps do not latch either.
+	Reset(); Command(NULL);
+	client.edict->v.origin[0] = 67;
 	client.edict->v.flags = 0;
+	VectorCopy(incoming, client.edict->v.velocity);
+	VectorCopy(normal, wall_normal);
+	wall_plane_point[0] = 130;
+	wall_top_z = 8;
+	wall_support = top_support = true;
+	SV_SkateSlideDown_f();
+	assert(!client.skate_sliding && client.skate_slide_armed);
+
+	// Rolling, but the lip sits 64 units up: a tap only reaches a small curb,
+	// so this is not a free climb.
+	Reset(); Command(NULL);
+	client.edict->v.origin[0] = 67;
+	client.edict->v.flags = FL_ONGROUND;
 	VectorCopy(incoming, client.edict->v.velocity);
 	VectorCopy(normal, wall_normal);
 	wall_plane_point[0] = 130;
 	wall_top_z = 64;
 	wall_support = top_support = true;
 	SV_SkateSlideDown_f();
-	assert(client.skate_sliding && client.skate_slide_armed && strstr(printed, "attached"));
-	assert(SV_SkateWallSlideMove(client.edict)); // widened adhesion keeps the catch attached
-	assert(fabsf((client.edict->v.origin[0] - wall_plane_point[0]) * normal[0] -
-		SKATE_SLIDE_EDGE_OFFSET) < 0.01f);
-	SV_SkateSlideDown_f();
-	assert(!client.skate_sliding && !client.skate_slide_armed); // second press detaches
+	assert(!client.skate_sliding && client.skate_slide_armed);
 
+	// Outside the widened catch radius nothing latches.
 	Reset(); Command(NULL);
-	client.edict->v.origin[0] = 64; // outside the new maximum catch radius
-	client.edict->v.flags = 0;
+	client.edict->v.origin[0] = 64;
+	client.edict->v.flags = FL_ONGROUND;
 	VectorCopy(incoming, client.edict->v.velocity);
 	VectorCopy(normal, wall_normal);
 	wall_plane_point[0] = 130;
+	wall_top_z = 8;
 	wall_support = top_support = true;
 	SV_SkateSlideDown_f();
 	assert(!client.skate_sliding && client.skate_slide_armed);
-	assert(strstr(printed, "armed")); // the toggle remains on for the next nearby edge
+
+	// A low curb 63 units away still latches for a rolling rider, and the
+	// widened adhesion keeps it attached.
+	Reset(); Command(NULL);
+	client.edict->v.origin[0] = 67;
+	client.edict->v.flags = FL_ONGROUND;
+	VectorCopy(incoming, client.edict->v.velocity);
+	VectorCopy(normal, wall_normal);
+	wall_plane_point[0] = 130;
+	wall_top_z = 8;
+	wall_support = top_support = true;
+	SV_SkateSlideDown_f();
+	assert(client.skate_sliding && client.skate_slide_armed && strstr(printed, "attached"));
+	assert(SV_SkateWallSlideMove(client.edict));
+	assert(fabsf((client.edict->v.origin[0] - wall_plane_point[0]) * normal[0] -
+		SKATE_SLIDE_EDGE_OFFSET) < 0.01f);
+	// The cooldown also refuses an immediate detach, then the next press works.
+	SV_SkateSlideDown_f();
+	assert(client.skate_sliding && strstr(printed, "Wait"));
+	qcvm->time += SKATE_SLIDE_TOGGLE_COOLDOWN;
+	SV_SkateSlideDown_f();
+	assert(!client.skate_sliding && !client.skate_slide_armed);
 }
 static void TestWallBounce (void)
 {
@@ -604,9 +655,15 @@ static void TestWallBounce (void)
 	client.skate_jump_active = false;
 	client.skate_grounded = false;
 	assert(!SV_SkateWallBounce(client.edict, wall.plane.normal, incoming)); // falling isn't a jump
+	// Rising while the last skate update still had the rider on the ground is
+	// slope riding, not a jump: no free wall launch.
 	client.skate_grounded = true;
 	client.edict->v.velocity[2] = 100;
-	assert(SV_SkateWallBounce(client.edict, wall.plane.normal, incoming)); // first frame after takeoff
+	assert(!SV_SkateWallBounce(client.edict, wall.plane.normal, incoming));
+	// The first airborne frame after a real takeoff still bounces.
+	client.skate_grounded = false;
+	client.edict->v.velocity[2] = 270;
+	assert(SV_SkateWallBounce(client.edict, wall.plane.normal, incoming));
 }
 static void TestJumpFlip (void)
 {
@@ -696,6 +753,7 @@ static void TestJumpFlipGuards (void)
 	assert(!client.skate_flip_active);
 
 	Reset(); Command(NULL);
+	client.edict->v.button2 = 1; // a real +jump takeoff
 	client.edict->v.flags = 0; client.edict->v.velocity[2] = 270;
 	SV_SkateUpdate(&client);
 	qcvm->time += SKATE_FLIP_DURATION / 4;
@@ -706,6 +764,74 @@ static void TestJumpFlipGuards (void)
 	assert(!client.skate_flip_active && client.skate_grounded);
 	assert(client.skate_flip_start_time == 0 && client.skate_board->v.angles[ROLL] == 0);
 }
+static void TestSlopeRideIsNotAJump (void)
+{
+	int i;
+	trace_t wall = {0};
+
+	// Riding uphill: SV_FlyMove clips the velocity along the floor plane, so the
+	// board climbs while FL_ONGROUND stays set. That must not look or act like a
+	// takeoff: no jump/landing poses, no flip and no free wall launch.
+	Reset(); Command(NULL);
+	client.cmd.forwardmove = 400;
+	client.edict->v.velocity[0] = 200;
+	client.edict->v.velocity[2] = 120;
+	SV_SkateUpdate(&client);
+	assert(client.edict->v.frame >= SKATE_ANIM_CRUISE_FIRST &&
+		client.edict->v.frame <= SKATE_ANIM_ACCEL_LAST);
+	assert(!client.skate_flip_active && !client.skate_jump_active);
+	for (i = 0; i < 6; i++)
+	{
+		qcvm->time += SKATE_ANIM_FRAME_TIME;
+		client.edict->v.flags = FL_ONGROUND;
+		client.edict->v.velocity[2] = 120;
+		SV_SkateUpdate(&client);
+		assert(client.edict->v.frame >= SKATE_ANIM_CRUISE_FIRST &&
+			client.edict->v.frame <= SKATE_ANIM_ACCEL_LAST);
+		assert(client.skate_board->v.angles[ROLL] == 0);
+		assert(!client.skate_jump_active && client.skate_grounded);
+	}
+	wall.plane.normal[0] = -1;
+	assert(!SV_SkateWallBounce(client.edict, wall.plane.normal, client.edict->v.velocity));
+
+	// A real jump from that slope still uses the airborne poses and flips.
+	client.edict->v.button2 = 1;
+	client.edict->v.flags = 0;
+	client.edict->v.velocity[2] = 270;
+	SV_SkateUpdate(&client);
+	assert(client.skate_flip_active && client.skate_jump_active);
+	assert(client.edict->v.frame == SKATE_ANIM_JUMP_FIRST);
+}
+
+static void TestJumpNeedsJumpInput (void)
+{
+	// Rising airborne without +jump: a jump pad, push trigger or teleport, not a
+	// takeoff. The rider must not get a kickflip out of it.
+	Reset(); Command(NULL);
+	client.edict->v.flags = 0;
+	client.edict->v.velocity[2] = 270;
+	SV_SkateUpdate(&client);
+	assert(!client.skate_flip_active && !client.skate_jump_active);
+	assert(client.skate_board->v.angles[ROLL] == 0);
+	assert(client.edict->v.frame >= SKATE_ANIM_JUMP_FIRST && // still an airborne pose
+		client.edict->v.frame <= SKATE_ANIM_JUMP_FALL_LAST);
+
+	// The packet latch (+jump) makes the same takeoff a real one.
+	Reset(); Command(NULL);
+	client.skate_jump_input = true;
+	client.edict->v.flags = 0;
+	client.edict->v.velocity[2] = 270;
+	SV_SkateUpdate(&client);
+	assert(client.skate_flip_active && client.skate_jump_active);
+	assert(!client.skate_jump_input); // one flip per press
+	qcvm->time += SKATE_FLIP_DURATION / 4;
+	SV_SkateUpdate(&client);
+	assert(client.skate_board->v.angles[ROLL] == 90);
+	client.edict->v.flags = FL_ONGROUND;
+	SV_SkateUpdate(&client);
+	assert(!client.skate_flip_active && !client.skate_jump_active && client.skate_grounded);
+}
+
 static void TestSlopeAndCleanup (void)
 {
 	int reason;
@@ -722,6 +848,7 @@ static void TestSlopeAndCleanup (void)
 	for (reason = 0; reason < 4; reason++)
 	{
 		Reset(); Command(NULL);
+		client.edict->v.button2 = 1;
 		client.edict->v.flags = 0; client.edict->v.velocity[2] = 270;
 		SV_SkateUpdate(&client);
 		assert(client.skate_flip_active);
@@ -756,14 +883,16 @@ static void TestGuards (void)
 }
 int main (void)
 {
-	TestToggleAndPlacement(); TestCrouchMovementSpeed(); TestMotion(); TestSkateAnimations(); TestSlideCommand(); TestWallSlide(); TestSlideNeedsUpperEdge(); TestWallSlideLatchRadius(); TestWallBounce(); TestJumpFlip(); TestJumpFlipGuards();
+	TestToggleAndPlacement(); TestCrouchMovementSpeed(); TestMotion(); TestSkateAnimations(); TestSlideCommand(); TestWallSlide(); TestSlideNeedsUpperEdge(); TestWallSlideTapGuards(); TestWallBounce(); TestJumpFlip(); TestJumpFlipGuards();
+	TestSlopeRideIsNotAJump(); TestJumpNeedsJumpInput();
 	TestSlopeAndCleanup(); TestGuards();
 	puts("PASS: skate command, forward acceleration, cap, gradual steering, drift and braking.");
 	puts("PASS: skate cruise/idle, acceleration, shooting, jump and landing frame sequences.");
 	puts("PASS: slide toggles on/off by tap; key-up is ignored and a second tap detaches.");
-	puts("PASS: proximity tap attaches to an expanded brush-edge radius and ignores distant edges.");
+	puts("PASS: proximity tap needs momentum, a reachable lip and a toggle cooldown; no climbing.");
 	puts("PASS: high-speed jump bounce from vertical walls; speed, glancing-hit, and non-jump guards.");
 	puts("PASS: one time-based 360-degree jump flip, upright rider, landing/rearm and takeoff guards.");
+	puts("PASS: running up a slope is not a takeoff; rising without +jump never awards a flip.");
 	puts("PASS: crouch caps walking speed at 160 and restores normal speed when standing.");
 	puts("PASS: board placement/ground clearance, unchanged hull/jump/ammo, lifetime and guards.");
 	return 0;

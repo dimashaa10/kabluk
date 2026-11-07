@@ -489,7 +489,11 @@ typedef struct entity_state_s
 	unsigned char	colormap;	//johnfitz -- was int
 	unsigned char	skin;		//johnfitz -- was int
 	unsigned char	scale;		//spike -- *16
-	unsigned char	pmovetype;	//spike
+	unsigned char	pmovetype;	//spike -- low 5 bits: movetype, then the flags below
+#define	PMP_MOVETYPE_MASK	0x1f	//movetype of the predicting entity
+#define	PMP_CROUCHED		0x20	//local player only: collision hull is crouched this frame
+#define	PMP_JUMP_HELD		0x40	//nq's jump_held, so clients don't pogo
+#define	PMP_ONGROUND		0x80	//nq's onground, for bob states
 	unsigned short	traileffectnum;	//spike -- for qc-defined particle trails. typically evilly used for things that are not trails.
 	unsigned short	emiteffectnum;	//spike -- for qc-defined particle trails. typically evilly used for things that are not trails.
 	short	velocity[3];	//spike -- the player's velocity.

@@ -369,7 +369,13 @@ int LevenshteinDistance (const char* s, const char* t); // woods -- #smartquit
 #else
 	#define qofs_t long		//LP64 just makes more sense. everything just works.
 #endif
-#define qofs_Make(low,high) ((unsigned int)(low) | ((qofs_t)(high)<<32))
+/* Build the 64-bit value in a type that is always wide enough: on a 32-bit
+ * port (PSP, where qofs_t is long) `(qofs_t)(high) << 32` shifts out of the
+ * type and is undefined.  The final cast back to qofs_t truncates as it must,
+ * which simply means ZIP64 offsets cannot be represented there. */
+#define qofs_Make(low,high) \
+	((qofs_t)((unsigned long long)(unsigned int)(low) | \
+	          ((unsigned long long)(unsigned int)(high) << 32)))
 
 typedef struct
 {
@@ -426,6 +432,11 @@ void COM_CloseFile (int h);
 // procedures differ by their buffer allocation method.
 byte *COM_LoadStackFile (const char *path, void *buffer, int bufsize,
 						unsigned int *path_id);
+
+/* The size of the file the last COM_LoadStackFile() (or any other
+ * COM_Load*) read, so a caller that has only the pointer can say how much
+ * memory it is holding.  See Mod_LoadModel(). */
+int COM_LastLoadFileLength (void);
 	// uses the specified stack stack buffer with the specified size
 	// of bufsize. if bufsize is too short, uses temp hunk. the bufsize
 	// must include the +1
@@ -440,6 +451,11 @@ void COM_LoadCacheFile (const char *path, struct cache_user_s *cu,
 	// uses cache mem for allocating the buffer.
 byte *COM_LoadMallocFile (const char *path, unsigned int *path_id);
 	// allocates the buffer on the system mem (malloc).
+
+qboolean COM_BlockChecksumFile (const char *path, int quick_bytes,
+                                unsigned *quick, unsigned *full, int *size);
+	// the two Com_BlockChecksum() values of a file, read in 4 KB pieces.
+	// Never allocates: the whole file is never in memory (see common.c).
 
 // Opens the given path directly, ignoring search paths.
 // Returns NULL on failure, or else a '\0'-terminated malloc'ed buffer.

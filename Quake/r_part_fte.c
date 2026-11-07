@@ -402,6 +402,10 @@ typedef struct part_type_s {
 typedef struct pcfg_s
 {
 	struct pcfg_s *next;
+	/* Was this config loaded because the PLAYER'S PROFILE asked for it (or a
+	 * per-map config did), or only because some effect name happened to carry
+	 * its namespace?  See P_ConfigSelected(). */
+	qboolean selected;
 	char name[1];
 } pcfg_t;
 static pcfg_t *loadedconfigs;
@@ -420,6 +424,48 @@ static pcfg_t *loadedconfigs;
 #define MAX_PARTICLES			(1<<18)	// max # of particles at one time
 #define MAX_DECALS				(1<<18)	// max # of decal fragments at one time
 #define MAX_TRAILSTATES			(1<<10)	// default max # of trailstates
+
+#if defined(PLATFORM_PSP) || defined(__psp__)
+/* ---- what a particle array may cost on a console with a 10 MB heap ----
+ *
+ * The numbers above, and the two cvars below them, are id's PC defaults and
+ * they are the largest single allocation this engine makes at level start:
+ *
+ *     r_part_maxparticles 65536 * sizeof(particle_t) 92 = 6029312 bytes
+ *     r_part_maxdecals     8192 * sizeof(clippeddecal_t)     =  851968
+ *
+ * Six and a half megabytes out of a ten megabyte heap that has just been
+ * asked to hold everything the map needed (port/psp/psp_mem.c explains the
+ * split), and the request fails:
+ *
+ *     malloc: NULL for 6029312 bytes at 0x08821dec -- last gfx/conback2.lmp
+ *     psp-addr2line -f -e kabluk.elf 0x08821dec
+ *       -> PScript_Startup  Quake/r_part_fte.c:3607
+ *
+ * line 3607 is `particles = (particle_t *)Z_Malloc (...)` -- and in THIS file
+ * Z_Malloc is malloc (#define Z_Malloc malloc, line 115).  Nothing checked
+ * the NULL, so PScript_Startup stored it and kept r_numparticles at 65536,
+ * and the first thing a level does, PScript_ClearParticles(), walks the free
+ * list it thinks it has:
+ *
+ *     free_particles = &particles[0];          // NULL
+ *     for (i = 0; i < r_numparticles; i++)
+ *         particles[i].next = &particles[i+1]; // writes 0x00000004, 0x58, ...
+ *
+ * which on this hardware is a fault with no message at all: no exception
+ * handler (psp_console.c says why), so the console simply stops and kabluk.log
+ * ends where it was.  That is the end of the round-72 and round-73 logs, right
+ * after `signon: R_NewMap: building 36 surfaces of PSP`.
+ *
+ * So the counts are a budget, not a wish.  8192 particles is 736 KB instead
+ * of 5.75 MB and is far more than a 480x272 panel can show at once (a
+ * particle is a few pixels); 1024 decals is 104 KB.  And the allocation is
+ * retried at half the size until it fits, so a fragmented heap costs
+ * particles rather than the session. */
+#define PSP_MAX_PARTICLES	8192
+#define PSP_MAX_DECALS		1024
+#define PSP_PARTICLES_FLOOR	128	/* below this, say so and stop */
+#endif
 
 //int		ramp1[8] = {0x6f, 0x6d, 0x6b, 0x69, 0x67, 0x65, 0x63, 0x61};
 //int		ramp2[8] = {0x6f, 0x6e, 0x6d, 0x6c, 0x6b, 0x6a, 0x68, 0x66};
@@ -1095,6 +1141,90 @@ static void PScript_RetintEffect(part_type_t *to, part_type_t *from, const char 
 }
 
 //public interface. get without creating.
+/*
+=================
+P_ConfigSelected
+
+Is this namespace part of what the player's particle profile selected?
+
+The bug this exists for: V_EmitCigaretteSmoke asks for "qssm.cigarette_smoke",
+and asking for a NAMESPACED effect name loads that namespace (particles/qssm.cfg)
+on demand.  Once that file is in memory every engine effect that asks for a BARE
+name -- TE_GUNSHOT, TE_EXPLOSION, te_spike, ... -- found the QSS-M definition,
+because the bare-name search below used to accept a type from ANY loaded
+namespace.  So smoking one cigarette silently switched the whole game from the
+vanilla effects to the modern ones, and there was no way back except reloading
+particles.
+
+A namespace that arrived as a SIDE EFFECT of one effect name is not a selection:
+it may serve the effect that named it, and nothing else.
+=================
+*/
+static qboolean P_ConfigSelected(const char *name)
+{
+	pcfg_t	*cfg;
+
+	if (!name || !*name)
+		return true;	/* a type created at run time belongs to no config */
+
+	for (cfg = loadedconfigs; cfg; cfg = cfg->next)
+	{
+		if (!strcmp(cfg->name, name))
+			return cfg->selected ? true : false;
+	}
+
+	return false;
+}
+
+/*
+=================
+PScript_ParticleTypeLoaded
+
+Does the particle profile the player SELECTED provide this effect right now?
+No loading, no side effects -- PScript_FindParticleType() loads the namespace if
+the name carries one, which is precisely what a caller must be able to ask
+about first.
+
+A namespace that is in memory only because some other effect name mentioned it
+does not count: see P_ConfigSelected.  The cigarette smoke is the caller that
+matters (view.c): it must emit vanilla particles unless the player actually
+picked a profile with the QSS-M smoke in it.
+=================
+*/
+qboolean PScript_ParticleTypeLoaded (const char *fullname)
+{
+	const char	*dot;
+	char		cfg[MAX_QPATH];
+	const char	*name = fullname;
+	int			i;
+
+	if (!fullname || !*fullname)
+		return false;
+
+	dot = strchr (fullname, '.');
+	if (dot && (dot - fullname) < MAX_QPATH - 1)
+	{
+		memcpy (cfg, fullname, dot - fullname);
+		cfg[dot - fullname] = 0;
+		name = dot + 1;
+	}
+	else
+		*cfg = 0;
+
+	for (i = 0; i < numparticletypes; i++)
+	{
+		if (!part_type[i].loaded || q_strcasecmp (part_type[i].name, name))
+			continue;
+		if (*cfg && q_strcasecmp (part_type[i].config, cfg))
+			continue;
+		if (!P_ConfigSelected (part_type[i].config))
+			continue;
+		return true;
+	}
+
+	return false;
+}
+
 int PScript_FindParticleType(const char *fullname)
 {
 	int i;
@@ -1156,11 +1286,15 @@ int PScript_FindParticleType(const char *fullname)
 	}
 	else
 	{
-		//but be prepared to load it from any namespace if its not got a namespace specified.
+		/* Search the namespaces the profile SELECTED, not every namespace that
+		 * happens to be in memory -- an implicitly loaded one (see
+		 * P_ConfigSelected) may not take over the engine's own effects. */
 		for (i = 0; i < numparticletypes; i++)
 		{
 			if (!q_strcasecmp(part_type[i].name, name))
 			{
+				if (!P_ConfigSelected(part_type[i].config))
+					continue;
 				ptype = &part_type[i];
 				if (ptype->loaded)	//(mostly) ignore ones that are not currently loaded
 					break;
@@ -3596,6 +3730,25 @@ qboolean PScript_Startup (void)
 
 	if (!r_numparticles)	//already inited
 	{
+#if defined(PLATFORM_PSP) || defined(__psp__)
+		/* A budget, not a wish: see PSP_MAX_PARTICLES above. */
+		{
+			extern void psp_tracef (const char *fmt, ...);
+			int askp = newmaxp, askd = newmaxd;
+
+			if (newmaxp > PSP_MAX_PARTICLES)
+				newmaxp = PSP_MAX_PARTICLES;
+			if (newmaxd > PSP_MAX_DECALS)
+				newmaxd = PSP_MAX_DECALS;
+
+			if (newmaxp != askp || newmaxd != askd)
+				psp_tracef ("particles: budget %d of %d particles, %d of %d "
+				            "decals (%d KB + %d KB of the heap)",
+				            newmaxp, askp, newmaxd, askd,
+				            (int)((newmaxp * sizeof(particle_t)) / 1024),
+				            (int)((newmaxd * sizeof(clippeddecal_t)) / 1024));
+		}
+#endif
 		r_numparticles = newmaxp;
 		r_numdecals = newmaxd;
 
@@ -3606,11 +3759,43 @@ qboolean PScript_Startup (void)
 
 		particles = (particle_t *)Z_Malloc (r_numparticles * sizeof(particle_t));
 
+#if defined(PLATFORM_PSP) || defined(__psp__)
+		/* The heap can still say no: a map that has just taken its share, or
+		 * a heap split into pieces too small for one array.  Halve and retry
+		 * (the count is only ever a limit -- the free list below is built
+		 * from r_numparticles), because the one thing that must not happen
+		 * is the NULL this file had no check for. */
+		while (!particles && r_numparticles > PSP_PARTICLES_FLOOR)
+		{
+			extern void psp_tracef (const char *fmt, ...);
+
+			r_numparticles /= 2;
+			particles = (particle_t *)Z_Malloc (r_numparticles * sizeof(particle_t));
+			psp_tracef ("particles: the heap refused, retrying with %d (%d KB)",
+			            r_numparticles,
+			            (int)((r_numparticles * sizeof(particle_t)) / 1024));
+		}
+
+		if (!particles)
+			Sys_Error ("particles: the heap cannot hold even %d (%d KB)",
+			           r_numparticles, (int)((r_numparticles * sizeof(particle_t)) / 1024));
+#endif
+
 		beams = (beamseg_t *)Z_Malloc (r_numbeams * sizeof(beamseg_t));
 
 		decals = (clippeddecal_t *)Z_Malloc (r_numdecals * sizeof(clippeddecal_t));
 
 		trailstates = (trailstate_t *)Z_Malloc (r_numtrailstates * sizeof(trailstate_t));
+
+#if defined(PLATFORM_PSP) || defined(__psp__)
+		/* The other three are small (56 KB, 102 KB and 20 KB at these counts)
+		 * but R_ClearParticles() and PScript_ClearParticles() walk all of them
+		 * through the same free lists, so none of them may be NULL either. */
+		if (!beams || !decals || !trailstates)
+			Sys_Error ("particles: the heap cannot hold the %d decals (%d KB)",
+			           r_numdecals,
+			           (int)((r_numdecals * sizeof(clippeddecal_t)) / 1024));
+#endif
 		memset(trailstates, 0, r_numtrailstates * sizeof(trailstate_t));
 		ts_cycle = 0;
 
@@ -3777,6 +3962,10 @@ static qboolean P_LoadParticleSet(char *name, qboolean implicit, qboolean showwa
 	if (!cfg)
 		return false;
 	strcpy(cfg->name, name);
+	/* `implicit` is the whole difference: the profile callback and the per-map
+	 * config pass false, PScript_FindParticleType passes true when it loads a
+	 * namespace just because an effect name mentioned one. */
+	cfg->selected = implicit ? false : true;
 	cfg->next = loadedconfigs;
 	loadedconfigs = cfg;
 

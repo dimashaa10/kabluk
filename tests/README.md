@@ -65,6 +65,12 @@ It covers:
 - No flip on a held jump without takeoff, falling off a ledge, an airborne
   velocity change, enabling in midair or a water jump; early landing and
   mode cleanup clear the animation state.
+- A jump is only a takeoff when `+jump` was pressed: rising from a jump pad,
+  push trigger or teleport never awards a flip, the input latch is one-shot,
+  and riding up a slope keeps the ground poses and never flips or wall-bounces.
+- The slide toggle is rate limited; a tap only latches for a grounded rider who
+  is already rolling and only reaches a small curb above the board, so tapping
+  cannot be used to climb a wall.
 - Shared model origin, wheels above flat ground and sloped ground beneath the
   corners, non-solid board, ownership, follow/yaw and cleanup after death,
   noclip, deep water, ladder entry and a VM-context change.
@@ -80,6 +86,94 @@ tests preserve the received roll and verify the real alias matrix keeps
 the board center fixed beneath the upright rider (local and remote),
 including off-center models, different yaw/scale, repeated updates,
 render culling and restoring the original fit at zero roll.
+
+## Crouch and pmove coverage
+
+The crouch lives in the shared `pmove.c`, which runs both on the server and in
+client-side prediction, so `test_pmove_crouch.c` links the real `pmove.c` with a
+tiny stand-in world (an endless floor plus an optional ceiling) and checks:
+- the crouched hull is half the standing height with the feet left in place, the
+  eye height eases over 0.3 s while the collision hull snaps;
+- standing up is refused while the ceiling is too low and recovers on its own
+  once there is head room;
+- `PM_SeedCrouch` rebuilds exactly the same hull from a snapshot, standing or
+  crouched;
+- crouching caps the *wish* speed on the ground (160) and never brakes momentum
+  already in hand, so crouch-jumps keep their speed;
+- replaying one command batch from one snapshot is bit-identical for the
+  "server" and the "predicted" run, in both postures;
+- `PM_CrouchedAim` moves a hard-coded standing-eye shot onto the real crouched
+  eye while keeping the prog's aim and range, and leaves correct traces
+  (already at the eye, floor probes, standing players) untouched.
+
+`test_crouch_server.c` additionally covers the engine path: the 160 speed clamp
+applies on the ground only, and never touches airborne, swimming, noclip or
+pmove-driven velocity.
+
+## Collision-entity list and HUD speed
+
+`test_pmove_physents.c` links the real `pmove.c` and fills the collision list the
+way a busy map would:
+- the list is large enough for a crowd and `physents`, `touchindex` and `touchvel`
+  all share its size;
+- a solid in the *last* slot blocks exactly like one in the first, its index ends
+  up in `touchindex`, and the player stays on the floor;
+- with every slot used, `numtouch`, `touchindex[]` and `groundent` stay inside the
+  arrays;
+- movement itself is unchanged: a full list of far-away dummies and a list with
+  only the world produce the same position, so the bigger cap only decides *what*
+  may block, not *how* the move runs.
+
+`test_speed_info.c` links the real `sv_user.c` to pin the speedometer feed:
+horizontal speed only (vertical is ignored), recomputed every frame including
+zero and overspeed, and the bunny-hop key sample is recorded only for a ground
+frame with `+jump` and is not overwritten by a later airborne frame.
+
+## Engine action key (+use)
+
+`test_use_button.c` links the real `sv_user.c` and drives the action key against a
+tiny world (a wall the player can aim at, plus a floor):
+
+- only `func_button` may be pressed - the whitelist is the `SV_USE_CLASSES`
+  constant, not a cvar, so the console cannot add doors to it. `func_door`,
+  `func_door_secret`, `func_plat`, `func_train`, `func_wall` and triggers are
+  never pressed, which is what keeps the key from opening what a map trigger or a
+  key is supposed to open;
+- the target must also be a pushing brush solid with a `.use`, and must not be a
+  shoot-only button (`health > 0`);
+- pressing runs the prog's use function with `self` = button, `other` and
+  `activator` = player, and restores the globals afterwards;
+- aiming: what is in front is pressed, out-of-range (`SV_USE_RANGE`) and
+  behind-the-player brushes are not, and a button flush with the wall counts only
+  when the crosshair really is next to it;
+- `SV_UseInputEdge` treats holding the key as one press, drops presses inside the
+  0.2 s cooldown, and ignores attack/jump/other buttons.
+
+## Controls menu and default bindings
+
+`test_bind_defaults.c` parses the real default config (the `default_cfg` string from
+`Quake/default_cfg.h`) and, when present, `Misc/qs_pak/default.cfg`:
+- `+use` is part of `engine_required_binds` (`Quake/bindlist.h`), so the controls menu
+  offers it even if the game ships its own `bindlist.lst`; every entry there is a
+  single-word `+` command with a non-empty label and no duplicates;
+- `E` is bound to `+use` exactly once, `+moveup` moved to `PGUP` (so freeing E costs
+  nothing) and `+movedown` is still on `C`/`CTRL`;
+- no physical key carries two actions in the defaults, every menu action has a default
+  key, and the two copies of the default config (binary + pak) agree.
+
+## Skate presentation and stat channel
+
+`test_skate_client.c` also checks the board's screen pose end to end:
+- the grind tilt sent by the server (`SKATE_SLIDE_BOARD_PITCH`) reaches the render
+  transform instead of being zeroed on the client, for local and remote riders;
+- both the tilt and the kickflip roll rotate the board about its own center, verified
+  against the real `R_EntityMatrix`, including off-center models, other yaw angles and
+  network scales;
+- a level board is restored exactly (no accumulated offset) when the tilt goes away.
+
+The stat channel is covered from both sides: `test_skate_server.c` asserts the server
+tilt while grinding and its removal afterwards, and `test_skate_client.c` asserts that
+an ordinary value in stat 19 from another mod is not mistaken for skate mode.
 
 `run_cigarette_impulse_tests.sh` remains a compatibility wrapper for the full
 suite. Some legacy renderer code has an existing unused local; only that warning

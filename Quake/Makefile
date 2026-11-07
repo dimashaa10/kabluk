@@ -213,98 +213,10 @@ LIBS := $(COMMON_LIBS) $(NET_LIBS) $(CODECLIBS)
 # objects
 # ---------------------------
 
-MUSIC_OBJS:= bgmusic.o \
-	snd_codec.o \
-	snd_flac.o \
-	snd_wave.o \
-	snd_vorbis.o \
-	snd_opus.o \
-	$(mp3_obj).o \
-	snd_mp3tag.o \
-	snd_mikmod.o \
-	snd_modplug.o \
-	snd_xmp.o \
-	snd_umx.o
-COMOBJ_SND := snd_voip.o snd_dma.o snd_mix.o snd_mem.o $(MUSIC_OBJS)
-SYSOBJ_SND := snd_sdl.o
-SYSOBJ_CDA := cd_sdl.o
-SYSOBJ_INPUT := in_sdl.o
-SYSOBJ_GL_VID:= gl_vidsdl.o
-SYSOBJ_NET := net_bsd.o net_udp.o
-SYSOBJ_SYS := pl_linux.o sys_sdl_unix.o
-SYSOBJ_MAIN:= main_sdl.o
-
-GLOBJS = \
-	gl_refrag.o \
-	gl_rlight.o \
-	gl_rmain.o \
-	gl_fog.o \
-	gl_rmisc.o \
-	r_part.o \
-	r_part_fte.o \
-	r_world.o \
-	gl_screen.o \
-	gl_sky.o \
-	gl_warp.o \
-	$(SYSOBJ_GL_VID) \
-	gl_draw.o \
-	image.o \
-	gl_texmgr.o \
-	gl_mesh.o \
-	r_sprite.o \
-	r_alias.o \
-	r_brush.o \
-	gl_model.o
-
-OBJS := strlcat.o \
-	strlcpy.o \
-	$(GLOBJS) \
-	$(SYSOBJ_INPUT) \
-	$(COMOBJ_SND) \
-	$(SYSOBJ_SND) \
-	$(SYSOBJ_CDA) \
-	$(SYSOBJ_NET) \
-	net_dgrm.o \
-	net_loop.o \
-	net_main.o \
-	chase.o \
-	cl_demo.o \
-	cl_input.o \
-	cl_main.o \
-	cl_parse.o \
-	cl_tent.o \
-	console.o \
-	iplog.o \
-	keys.o \
-	location.o \
-	menu.o \
-	sbar.o \
-	view.o \
-	wad.o \
-	cmd.o \
-	common.o \
-	json.o \
-	fs_zip.o \
-	crc.o \
-	cvar.o \
-	cfgfile.o \
-	host.o \
-	host_cmd.o \
-	mathlib.o \
-	mdfour.o \
-	pr_cmds.o \
-	pr_ext.o \
-	pr_edict.o \
-	pr_exec.o \
-	pmove.o \
-	pmovetst.o \
-	sv_main.o \
-	sv_move.o \
-	sv_phys.o \
-	sv_user.o \
-	world.o \
-	zone.o \
-	$(SYSOBJ_SYS) $(SYSOBJ_MAIN)
+# Object groups live in port/objs.mk so that every platform build links the
+# same engine core and only swaps the SYSOBJ_* groups.  A platform presets
+# those groups before including, e.g. port/psp/Makefile.
+include ../port/objs.mk
 
 # ---------------------------
 # targets / rules

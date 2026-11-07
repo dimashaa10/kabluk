@@ -35,7 +35,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "quakedef.h"
 #include "q_ctype.h"
 #include <errno.h> // woods
+#if FEATURE_CURL
 #include <curl/curl.h> // woods #discord
+#endif
 #include "json.h" // woods #discord
 
 static SDL_Cursor* con_cursor_arrow = NULL; // woods #conselection
@@ -3826,6 +3828,7 @@ static int DiscordThread(void *data)
 {
     discord_job_t *job = (discord_job_t*)data;
 
+#if FEATURE_CURL
     CURL *curl = curl_easy_init();
     if (curl) {
         struct curl_slist *hdr = NULL;
@@ -3859,6 +3862,9 @@ static int DiscordThread(void *data)
         curl_slist_free_all(hdr);
         curl_easy_cleanup(curl);
     }
+#else
+    (void)job;	/* Discord webhooks need libcurl */
+#endif
 
 	free(job);
     return 0;

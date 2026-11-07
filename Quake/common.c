@@ -24,6 +24,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "quakedef.h"
 #include "q_ctype.h"
+#include "mdfour.h"	/* checksums of files that are never held in memory */
 #include <errno.h>
 #include <sys/stat.h>
 #include "bgmusic.h"
@@ -317,7 +318,7 @@ int char_to_int (const char* str, int len) // woods #demolistsort
 	int result = 0;
 	for (int i = 0; i < len; ++i) 
 	{
-		if (!isdigit(str[i])) return -1;  // Invalid character for conversion
+		if (!isdigit((unsigned char)str[i])) return -1;  // Invalid character for conversion
 		result = result * 10 + (str[i] - '0');
 	}
 	return result;
@@ -2809,6 +2810,19 @@ static byte	*loadbuf;
 static cache_user_t *loadcache;
 static int	loadsize;
 
+/* How big the file the last COM_LoadStackFile() read was.
+ *
+ * Mod_LoadModel() needs it to move a model's bytes out of the hunk and into
+ * the heap before the loader runs (see the PSP block there): the buffer it gets
+ * back is a pointer into the hunk's temp block, and a pointer does not carry a
+ * size.  Zero until a load has happened. */
+static int	loadfile_len;
+
+int COM_LastLoadFileLength (void)
+{
+	return loadfile_len;
+}
+
 byte *COM_LoadFile (const char *path, int usehunk, unsigned int *path_id)
 {
 	int		h;
@@ -2822,6 +2836,8 @@ byte *COM_LoadFile (const char *path, int usehunk, unsigned int *path_id)
 	len = COM_OpenFile (path, &h, path_id);
 	if (h == -1)
 		return NULL;
+
+	loadfile_len = len;
 
 // extract the filename base name for hunk tag
 	COM_FileBase (path, base, sizeof(base));
@@ -2847,7 +2863,37 @@ byte *COM_LoadFile (const char *path, int usehunk, unsigned int *path_id)
 			buf = (byte *) Hunk_TempAlloc (len+1);
 		break;
 	case LOADFILE_MALLOC:
+#if defined(PLATFORM_PSP) || defined(__psp__)
+		/* The one load that cannot be made small: the caller wants the
+		 * bytes in memory, not read.  Name it and its size *before* the
+		 * request, so a log that ends right after this line says which
+		 * file the console could not hold -- the round-66 log ended at
+		 *
+		 *     malloc: NULL for 17400000 bytes at 0x08949898 --
+		 *     last pic: cached, phase host frame: ...
+		 *
+		 * with no way to tell gfx.wad from progs.dat from a .bsp.
+		 * Below 1 MB nothing is printed: the small loads are the normal
+		 * ones (progs.dat of a stock game is 400 KB). */
+		if (len >= (1 << 20))
+		{
+			extern void psp_trace_syncf (const char *fmt, ...);
+			extern unsigned int psp_heap_block_left (void);
+			/* Durable: the line has to be on the card before the malloc
+			 * runs, because a NULL here ends the module (see above). */
+			psp_trace_syncf ("load: %s wants one malloc of %d KB, %d KB left",
+			                 path, len / 1024,
+			                 (int)(psp_heap_block_left() / 1024));
+		}
+#endif
 		buf = (byte *) malloc (len+1);
+#if defined(PLATFORM_PSP) || defined(__psp__)
+		if (!buf && len >= (1 << 20))
+		{
+			extern void psp_trace_syncf (const char *fmt, ...);
+			psp_trace_syncf ("load: %s FAILED -- %d KB requested, NULL returned", path, len / 1024);
+		}
+#endif
 		break;
 	default:
 		Sys_Error ("COM_LoadFile: bad usehunk");
@@ -2901,6 +2947,104 @@ byte *COM_LoadStackFile (const char *path, void *buffer, int bufsize, unsigned i
 byte *COM_LoadMallocFile (const char *path, unsigned int *path_id)
 {
 	return COM_LoadFile (path, LOADFILE_MALLOC, path_id);
+}
+
+/*
+================
+COM_BlockChecksumFile
+
+The map CRC (sv_mapcrc, woods #mapcrc) used to be
+
+	byte *map = COM_LoadMallocFile (sv.modelname, NULL);
+	quick = Com_BlockChecksum (map, 4096);
+	full  = Com_BlockChecksum (map, com_filesize);
+	free (map);
+
+which is one malloc of the whole .bsp -- and the whole .bsp of this game is
+17.4 MB:
+
+	malloc: NULL for 17400000 bytes at 0x08949898 -- last pic: cached,
+	phase host frame: input/commands/clien
+
+The heap these allocators share is 10 MB (port/psp/psp_mem.c gives the zone
+its own block and this one to newlib), so the request could never be served,
+and COM_LoadFile() answers a failed malloc with Sys_Error(): the module died
+at the top of every level, before the first frame of it.
+
+A checksum is a chain over 64-byte blocks (mdfour.c), so the answer never
+needed the file in memory -- it needed the bytes in order.  This reads it in
+4 KB pieces from a buffer on the stack and folds each piece into both
+checksums at once:
+
+	*quick   the first `quick_bytes` of the file  (4096, an early reject)
+	*full    every byte of the file
+
+Both are the numbers Com_BlockChecksum() would have returned for the same
+bytes, so a client and a server still agree on which map they are playing.
+
+Returns false when the file cannot be opened or read, and leaves *size at 0;
+callers treat that as "no checksum", which is what they did with a failed
+malloc.  `com_filesize` is not touched: this must not have the side effects
+of COM_LoadFile().
+================
+*/
+#define COM_CHECKSUM_WINDOW 4096
+
+qboolean COM_BlockChecksumFile (const char *path, int quick_bytes,
+                                unsigned *quick, unsigned *full, int *size)
+{
+	byte	buf[COM_CHECKSUM_WINDOW];
+	com_checksum_t	quick_sum, full_sum;
+	FILE	*f;
+	int	total = 0;
+	size_t	n;
+
+	if (quick)
+		*quick = 0;
+	if (full)
+		*full = 0;
+	if (size)
+		*size = 0;
+
+	if (!path || COM_FOpenFile (path, &f, NULL) < 0 || !f)
+		return false;
+
+	Com_BlockChecksumBegin (&quick_sum);
+	Com_BlockChecksumBegin (&full_sum);
+
+	while ((n = fread (buf, 1, sizeof(buf), f)) > 0)
+	{
+		/* The quick checksum only ever covers the head of the file, so
+		 * it is fed the part of this window that is inside that head. */
+		if (quick_bytes > total)
+		{
+			size_t take = (size_t)(quick_bytes - total);
+
+			if (take > n)
+				take = n;
+			Com_BlockChecksumUpdate (&quick_sum, buf, take);
+		}
+
+		Com_BlockChecksumUpdate (&full_sum, buf, n);
+		total += (int)n;
+	}
+
+	if (ferror (f))
+	{
+		fclose (f);
+		return false;
+	}
+
+	fclose (f);
+
+	if (quick)
+		*quick = Com_BlockChecksumEnd (&quick_sum);
+	if (full)
+		*full = Com_BlockChecksumEnd (&full_sum);
+	if (size)
+		*size = total;
+
+	return true;
 }
 
 byte *COM_LoadMallocFile_TextMode_OSPath (const char *path, long *len_out)

@@ -186,6 +186,7 @@ static void TestCrouchSpeed (void)
 	int i;
 
 	Reset();
+	player.v.flags = FL_ONGROUND; // crouch only limits ground movement
 	player.v.velocity[0] = 300;
 	player.v.velocity[1] = 200;
 	player.v.velocity[2] = -120;
@@ -205,6 +206,73 @@ static void TestCrouchSpeed (void)
 	player.v.velocity[0] = 220;
 	StepCrouch(0);
 	assert(!client.crouched && player.v.velocity[0] == 220);
+}
+
+/* G3: crouching must never touch airborne or swimming velocity, and must not
+ * run at all once pmove owns the movement (pmove caps the wish speed itself). */
+static void ForceCrouched (void)
+{
+	client.crouched = true;
+	client.crouch_wanted = false;
+	client.crouch_bounds_saved = true;
+	client.crouch_amount = 1;
+	client.crouch_stand_mins_z = player.v.mins[2] = -24;
+	client.crouch_stand_maxs_z = player.v.maxs[2] = 4;
+	client.crouch_stand_viewheight = 22;
+}
+
+static void TestCrouchSpeedOnlyOnGround (void)
+{
+	// crouch-jump: rising with full horizontal speed must survive
+	Reset();
+	player.v.flags = 0;
+	player.v.velocity[0] = 320;
+	player.v.velocity[1] = -40;
+	FinishCrouch();
+	assert(client.crouched);
+	assert(player.v.velocity[0] == 320 && player.v.velocity[1] == -40);
+
+	// a horizontal shove while crouched in the air is not a movement input
+	player.v.velocity[0] = 700;
+	StepCrouch(0);
+	assert(player.v.velocity[0] == 700);
+
+	// swimming: the water code owns the drag, crouch must not add to it
+	Reset();
+	player.v.flags = FL_ONGROUND;
+	ForceCrouched();
+	player.v.waterlevel = 2;
+	player.v.velocity[0] = 260;
+	SV_UpdateCrouch(&client, &player, 0);
+	assert(player.v.velocity[0] == 260);
+
+	// pmove clients: the shared pmove already capped the wish speed, so the
+	// engine must not clamp the result a second time
+	Reset();
+	player.v.flags = FL_ONGROUND;
+	ForceCrouched();
+	player.v.velocity[0] = 260;
+	client.usingpmove = true;
+	SV_UpdateCrouch(&client, &player, 0);
+	assert(player.v.velocity[0] == 260);
+
+	// noclip/spectator: no ground movement to limit
+	Reset();
+	player.v.flags = FL_ONGROUND;
+	ForceCrouched();
+	player.v.movetype = MOVETYPE_NOCLIP;
+	player.v.velocity[0] = 260;
+	SV_UpdateCrouch(&client, &player, 0);
+	assert(player.v.velocity[0] == 260);
+
+	// ... and the ground clamp itself still works
+	Reset();
+	player.v.flags = FL_ONGROUND;
+	ForceCrouched();
+	player.v.velocity[0] = 260;
+	SV_UpdateCrouch(&client, &player, 0);
+	assert(client.crouched);
+	assert(fabsf(player.v.velocity[0] - SV_CROUCH_MAX_SPEED) < 0.01f);
 }
 
 static void TestMovementModes (void)
@@ -355,6 +423,7 @@ int main (void)
 	TestCrouchHullIsHalfStandingHeight();
 	TestBlockedStand();
 	TestCrouchSpeed();
+	TestCrouchSpeedOnlyOnGround();
 	TestMovementModes();
 	TestTransitionFrames();
 	TestSeatedIdleAndWalk();
@@ -363,6 +432,7 @@ int main (void)
 	puts("PASS: crouch hull is half the saved standing height, transitions stay smooth, and standing remains collision-safe.");
 	puts("PASS: seated idle, walk, melee and shooting use the requested frames and Rogue/Hipnotic melee IDs.");
 	puts("PASS: crouch speed cap remains active through transitions without changing vertical velocity.");
+	puts("PASS: crouching never clamps airborne, swimming or pmove-driven velocity.");
 	puts("PASS: swimming down, noclip, ladder and skate mode do not enter crouch.");
 	return 0;
 }
