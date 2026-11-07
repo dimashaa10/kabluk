@@ -3541,11 +3541,12 @@ grep -q '^\.float physdynamic;$' /tmp/pd_qc.txt || {
 # early and leave prose as live code; the extractor below catches exactly that,
 # and it caught it once already.
 qc_nocomments "$qd" | grep -v '^[[:space:]]*$' > /tmp/pd_live.txt
-if [ "$(grep -c . /tmp/pd_live.txt)" -ne 3 ] \
+if [ "$(grep -c . /tmp/pd_live.txt)" -ne 4 ] \
    || ! grep -qx '\.float physdynamic;' /tmp/pd_live.txt \
    || ! grep -qx '\.float physcarry;' /tmp/pd_live.txt \
-   || ! grep -qx '\.float physmovetype;' /tmp/pd_live.txt; then
-    echo "FAIL: $qd is not three paste-ready declarations; the live code is:"
+   || ! grep -qx '\.float physmovetype;' /tmp/pd_live.txt \
+   || ! grep -qx '\.float physsolid;' /tmp/pd_live.txt; then
+    echo "FAIL: $qd is not four paste-ready declarations; the live code is:"
     sed 's/^/FAIL:   /' /tmp/pd_live.txt
     exit 1
 fi
@@ -3615,7 +3616,7 @@ punch=$(grep -n 'ent->v.punchangle\[0\]' /tmp/carry_follow.txt | head -1 | cut -
 }
 # 4. The three QC fields must exist on the engine side too, or none of the
 #    above can find anything.
-for field in physcarry physmovetype; do
+for field in physcarry physmovetype physsolid; do
     grep -q "{\"$field\",[[:space:]]*ev_float}" Quake/pr_edict.c || {
         echo "FAIL: the engine does not register the '$field' field, so the"
         echo "FAIL: carry code reads offset -1 and the feature is dead"
@@ -3630,3 +3631,108 @@ done
 echo "PASS: +use puts a held prop down before it grabs or presses anything, the"
 echo "PASS: FOLLOW dispatcher hands a tagged prop to SV_CarryUpdate before the"
 echo "PASS: attachment maths, and all three QC fields are registered and cached."
+
+# ---- gibs are triggers, and the carry rule has to know it -------------------
+#
+# id's ThrowGib/ThrowHead make gibs SOLID_TRIGGER with a zero-size box on
+# purpose (`// myach`), so "SOLID_BBOX only" meant the most pickable-looking
+# objects in the game were the only ones that could not be picked up. Three
+# things have to hold, and each of them was wrong before:
+#   1. a trigger may be grabbed (but nothing else: no brushes, no SOLID_NOT);
+#   2. FL_MONSTER only vetoes a LIVE monster, because ThrowHead() reuses the
+#      dead monster's own edict, flags and all;
+#   3. the solid is saved and restored, or a released gib comes back as a
+#      SOLID_BBOX with a zero-size box -- an invisible obstacle on the floor.
+tr -d '\r' < Quake/sv_user.c > /tmp/carry_su.txt
+awk '/^qboolean SV_CarryCanGrab \(const edict_t \*target\)$/,/^}$/' /tmp/carry_su.txt > /tmp/carry_can.txt
+awk '/^qboolean SV_CarryRelease \(edict_t \*player\)$/,/^}$/' /tmp/carry_su.txt > /tmp/carry_rel.txt
+[ -s /tmp/carry_can.txt ] && [ -s /tmp/carry_rel.txt ] || {
+    echo "FAIL: SV_CarryCanGrab or SV_CarryRelease is missing"
+    exit 1
+}
+grep -q 'target->v.solid != SOLID_BBOX && target->v.solid != SOLID_TRIGGER' /tmp/carry_can.txt || {
+    echo "FAIL: SV_CarryCanGrab still refuses SOLID_TRIGGER, so gibs -- which"
+    echo "FAIL: ThrowGib spawns as triggers -- can never be picked up"
+    exit 1
+}
+grep -q 'FL_MONSTER) && target->v.health > 0' /tmp/carry_can.txt || {
+    echo "FAIL: SV_CarryCanGrab vetoes FL_MONSTER without looking at health, so"
+    echo "FAIL: the head gib ThrowHead() makes keeps the dead monster's flag and"
+    echo "FAIL: can never be picked up"
+    exit 1
+}
+grep -q 'SV_CarrySetFieldFloat (prop, qcvm->extfields.physsolid, prop->v.solid)' /tmp/carry_su.txt || {
+    echo "FAIL: the grab does not save the prop's solid"
+    exit 1
+}
+grep -q 'SV_CarryFieldFloat (prop, qcvm->extfields.physsolid)' /tmp/carry_rel.txt || {
+    echo "FAIL: the release does not read the saved solid, so it hardcodes"
+    echo "FAIL: SOLID_BBOX and a released gib becomes an invisible floor obstacle"
+    exit 1
+}
+grep -q 'prop->v.solid = solid;' /tmp/carry_rel.txt || {
+    echo "FAIL: the release never assigns the restored solid"
+    exit 1
+}
+grep -q '{"physsolid",[[:space:]]*ev_float}' Quake/pr_edict.c || {
+    echo "FAIL: the engine does not register the physsolid field"
+    exit 1
+}
+grep -q 'QCEXTFIELD(physsolid,' Quake/progs.h || {
+    echo "FAIL: physsolid has no cached offset in progs.h"
+    exit 1
+}
+echo "PASS: a tagged trigger (gib) is carriable while a brush is not, FL_MONSTER"
+echo "PASS: only vetoes a living monster so corpse heads can be picked up, and"
+echo "PASS: the release restores the saved solid instead of hardcoding a box."
+
+# ---- gibs get the tag: the QC side -----------------------------------------
+#
+# The engine will pick up a tagged trigger (the block above proves the rule);
+# this proves the two spawn functions actually put the tag on.  Without these
+# lines the whole feature is unreachable, because a map cannot tag a gib that
+# the progs spawn at runtime.
+gq=Misc/qc/gib_carry.qc
+[ -f "$gq" ] || { echo "FAIL: $gq is missing"; exit 1; }
+tr -d '\r' < "$gq" > /tmp/gib_qc.txt
+[ "$(tr -cd '{' < /tmp/gib_qc.txt | wc -c)" -eq "$(tr -cd '}' < /tmp/gib_qc.txt | wc -c)" ] || {
+    echo "FAIL: $gq has unbalanced braces"
+    exit 1
+}
+awk '/^void\(string gibname, float dm\) ThrowGib =$/,/^};$/' /tmp/gib_qc.txt > /tmp/gib_throw.txt
+awk '/^void\(string gibname, float dm\) ThrowHead =$/,/^};$/' /tmp/gib_qc.txt > /tmp/gib_head.txt
+grep -q '^	new.physdynamic = 1;$' /tmp/gib_throw.txt || {
+    echo "FAIL: ThrowGib does not tag the gib, so a spawned gib can never be"
+    echo "FAIL: picked up (the map cannot reach it)"
+    exit 1
+}
+grep -q '^	self.physdynamic = 1;$' /tmp/gib_head.txt || {
+    echo "FAIL: ThrowHead does not tag the head"
+    exit 1
+}
+# ThrowHead reuses the monster's edict, which still has FL_MONSTER; the engine
+# only vetoes FL_MONSTER while health > 0, so health has to be zeroed here.
+grep -q '^	self.health = 0;$' /tmp/gib_head.txt || {
+    echo "FAIL: ThrowHead leaves health untouched, so the head still looks like"
+    echo "FAIL: a live monster and cannot be picked up"
+    exit 1
+}
+# The original behaviour must survive: a gib is still a trigger, still bouncy,
+# still kicked, still removed on a timer.
+for need in 'new.solid = SOLID_TRIGGER;' 'new.movetype = MOVETYPE_BOUNCE;' \
+            'new.touch = kick_touch;' 'new.think = SUB_Remove;'; do
+    grep -qF "$need" /tmp/gib_throw.txt || {
+        echo "FAIL: ThrowGib lost '$need' -- the gib is not a gib any more"
+        exit 1
+    }
+done
+for need in 'self.solid = SOLID_TRIGGER;' 'self.movetype = MOVETYPE_BOUNCE;' \
+            'self.touch = kick_touch;' 'self.takedamage = DAMAGE_NO;'; do
+    grep -qF "$need" /tmp/gib_head.txt || {
+        echo "FAIL: ThrowHead lost '$need'"
+        exit 1
+    }
+done
+echo "PASS: ThrowGib and ThrowHead tag their gib, the head is zeroed to a"
+echo "PASS: corpse so the engine's FL_MONSTER rule lets it through, and nothing"
+echo "PASS: about being a trigger/bouncy/kicked/removed-on-a-timer changed."

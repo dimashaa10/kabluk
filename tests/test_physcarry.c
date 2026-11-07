@@ -35,6 +35,7 @@ double		host_frametime;
 #define OFS_PHYSDYNAMIC	0
 #define OFS_PHYSCARRY	1
 #define OFS_PHYSMOVETYPE 2
+#define OFS_PHYSSOLID	3
 
 static edict_t	edicts[MAX_TEST_EDICTS];
 static eval_t	fields[MAX_TEST_EDICTS][FIELD_SLOTS];
@@ -179,6 +180,7 @@ static void ResetWorld (void)
 	test_qcvm.extfields.physdynamic = OFS_PHYSDYNAMIC;
 	test_qcvm.extfields.physcarry = OFS_PHYSCARRY;
 	test_qcvm.extfields.physmovetype = OFS_PHYSMOVETYPE;
+	test_qcvm.extfields.physsolid = OFS_PHYSSOLID;
 	pr_global_struct = &test_globals;
 
 	for (i = 0; i < MAX_TEST_EDICTS; i++)
@@ -321,17 +323,23 @@ static void TestOnlyTaggedPropsAreGrabbed (void)
 	assert (prop->v.solid == SOLID_BBOX);
 	assert (!Field (player, OFS_PHYSCARRY));
 
-	/* a monster is never carried, even with the tag */
+	/* a LIVE monster is never carried, even with the tag. Health matters:
+	 * with health at zero the same flags mean "the head gib that ThrowHead()
+	 * made out of a dead monster", and test 12 covers that. */
 	ResetWorld ();
 	prop->v.flags = FL_MONSTER;
+	prop->v.health = 100;
 	assert (!SV_UsePress (player));
 
-	/* nor is a brush, a trigger, a model without a box, or someone's missile */
+	/* nor is a brush, a model without a box, or someone's missile. A bare
+	 * trigger is NOT in this list any more: gibs are triggers, and test 11
+	 * covers them. An untagged trigger is still refused, by the tag. */
 	ResetWorld ();
 	prop->v.solid = SOLID_BSP;
 	assert (!SV_UsePress (player));
 	ResetWorld ();
 	prop->v.solid = SOLID_TRIGGER;
+	SetField (prop, OFS_PHYSDYNAMIC, 0);
 	assert (!SV_UsePress (player));
 	ResetWorld ();
 	prop->v.owner = EDICT_TO_PROG (player);
@@ -445,6 +453,139 @@ static void TestStaleNumberIsIgnored (void)
 	assert (!SV_CarryRelease (player));
 }
 
+
+/* ---- 11. a gib is a trigger with a zero-size box, and it is carriable ----
+ *
+ * id's ThrowGib/ThrowHead spawn with `solid = SOLID_TRIGGER` and
+ * `setsize ('0 0 0', '0 0 0')` on purpose (`// myach`), so the carry rule has
+ * to accept triggers or the objects that most look pickable are the only ones
+ * that cannot be picked up.  The box is degenerate, so every distance in the
+ * scan is measured against absmin/absmax that SV_LinkEdict widens by one unit.
+ */
+static void MakeGib (void)
+{
+	prop->v.solid = SOLID_TRIGGER;
+	prop->v.mins[0] = prop->v.mins[1] = prop->v.mins[2] = 0;
+	prop->v.maxs[0] = prop->v.maxs[1] = prop->v.maxs[2] = 0;
+	prop->v.size[0] = prop->v.size[1] = prop->v.size[2] = 0;
+	prop->v.avelocity[1] = 300;			/* tumbling, as a gib does */
+	SV_LinkEdict (prop, false);
+}
+
+static void TestGibIsCarriable (void)
+{
+	ResetWorld ();
+	MakeGib ();
+
+	assert (SV_UsePress (player));
+	assert (Field (player, OFS_PHYSCARRY) == 2);
+	assert (prop->v.movetype == MOVETYPE_EXT_FOLLOW);
+	assert (prop->v.solid == SOLID_NOT);
+	/* what it was is remembered: a gib is not a box */
+	assert (Field (prop, OFS_PHYSSOLID) == SOLID_TRIGGER);
+	assert (Field (prop, OFS_PHYSMOVETYPE) == MOVETYPE_BOUNCE);
+
+	/* released: back to a trigger, not to the SOLID_BBOX default */
+	assert (SV_UsePress (player));
+	assert (prop->v.solid == SOLID_TRIGGER);
+	assert (prop->v.movetype == MOVETYPE_BOUNCE);
+	assert (!Field (prop, OFS_PHYSSOLID));
+
+	/* a zero-size box must never come back as SOLID_BBOX: that would be an
+	 * invisible solid obstacle a player can trip over on the floor */
+	assert (prop->v.solid != SOLID_BBOX);
+}
+
+/* ---- 12. a corpse is not a monster, but a live monster is ---- */
+static void TestDeadMonstersHeadIsCarriable (void)
+{
+	/* ThrowHead reuses the monster's own edict: FL_MONSTER still set, health
+	 * already zeroed, solid switched to a trigger. */
+	ResetWorld ();
+	MakeGib ();
+	prop->v.flags = FL_MONSTER;
+	prop->v.health = 0;
+	prop->v.takedamage = DAMAGE_NO;
+	assert (SV_UsePress (player));
+	assert (Field (player, OFS_PHYSCARRY) == 2);
+
+	/* the same flags on something still alive is a monster: hands off */
+	ResetWorld ();
+	MakeGib ();
+	prop->v.flags = FL_MONSTER;
+	prop->v.health = 100;
+	assert (!SV_UsePress (player));
+	assert (prop->v.solid == SOLID_TRIGGER);
+	assert (prop->v.movetype == MOVETYPE_BOUNCE);
+
+	/* and a box prop with FL_MONSTER but no health is a corpse too */
+	ResetWorld ();
+	prop->v.flags = FL_MONSTER;
+	prop->v.health = 0;
+	assert (SV_UsePress (player));
+}
+
+/* ---- 13. brushes and abstract entities stay on the map ---- */
+static void TestOnlyTwoSolidsAreCarriable (void)
+{
+	static const int refused[] = { SOLID_BSP, SOLID_NOT, SOLID_SLIDEBOX, SOLID_EXT_CORPSE };
+	size_t i;
+
+	for (i = 0; i < sizeof(refused)/sizeof(refused[0]); i++)
+	{
+		ResetWorld ();
+		prop->v.solid = refused[i];
+		assert (!SV_CarryCanGrab (prop));
+		assert (!SV_UsePress (player));
+		assert (prop->v.solid == refused[i]);
+		assert (prop->v.movetype == MOVETYPE_BOUNCE);
+	}
+}
+
+/* ---- 14. a gib lying in front is found by the scan, not by the crosshair ----
+ *
+ * No SV_Move() clips against a trigger, so the aim trace can never report a
+ * gib; the scan has to. This pins the two shape rules of that scan that the
+ * gib case depends on: the reach, and "not behind the player".
+ */
+static void TestGibScan (void)
+{
+	ResetWorld ();
+	MakeGib ();
+	assert (!aim_ent);				/* the crosshair sees nothing */
+	assert (SV_UsePress (player));	/* the scan still does */
+
+	/* a gib further than the reach is left alone */
+	ResetWorld ();
+	MakeGib ();
+	prop->v.origin[0] = SV_USE_RANGE + 20;
+	SV_LinkEdict (prop, false);
+	assert (!SV_UsePress (player));
+
+	/* a gib behind the player is left alone */
+	ResetWorld ();
+	MakeGib ();
+	prop->v.origin[0] = -20;
+	SV_LinkEdict (prop, false);
+	assert (!SV_UsePress (player));
+}
+
+/* ---- 15. a gib that expires in the hands is dropped, not crashed -------- */
+static void TestGibExpiresInHands (void)
+{
+	ResetWorld ();
+	MakeGib ();
+	assert (SV_UsePress (player));
+
+	/* SUB_Remove fired: the edict is freed while the player still holds it */
+	prop->free = true;
+	assert (SV_CarryHeld (player) == NULL);
+	assert (!SV_CarryRelease (player));
+
+	/* and the press that follows is an ordinary press, not a crash */
+	assert (SV_UsePress (player) == false);	/* nothing left to grab */
+}
+
 int main (void)
 {
 	TestGrab ();
@@ -457,6 +598,11 @@ int main (void)
 	TestDeadPlayerDrops ();
 	TestOneAtATime ();
 	TestStaleNumberIsIgnored ();
+	TestGibIsCarriable ();
+	TestDeadMonstersHeadIsCarriable ();
+	TestOnlyTwoSolidsAreCarriable ();
+	TestGibScan ();
+	TestGibExpiresInHands ();
 	printf ("physcarry: all tests passed\n");
 	return 0;
 }

@@ -335,6 +335,7 @@ struct pr_extfields_s
 	QCEXTFIELD(physdynamic,			".float")			/*float*/	\
 	QCEXTFIELD(physcarry,			".float")			/*float*/	\
 	QCEXTFIELD(physmovetype,		".float")			/*float*/	\
+	QCEXTFIELD(physsolid,			".float")			/*float*/	\
 	//end of list
 
 #define QCEXTFIELD(n,t) int n;

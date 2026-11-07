@@ -1246,6 +1246,7 @@ static void PR_MergeEngineFieldDefs (void)
 		{"physdynamic",	ev_float},	//tag: 1 = this entity is a physics prop
 		{"physcarry",	ev_float},	//on a player: entity number he is holding
 		{"physmovetype",	ev_float},	//on a prop: movetype to restore on release
+		{"physsolid",	ev_float},	//on a prop: solid to restore on release
 
 	};
 	int maxofs = qcvm->progs->entityfields;

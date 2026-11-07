@@ -2557,9 +2557,15 @@ Is this something the action key may pick up? Narrow on purpose, and every test
 below corresponds to a way the carry loop could otherwise break:
 
   * the tag: without it +use is a button press, exactly as before;
-  * SOLID_BBOX: a BSP brush or a trigger is part of the map, not a prop;
-  * no FL_MONSTER: a monster must never be carried (and id1's monsters would
-    fight the follow movetype);
+  * SOLID_BBOX or SOLID_TRIGGER: two kinds of prop, and no others. A brush
+    (SOLID_BSP) is map geometry and must never be lifted out of a wall, and
+    SOLID_NOT is not a thing in the world at all. SOLID_TRIGGER is here for
+    gibs: id's ThrowGib/ThrowHead make them triggers with a zero-size box on
+    purpose (`// myach`), so refusing triggers would mean refusing exactly the
+    objects that look most like something to pick up;
+  * no LIVE monster: FL_MONSTER with health above zero is a monster that would
+    fight the follow movetype. The same flag with health at zero is the head
+    gib ThrowHead() reuses a dead monster's own edict for, and that is a prop;
   * not NONE/NOCLIP: those movetypes mean "does not move" and "ignores the
     world", so there is no physics to give back on release;
   * not FOLLOW: already in someone's hands;
@@ -2572,9 +2578,12 @@ qboolean SV_CarryCanGrab (const edict_t *target)
 		return false;
 	if (!SV_CarryFieldFloat (target, qcvm->extfields.physdynamic))
 		return false;
-	if (target->v.solid != SOLID_BBOX)
+	if (target->v.solid != SOLID_BBOX && target->v.solid != SOLID_TRIGGER)
 		return false;
-	if ((int)target->v.flags & FL_MONSTER)
+	/* A dead monster's own edict is what ThrowHead() turns into a head gib:
+	 * same edict, FL_MONSTER still set, health already zeroed. Live monsters
+	 * stay out, corpse heads do not. */
+	if (((int)target->v.flags & FL_MONSTER) && target->v.health > 0)
 		return false;
 	if (target->v.movetype == MOVETYPE_EXT_FOLLOW || target->v.movetype == MOVETYPE_NONE
 	    || target->v.movetype == MOVETYPE_NOCLIP)
@@ -2628,6 +2637,12 @@ The aim trace uses MOVE_NORMAL, not MOVE_NOMONSTERS: in this engine
 MOVE_NOMONSTERS only collides with SOLID_BSP (world.c:1250), so a SOLID_BBOX
 prop is invisible to it. That matters -- reusing SV_UseFindTarget's trace here
 would mean the crosshair never sees the very entities this feature is for.
+
+A SOLID_TRIGGER prop (a gib) is invisible to the crosshair trace for a different
+reason: triggers live in their own list (SV_LinkEdict, world.c), and no
+SV_Move() ever clips against them. A gib is therefore only ever found by the
+scan below -- which is fine, because a gib lies on the floor and the scan is
+exactly the "what is lying near my feet in front of me" question.
 
 The second pass uses MOVE_NOMONSTERS for the opposite reason: for "can I see
 it?" only world geometry may say no, never another prop or a corpse.
@@ -2688,7 +2703,12 @@ view_ofs as a punchangle-rotated offset, none of which is what "held in front
 of the eyes" means.
 
 The trace is a hull trace with the prop's own box from the eye to the hold
-point, so the prop stops at a wall instead of being pushed through it. It is
+point, so the prop stops at a wall instead of being pushed through it. A gib's
+box is zero sized (ThrowGib sets it on purpose), which turns this into the same
+point trace the engine would do for a bullet: the gib's ORIGIN stops at the
+wall, and the model -- which is bigger than the box -- may poke into it. That
+is the model's box being wrong, not the hold code; giving the gib a real
+setsize is the fix, and it also makes kicking it more reliable. It is
 MOVE_NOMONSTERS because two props must not block each other while carried --
 only the world matters here.
 ===================
@@ -2744,9 +2764,13 @@ qboolean SV_CarryGrab (edict_t *player, edict_t *prop)
 	if (!SV_CarryCanGrab (prop))
 		return false;
 
-	/* Remembered before the movetype is overwritten: this is the only copy of
-	 * what the prop was, and the release path has nothing else to restore. */
+	/* Remembered before they are overwritten: this is the only copy of what
+	 * the prop was, and the release path has nothing else to restore. The
+	 * solid matters just as much as the movetype -- a gib must go back to
+	 * SOLID_TRIGGER, not to the SOLID_BBOX it would otherwise be released as,
+	 * which for a zero-size box is an invisible obstacle on the floor. */
 	SV_CarrySetFieldFloat (prop, qcvm->extfields.physmovetype, prop->v.movetype);
+	SV_CarrySetFieldFloat (prop, qcvm->extfields.physsolid, prop->v.solid);
 	SV_CarrySetFieldFloat (player, qcvm->extfields.physcarry, (float)NUM_FOR_EDICT (prop));
 
 	prop->v.owner = EDICT_TO_PROG (player);
@@ -2778,7 +2802,7 @@ before it was picked up. Nothing is thrown -- releasing is not a throw.
 qboolean SV_CarryRelease (edict_t *player)
 {
 	edict_t	*prop;
-	int		movetype;
+	int		movetype, solid;
 
 	prop = SV_CarryHeld (player);
 	if (!prop)
@@ -2796,7 +2820,14 @@ qboolean SV_CarryRelease (edict_t *player)
 		movetype = MOVETYPE_BOUNCE;
 
 	prop->v.movetype = movetype;
-	prop->v.solid = SOLID_BBOX;
+	/* Back to what it was: a gib returns to SOLID_TRIGGER. Anything that is
+	 * not a carriable solid (should not happen -- only those two can be
+	 * picked up) falls back to a box, which is what a prop is. */
+	solid = (int)SV_CarryFieldFloat (prop, qcvm->extfields.physsolid);
+	SV_CarrySetFieldFloat (prop, qcvm->extfields.physsolid, 0);
+	if (solid != SOLID_BBOX && solid != SOLID_TRIGGER)
+		solid = SOLID_BBOX;
+	prop->v.solid = solid;
 	prop->v.owner = 0;
 	prop->v.aiment = 0;
 	prop->v.flags = (int)prop->v.flags & ~FL_ONGROUND;
