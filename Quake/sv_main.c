@@ -85,13 +85,14 @@ static void SV_CalcViewAction (edict_t *ent, client_t *client,
 	eval_t	*start = GetEdictFieldValue (ent, qcvm->extfields.dvastart);
 	eval_t	*frames = GetEdictFieldValue (ent, qcvm->extfields.dvaframes);
 	eval_t	*fps = GetEdictFieldValue (ent, qcvm->extfields.dvafps);
+	eval_t	*first = GetEdictFieldValue (ent, qcvm->extfields.dvafirst);
 	const char *name;
 	int		modelindex, frame;
 
 	statsi[STAT_VIEWACTION_MODEL] = 0;
 	statsi[STAT_VIEWACTION_FRAME] = 0;
 
-	if (!model || !start || !frames || !fps)
+	if (!model || !start || !frames || !fps || !first)
 		return;		// the mod has no view actions: nothing to report
 	if (!model->string)
 		return;
@@ -109,8 +110,9 @@ static void SV_CalcViewAction (edict_t *ent, client_t *client,
 	if ((unsigned int)modelindex >= client->limit_models)
 		return;		// this client was not sent that model
 
-	frame = VA_FrameAt (qcvm->time, start->_float, fps->_float,
-	                    (int)frames->_float, sv.models[modelindex]->numframes);
+	frame = VA_ActionFrameAt (qcvm->time, start->_float, fps->_float,
+	                          (int)frames->_float, (int)first->_float,
+	                          sv.models[modelindex]->numframes);
 	if (frame < 0)
 		return;
 

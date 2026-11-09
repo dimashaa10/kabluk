@@ -104,6 +104,42 @@ static inline int VA_FrameAt (double now, double start, double fps,
 
 /*
 =================
+VA_ActionFrameAt
+
+Which frame of the model to draw for an action that starts at frame `first`
+(0-based) and runs `frames` frames.
+
+A single model holds several actions: `progs/v_actions.mdl` has the medkit in
+frames 1..11, and the next action will be in the frames after it. Without this
+offset every action would have to be its own file, which is exactly what a
+universal action model is for.
+
+`frames` is clamped to what is left in the model after `first`, so an action
+that overruns the end of the model stops at the end instead of asking the
+renderer for a frame that does not exist.
+=================
+*/
+static inline int VA_ActionFrameAt (double now, double start, double fps,
+                                    int frames, int first, int numframes)
+{
+	int idx, avail;
+
+	if (first < 0)                  /* a mod cannot ask for frame -1 */
+		first = 0;
+
+	avail = numframes - first;
+	if (avail <= 0)                 /* the action starts past the last frame */
+		return -1;
+
+	idx = VA_FrameAt (now, start, fps, frames, avail);
+	if (idx < 0)
+		return -1;
+
+	return first + idx;
+}
+
+/*
+=================
 VA_IsActive
 
 The same question, as a yes/no, for callers that only need to know whether to

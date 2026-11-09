@@ -3789,11 +3789,12 @@ grep -q 'STAT_VIEWACTION_FRAME' /tmp/va_res.txt || {
     exit 1
 }
 # 3. The server fills both stats from the clock and the player's fields...
-grep -q 'VA_FrameAt (qcvm->time' /tmp/va_sv.txt || {
+grep -q 'VA_ActionFrameAt (qcvm->time' /tmp/va_sv.txt || {
     echo "FAIL: SV_CalcViewAction does not derive the frame from the server clock"
+    echo "FAIL: and the action's first frame, so one model cannot hold two actions"
     exit 1
 }
-for fld in dvamodel dvastart dvaframes dvafps; do
+for fld in dvamodel dvastart dvafirst dvaframes dvafps; do
     grep -q "qcvm->extfields.$fld" /tmp/va_sv.txt || {
         echo "FAIL: the server never reads '$fld', so a view action cannot run"
         exit 1
@@ -3827,6 +3828,18 @@ if grep -q 'SV_ModelIndex' /tmp/va_calc.txt; then
 fi
 grep -q 'SV_ViewActionModelIndex' /tmp/va_calc.txt || {
     echo "FAIL: SV_CalcViewAction does not resolve the model name at all"
+    exit 1
+}
+# The offset has to reach the frame calculation, not just be read into a
+# variable: a hardcoded 0 there would silently play the first frames of
+# v_actions.mdl for every action.
+grep -q 'VA_ActionFrameAt (qcvm->time, start->_float, fps->_float,' /tmp/va_calc.txt || {
+    echo "FAIL: SV_CalcViewAction does not call VA_ActionFrameAt"
+    exit 1
+}
+grep -q '(int)first->_float' /tmp/va_calc.txt || {
+    echo "FAIL: the action's first frame is read but never passed to the frame"
+    echo "FAIL: calculation, so every action in v_actions.mdl plays frames 0..N"
     exit 1
 }
 # 5. The client substitutes the model where the weapon is drawn, and only when
@@ -3878,10 +3891,10 @@ tr -d '\r' < "$qv" > /tmp/va_qc.txt
     echo "FAIL: $qv has unbalanced braces"
     exit 1
 }
-awk '/^float\(entity p, string mdl, float frames, float fps\) DVA_Play =$/,/^};$/' /tmp/va_qc.txt > /tmp/va_play.txt
+awk '/^float\(entity p, string mdl, float first, float frames, float fps\) DVA_Play =$/,/^};$/' /tmp/va_qc.txt > /tmp/va_play.txt
 [ -s /tmp/va_play.txt ] || { echo "FAIL: DVA_Play is missing"; exit 1; }
-for fld in dvamodel dvastart dvaframes dvafps dvaend; do
-    grep -q "^	p\.$fld = " /tmp/va_play.txt || {
+for fld in dvamodel dvastart dvafirst dvaframes dvafps dvaend; do
+    grep -q "p\.$fld = " /tmp/va_play.txt || {
         echo "FAIL: DVA_Play does not set p.$fld, so the server sees half a"
         echo "FAIL: request and shows nothing"
         exit 1
@@ -3893,7 +3906,7 @@ grep -q 'if (fps <= 0)' /tmp/va_play.txt || {
     exit 1
 }
 # The five fields must be declared for defs.qc, or the mod cannot compile.
-for decl in '\.string dvamodel;' '\.float dvastart;' '\.float dvaframes;' '\.float dvafps;' '\.float dvaend;'; do
+for decl in '\.string dvamodel;' '\.float dvastart;' '\.float dvafirst;' '\.float dvaframes;' '\.float dvafps;' '\.float dvaend;'; do
     grep -q "$decl" /tmp/va_qc.txt || {
         echo "FAIL: $qv does not declare '$decl' for defs.qc"
         exit 1
@@ -3901,3 +3914,52 @@ for decl in '\.string dvamodel;' '\.float dvastart;' '\.float dvaframes;' '\.flo
 done
 echo "PASS: DVA_Play sets every field the engine reads, guards the fps divide,"
 echo "PASS: and the file carries the five defs.qc declarations the mod needs."
+
+# ---- Dynamic view actions: one model, several frame ranges -----------------
+#
+# All actions live in progs/v_actions.mdl, each in its own slice of frames, so
+# the medkit is frames 1..11 (1-based) and the next action starts at 12. Two
+# things have to hold and neither is visible from the timing test:
+#   - QC counts frames from 1, the model from 0, and DVA_Play does the -1;
+#   - the engine plays from dvafirst, so two actions in one file do not fight.
+qdv=Misc/qc/dynview.qc
+grep -q 'string DVA_ACTIONS_MODEL = "progs/v_actions.mdl";' "$qdv" || {
+    echo "FAIL: the universal action model is not progs/v_actions.mdl"
+    exit 1
+}
+grep -q '^float DVA_ACT_MEDKIT_FIRST = 1;$' "$qdv" || {
+    echo "FAIL: the medkit action does not start at frame 1"
+    exit 1
+}
+grep -q '^float DVA_ACT_MEDKIT_FRAMES = 11;$' "$qdv" || {
+    echo "FAIL: the medkit action is not 11 frames (1..11)"
+    exit 1
+}
+awk '/^float\(entity p, string mdl, float first, float frames, float fps\) DVA_Play =$/,/^};$/' "$qdv" > /tmp/va_play2.txt
+[ -s /tmp/va_play2.txt ] || { echo "FAIL: DVA_Play does not take a first frame"; exit 1; }
+grep -q 'p.dvafirst = first - 1;' /tmp/va_play2.txt || {
+    echo "FAIL: DVA_Play does not convert the 1-based frame number to the"
+    echo "FAIL: 0-based index the model uses"
+    exit 1
+}
+grep -q 'if (first < 1)' /tmp/va_play2.txt || {
+    echo "FAIL: DVA_Play does not guard a first frame below 1"
+    exit 1
+}
+# The engine must read the offset, or every action would start at frame 0.
+grep -q 'extfields.dvafirst' Quake/sv_main.c || {
+    echo "FAIL: the server never reads dvafirst, so every action in the shared"
+    echo "FAIL: model would play its first frames"
+    exit 1
+}
+grep -q '{"dvafirst",[[:space:]]*ev_float}' Quake/pr_edict.c || {
+    echo "FAIL: the engine does not register the dvafirst field"
+    exit 1
+}
+grep -q 'QCEXTFIELD(dvafirst,' Quake/progs.h || {
+    echo "FAIL: dvafirst has no cached offset in progs.h"
+    exit 1
+}
+echo "PASS: every action comes from progs/v_actions.mdl, the medkit is frames"
+echo "PASS: 1..11 (1-based), DVA_Play converts to the model's 0-based index, and"
+echo "PASS: the server plays from dvafirst so a second action can follow it."

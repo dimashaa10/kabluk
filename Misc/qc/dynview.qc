@@ -31,6 +31,24 @@
     think живёт на игроке, а игрока обнуляет респавн — анимация по часам не
     может «забыться», не может запуститься дважды и не занимает таймер.
 
+    ОДНА МОДЕЛЬ НА ВСЕ ДЕЙСТВИЯ
+
+    Все действия берутся из одного файла — `progs/v_actions.mdl`. Каждое
+    действие занимает в нём свой отрезок кадров, и QC передаёт этот отрезок
+    в DVA_Play: номер ПЕРВОГО кадра (считая с единицы, как в обычной
+    анимации QuakeC) и сколько кадров играть.
+
+        кадры 1..11  ->  средняя аптечка (25 hp)   DVA_ACT_MEDKIT
+
+    Дальше можно добавлять свои отрезки, не заводя новых файлов:
+
+        кадры 12..20 ->  броня                  DVA_ACT_ARMOR_FIRST/FRAMES
+        кадры 21..30 ->  патроны                 ...
+
+    ВАЖНО: кадры в QuakeC считаются С ЕДИНИЦЫ, а в файле модели — с нуля.
+    DVA_Play принимает номер с единицы и вычитает 1 сам. Если передать
+    0, он поправит на 1 — «кадра 0» в этом языке не существует.
+
     ЧТО НУЖНО СДЕЛАТЬ (три шага)
 
     1. В defs.qc — пять объявлений полей (они внизу этого файла, их надо
@@ -99,7 +117,7 @@ DVA_Play
 аптечку через полсекунды, покажется новая анимация, а не хвост старой.
 =================
 */
-float(entity p, string mdl, float frames, float fps) DVA_Play =
+float(entity p, string mdl, float first, float frames, float fps) DVA_Play =
 {
 	if (p == world)
 		return 0;			// нет игрока — нечего показывать
@@ -108,11 +126,16 @@ float(entity p, string mdl, float frames, float fps) DVA_Play =
 	if (frames <= 0)
 		return 0;
 
+	// Кадры в QuakeC считаются с единицы, в модели — с нуля.
+	if (first < 1)
+		first = 1;
+
 	if (fps <= 0)
 		fps = 10;			// 0 = скорость по умолчанию
 
 	p.dvamodel = mdl;
 	p.dvastart = time;
+	p.dvafirst = first - 1;		// движок работает с нуля
 	p.dvaframes = frames;
 	p.dvafps = fps;
 	p.dvaend = time + frames / fps;
@@ -145,11 +168,12 @@ void(entity p) DVA_Stop =
 
    В health_touch (items.qc), сразу после sound/stuffcmd:
 
-       DVA_Play (other, DVA_MEDKIT_MODEL, 20, 10);
+       DVA_Play (other, DVA_ACTIONS_MODEL,
+                 DVA_ACT_MEDKIT_FIRST, DVA_ACT_MEDKIT_FRAMES, 10);
 
    В world.qc (WorldSpawn), чтобы модель была предзагружена:
 
-       precache_model (DVA_MEDKIT_MODEL);
+       precache_model (DVA_ACTIONS_MODEL);
 
    ========================================================= */
 
@@ -157,12 +181,30 @@ void(entity p) DVA_Stop =
 
 .string dvamodel;			// модель анимации (string_null = нет анимации)
 .float dvastart;			// когда началась (time)
+.float dvafirst;			// первый кадр действия в модели (с нуля)
 .float dvaframes;			// сколько кадров играть
 .float dvafps;				// кадров в секунду
 .float dvaend;				// когда закончится (для блокировки стрельбы)
 
    =========================================== */
 
-/* Имя файла твоей модели. Поставь своё — здесь оно вынесено в константу,
- * чтобы не искать по всему коду. */
-string DVA_MEDKIT_MODEL = "progs/v_medkit.mdl";
+/* ================= модель и её отрезки =================
+
+   Один файл на все действия. Кадры в QuakeC считаются с единицы. */
+
+string DVA_ACTIONS_MODEL = "progs/v_actions.mdl";
+
+/* Средняя аптечка, +25 hp (item_health без spawnflags). Кадры 1..11. */
+float DVA_ACT_MEDKIT_FIRST = 1;
+float DVA_ACT_MEDKIT_FRAMES = 11;
+
+/* Следующие действия добавляй так, чтобы отрезки не пересекались:
+ *
+ * float DVA_ACT_ARMOR_FIRST = 12;
+ * float DVA_ACT_ARMOR_FRAMES = 9;
+ *
+ * Пересечение — не ошибка движка: он просто проиграет то, что ты сказал.
+ * Но два действия на одних кадрах будут выглядеть одинаково.
+ */
+
+/* ======================================================= */

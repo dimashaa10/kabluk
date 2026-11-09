@@ -124,6 +124,43 @@ static void TestDefaultFpsIsUsable (void)
 	assert (VA_FrameAt ((double)n / DVA_DEFAULT_FPS, 0.0, 0.0, n, n) == -1);
 }
 
+/* ---- frame ranges in one shared model ------------------------------------
+ *
+ * progs/v_actions.mdl holds every action: the medkit is frames 1..11 (1-based),
+ * so 0..10 for the engine, and the next action starts after it. VA_ActionFrameAt
+ * is the offset, and the cases that matter are the two ends of the range.
+ */
+static void TestActionRange (void)
+{
+	/* The medkit: first frame 0, 11 frames at 8 fps (exact in binary). */
+	assert (VA_ActionFrameAt (0.0, 0.0, 8.0, 11, 0, 11) == 0);
+	assert (VA_ActionFrameAt (0.125, 0.0, 8.0, 11, 0, 11) == 1);
+	assert (VA_ActionFrameAt (1.25, 0.0, 8.0, 11, 0, 11) == 10);   /* last */
+	assert (VA_ActionFrameAt (1.375, 0.0, 8.0, 11, 0, 11) == -1);  /* done */
+
+	/* A second action later in the same model starts at its own offset and
+	 * must not run into the frames that are already over. */
+	assert (VA_ActionFrameAt (0.0, 0.0, 8.0, 4, 20, 24) == 20);
+	assert (VA_ActionFrameAt (0.375, 0.0, 8.0, 4, 20, 24) == 23);
+	assert (VA_ActionFrameAt (0.5, 0.0, 8.0, 4, 20, 24) == -1);
+
+	/* Asking for more frames than the model has left stops at the last frame
+	 * of the model, not past it: an action starting at frame 8 of an 11-frame
+	 * model has only 8, 9 and 10 to play, so it runs 3 frames and stops. */
+	assert (VA_ActionFrameAt (0.25, 0.0, 8.0, 20, 8, 11) == 10);   /* last */
+	assert (VA_ActionFrameAt (0.375, 0.0, 8.0, 20, 8, 11) == -1);  /* done */
+
+	/* An action that starts past the end of the model shows nothing at all
+	 * (a stale frame range from a mod against a shorter model). */
+	assert (VA_ActionFrameAt (0.0, 0.0, 8.0, 5, 100, 11) == -1);
+
+	/* A negative first frame is a mistake; frame 0 is the start, not -1. */
+	assert (VA_ActionFrameAt (0.0, 0.0, 8.0, 5, -3, 11) == 0);
+
+	/* Before the start, with an offset, still nothing. */
+	assert (VA_ActionFrameAt (-1.0, 0.0, 8.0, 11, 5, 20) == -1);
+}
+
 int main (void)
 {
 	TestNotStartedYet ();
@@ -133,6 +170,7 @@ int main (void)
 	TestClampedToModelFrames ();
 	TestDegenerateInputs ();
 	TestDefaultFpsIsUsable ();
+	TestActionRange ();
 	printf ("viewaction: all tests passed\n");
 	return 0;
 }

@@ -1251,6 +1251,7 @@ static void PR_MergeEngineFieldDefs (void)
 		//the weapon for a moment (pick up a medkit, see the medkit).
 		{"dvamodel",	ev_string},
 		{"dvastart",	ev_float},
+		{"dvafirst",	ev_float},	//first frame of this action in the model
 		{"dvaframes",	ev_float},
 		{"dvafps",	ev_float},
 
