@@ -285,6 +285,11 @@ typedef struct
 //
 // information that is static for the entire time connected to a server
 //
+	/* The view model drawn last frame. A "dynamic view action"
+	 * (Quake/viewaction.h) swaps the weapon for another model, and the swap
+	 * has to reset the animation lerp once instead of on every packet. */
+	struct qmodel_s		*viewaction_lastmodel;
+
 	struct qmodel_s		*model_precache[MAX_MODELS];
 	struct qmodel_s		*model_precache_csqc[MAX_MODELS];
 	struct sfx_s		*sound_precache[MAX_SOUNDS];

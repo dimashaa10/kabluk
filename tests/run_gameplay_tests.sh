@@ -64,6 +64,11 @@ compile "$repo/tests/test_use_button.c" "$work/sv_user.o" "$work/mathlib.o" \
 compile "$repo/tests/test_physcarry.c" "$work/sv_user.o" "$work/mathlib.o" \
     ${LDFLAGS:-} -Wl,--gc-sections -lm -o "$work/physcarry"
 "$work/physcarry"
+# Dynamic view actions: the frame timing is pure arithmetic (viewaction.h), and
+# the whole feature is that timing, so it is tested directly.
+compile "$repo/tests/test_viewaction.c" \
+    ${LDFLAGS:-} -lm -o "$work/viewaction"
+"$work/viewaction"
 # Controls menu / default bindings: +use must be bindable and default to E.
 compile -DREPO_DIR=\"$repo\" "$repo/tests/test_bind_defaults.c" \
     ${LDFLAGS:-} -Wl,--gc-sections -lm -o "$work/bind_defaults"
@@ -3736,3 +3741,163 @@ done
 echo "PASS: ThrowGib and ThrowHead tag their gib, the head is zeroed to a"
 echo "PASS: corpse so the engine's FL_MONSTER rule lets it through, and nothing"
 echo "PASS: about being a trigger/bouncy/kicked/removed-on-a-timer changed."
+
+# ---- Dynamic view actions: the wiring around the timing ---------------------
+#
+# test_viewaction.c proves the frame maths. What it cannot see is whether the
+# engine actually uses it: the stats have to exist and be reserved, the server
+# has to fill them from the player's fields, the client has to substitute the
+# model only where it draws the weapon, and cl_parse must not treat that
+# substitution as "the weapon model changed" on every packet.
+va=Quake/viewaction.h
+qd=Quake/quakedef.h
+sv=Quake/sv_main.c
+vc=Quake/view.c
+cp=Quake/cl_parse.c
+vh=Quake/view.h
+for f in "$va" "$qd" "$sv" "$vc" "$cp" "$vh"; do
+    [ -f "$f" ] || { echo "FAIL: $f is missing"; exit 1; }
+done
+tr -d '\r' < "$qd" > /tmp/va_qd.txt
+tr -d '\r' < "$sv" > /tmp/va_sv.txt
+tr -d '\r' < "$vc" > /tmp/va_vc.txt
+tr -d '\r' < "$cp" > /tmp/va_cp.txt
+tr -d '\r' < "$vh" > /tmp/va_vh.txt
+
+# 1. The two stats exist, are distinct, and inside the 0..31 range the vanilla
+#    protocol updates (sv_main.c sends only the first 32 without replacement
+#    deltas).
+grep -q '#define[[:space:]]*STAT_VIEWACTION_MODEL[[:space:]]*22' /tmp/va_qd.txt || {
+    echo "FAIL: STAT_VIEWACTION_MODEL is not stat 22"
+    exit 1
+}
+grep -q '#define[[:space:]]*STAT_VIEWACTION_FRAME[[:space:]]*23' /tmp/va_qd.txt || {
+    echo "FAIL: STAT_VIEWACTION_FRAME is not stat 23"
+    exit 1
+}
+# 2. ...and a mod's clientstat() may not take them: the engine writes them every
+#    frame, so a mod claim would be overwritten silently.
+grep -q 'STAT_RESERVED_ENGINE_STATS' /tmp/va_qd.txt || { echo "FAIL: no reserved list"; exit 1; }
+awk '/#define[[:space:]]+STAT_RESERVED_ENGINE_STATS/,/\)$/' /tmp/va_qd.txt > /tmp/va_res.txt
+grep -q 'STAT_VIEWACTION_MODEL' /tmp/va_res.txt || {
+    echo "FAIL: STAT_VIEWACTION_MODEL is not reserved, so a mod's clientstat"
+    echo "FAIL: would fight the engine for the same index"
+    exit 1
+}
+grep -q 'STAT_VIEWACTION_FRAME' /tmp/va_res.txt || {
+    echo "FAIL: STAT_VIEWACTION_FRAME is not reserved"
+    exit 1
+}
+# 3. The server fills both stats from the clock and the player's fields...
+grep -q 'VA_FrameAt (qcvm->time' /tmp/va_sv.txt || {
+    echo "FAIL: SV_CalcViewAction does not derive the frame from the server clock"
+    exit 1
+}
+for fld in dvamodel dvastart dvaframes dvafps; do
+    grep -q "qcvm->extfields.$fld" /tmp/va_sv.txt || {
+        echo "FAIL: the server never reads '$fld', so a view action cannot run"
+        exit 1
+    }
+done
+grep -q 'statsi\[STAT_VIEWACTION_MODEL\] = 0;' /tmp/va_sv.txt || {
+    echo "FAIL: the model stat is not cleared, so an action would never end"
+    echo "FAIL: and the weapon would never come back"
+    exit 1
+}
+# 4. The lookup must NOT be SV_ModelIndex, which calls Sys_Error on a name the
+#    mod forgot to precache -- a missing model must not kill the server.
+awk '/^static int SV_ViewActionModelIndex/,/^}$/' /tmp/va_sv.txt > /tmp/va_lookup.txt
+[ -s /tmp/va_lookup.txt ] || { echo "FAIL: SV_ViewActionModelIndex is missing"; exit 1; }
+if grep -q 'SV_ModelIndex' /tmp/va_lookup.txt; then
+    echo "FAIL: the view-action lookup uses SV_ModelIndex, which Sys_Error()s"
+    echo "FAIL: on a model the mod did not precache"
+    exit 1
+fi
+grep -q 'sv.model_precache\[i\]' /tmp/va_lookup.txt || {
+    echo "FAIL: the lookup does not search the precache list at all"
+    exit 1
+}
+# The caller must use the safe lookup, not the fatal one.
+awk '/^static void SV_CalcViewAction/,/^}$/' /tmp/va_sv.txt > /tmp/va_calc.txt
+[ -s /tmp/va_calc.txt ] || { echo "FAIL: SV_CalcViewAction is missing"; exit 1; }
+if grep -q 'SV_ModelIndex' /tmp/va_calc.txt; then
+    echo "FAIL: SV_CalcViewAction calls SV_ModelIndex, which Sys_Error()s on a"
+    echo "FAIL: model name the mod forgot to precache"
+    exit 1
+fi
+grep -q 'SV_ViewActionModelIndex' /tmp/va_calc.txt || {
+    echo "FAIL: SV_CalcViewAction does not resolve the model name at all"
+    exit 1
+}
+# 5. The client substitutes the model where the weapon is drawn, and only when
+#    the server said so.
+grep -q 'cl.stats\[STAT_VIEWACTION_MODEL\]' /tmp/va_vc.txt || {
+    echo "FAIL: the client never reads the view-action stat"
+    exit 1
+}
+grep -q 'view->model = CL_ViewActionModel ();' /tmp/va_vc.txt || grep -q 'action = CL_ViewActionModel ();' /tmp/va_vc.txt || {
+    echo "FAIL: view.c does not ask CL_ViewActionModel what to draw"
+    exit 1
+}
+grep -q 'cl.stats\[STAT_VIEWACTION_FRAME\]' /tmp/va_vc.txt || {
+    echo "FAIL: the client does not use the action's frame"
+    exit 1
+}
+# The weapon path must survive untouched as the else branch.
+awk '/CL_ViewActionModel \(\)/,/netstate = nullentitystate/' /tmp/va_vc.txt > /tmp/va_branch.txt
+grep -q 'cl.model_precache\[cl.stats\[STAT_WEAPON\]\]' /tmp/va_branch.txt || {
+    echo "FAIL: the weapon branch was lost, so the gun would never be drawn again"
+    exit 1
+}
+# 6. cl_parse: the "did the view model change?" question must use the same
+#    answer as view.c, or every packet resets the action's animation.
+if [ "$(grep -c 'CL_ViewActionModel ()' /tmp/va_cp.txt)" -lt 2 ]; then
+    echo "FAIL: cl_parse.c still compares the view model against the weapon"
+    echo "FAIL: only, so every packet resets the action's animation lerp"
+    exit 1
+fi
+grep -q 'qmodel_t \*CL_ViewActionModel (void);\|struct qmodel_s \*CL_ViewActionModel (void);' /tmp/va_vh.txt || {
+    echo "FAIL: CL_ViewActionModel is not declared in view.h, so cl_parse.c"
+    echo "FAIL: cannot use the same answer view.c uses"
+    exit 1
+}
+echo "PASS: the two view-action stats are distinct, inside the 0..31 range and"
+echo "PASS: reserved; the server fills them from the clock with a non-fatal model"
+echo "PASS: lookup; the client substitutes the model in the weapon's slot; and"
+echo "PASS: cl_parse judges model changes through the same helper as view.c."
+
+# ---- Dynamic view actions: the QuakeC side ---------------------------------
+#
+# The engine can show an action, but only the mod knows WHICH model to play for
+# WHICH item. That is DVA_Play(); if it does not set all four fields, the engine
+# sees half a request and shows nothing.
+qv=Misc/qc/dynview.qc
+[ -f "$qv" ] || { echo "FAIL: $qv is missing"; exit 1; }
+tr -d '\r' < "$qv" > /tmp/va_qc.txt
+[ "$(tr -cd '{' < /tmp/va_qc.txt | wc -c)" -eq "$(tr -cd '}' < /tmp/va_qc.txt | wc -c)" ] || {
+    echo "FAIL: $qv has unbalanced braces"
+    exit 1
+}
+awk '/^float\(entity p, string mdl, float frames, float fps\) DVA_Play =$/,/^};$/' /tmp/va_qc.txt > /tmp/va_play.txt
+[ -s /tmp/va_play.txt ] || { echo "FAIL: DVA_Play is missing"; exit 1; }
+for fld in dvamodel dvastart dvaframes dvafps dvaend; do
+    grep -q "^	p\.$fld = " /tmp/va_play.txt || {
+        echo "FAIL: DVA_Play does not set p.$fld, so the server sees half a"
+        echo "FAIL: request and shows nothing"
+        exit 1
+    }
+done
+# fps 0 means "engine default"; the mod must not divide by it.
+grep -q 'if (fps <= 0)' /tmp/va_play.txt || {
+    echo "FAIL: DVA_Play does not guard fps <= 0 before dividing by it"
+    exit 1
+}
+# The five fields must be declared for defs.qc, or the mod cannot compile.
+for decl in '\.string dvamodel;' '\.float dvastart;' '\.float dvaframes;' '\.float dvafps;' '\.float dvaend;'; do
+    grep -q "$decl" /tmp/va_qc.txt || {
+        echo "FAIL: $qv does not declare '$decl' for defs.qc"
+        exit 1
+    }
+done
+echo "PASS: DVA_Play sets every field the engine reads, guards the fps divide,"
+echo "PASS: and the file carries the five defs.qc declarations the mod needs."

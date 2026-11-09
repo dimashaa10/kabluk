@@ -168,12 +168,16 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 	(  (1u<<STAT_ITEMS) | (1u<<STAT_VIEWHEIGHT) | (1u<<STAT_SKATE) \
 	 | (1u<<STAT_IDEALPITCH) | (1u<<STAT_PUNCHANGLE_X) | (1u<<STAT_PUNCHANGLE_Y) \
 	 | (1u<<STAT_PUNCHANGLE_Z) | (1u<<STAT_PUNCHVECTOR_X) \
-	 | (1u<<STAT_PUNCHVECTOR_Y) | (1u<<STAT_PUNCHVECTOR_Z) )
+	 | (1u<<STAT_PUNCHVECTOR_Y) | (1u<<STAT_PUNCHVECTOR_Z) \
+	 | (1u<<STAT_VIEWACTION_MODEL) | (1u<<STAT_VIEWACTION_FRAME) )
 #define STAT_SKATE			19	// tagged skate mode + visual lift; see skate.h (engine-reserved)
 //#define STAT_VIEW2		20
 #define STAT_VIEWZOOM		21 // DP
-//#define STAT_UNUSED3		22 
-//#define STAT_UNUSED2		23 
+/* Dynamic view actions (viewaction.h): a short animation drawn instead of the
+ * weapon model. Model index 0 means "no action, draw the weapon", so a client
+ * that never receives these stats behaves exactly as before. */
+#define STAT_VIEWACTION_MODEL	22	// model index of the action, engine-owned
+#define STAT_VIEWACTION_FRAME	23	// frame within that model, engine-owned
 //#define STAT_UNUSED1		24
 #define STAT_IDEALPITCH		25	//nq-emu
 #define STAT_PUNCHANGLE_X	26	//nq-emu

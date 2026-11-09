@@ -978,6 +978,30 @@ static void V_EmitCigaretteSmoke (entity_t *view)
 
 /*
 ==================
+CL_ViewActionModel
+
+The model a "dynamic view action" is playing right now, or NULL when the weapon
+should be drawn. The server owns the decision (sv_main.c, SV_CalcViewAction) and
+sends it as stats; the client only checks that the model index is one it
+actually has.
+
+cl_parse.c compares the view model against this when deciding whether a packet
+should reset the animation lerp, so the two files cannot disagree about what the
+view model "is".
+==================
+*/
+qmodel_t *CL_ViewActionModel (void)
+{
+	int index = cl.stats[STAT_VIEWACTION_MODEL];
+
+	if (index <= 0 || index >= MAX_MODELS)
+		return NULL;
+
+	return cl.model_precache[index];
+}
+
+/*
+==================
 V_CalcRefdef
 ==================
 */
@@ -1075,8 +1099,36 @@ void V_CalcRefdef (void)
 			view->origin[2] += 0.5;
 	}
 
-	view->model = cl.model_precache[cl.stats[STAT_WEAPON]];
-	view->frame = cl.stats[STAT_WEAPONFRAME];
+	{
+		/* A view action replaces the weapon model in the same slot, with the
+		 * same transform, bob and depth range: the player sees the medkit
+		 * exactly where the gun was. The gun is not hidden or moved -- it is
+		 * simply not the model this frame -- so there is nothing to restore
+		 * when the action ends. */
+		qmodel_t *action = CL_ViewActionModel ();
+
+		if (action)
+		{
+			view->model = action;
+			view->frame = cl.stats[STAT_VIEWACTION_FRAME];
+		}
+		else
+		{
+			view->model = cl.model_precache[cl.stats[STAT_WEAPON]];
+			view->frame = cl.stats[STAT_WEAPONFRAME];
+		}
+
+		/* Switching between the weapon and the action must not blend one
+		 * model's pose into the other's: frame 0 of the medkit is not a
+		 * continuation of the gun's idle frame. The same check stops the
+		 * animation lerp from being reset on every packet, because
+		 * cl_parse.c asks the same question through the same helper. */
+		if (view->model != cl.viewaction_lastmodel)
+		{
+			view->lerpflags |= LERP_RESETANIM;
+			cl.viewaction_lastmodel = view->model;
+		}
+	}
 	view->netstate = nullentitystate;
 
 	// The server drives the weaponframe; add smoke only during the released

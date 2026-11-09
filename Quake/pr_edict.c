@@ -1247,6 +1247,12 @@ static void PR_MergeEngineFieldDefs (void)
 		{"physcarry",	ev_float},	//on a player: entity number he is holding
 		{"physmovetype",	ev_float},	//on a prop: movetype to restore on release
 		{"physsolid",	ev_float},	//on a prop: solid to restore on release
+		//viewaction.h: a "dynamic view action" - a model shown in place of
+		//the weapon for a moment (pick up a medkit, see the medkit).
+		{"dvamodel",	ev_string},
+		{"dvastart",	ev_float},
+		{"dvaframes",	ev_float},
+		{"dvafps",	ev_float},
 
 	};
 	int maxofs = qcvm->progs->entityfields;

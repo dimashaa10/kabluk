@@ -23,6 +23,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 // sv_main.c -- server main program
 
 #include "quakedef.h"
+#include "viewaction.h"
 #include "cigarette.h"
 #include "skate.h"
 #include "pmove.h"
@@ -43,6 +44,79 @@ unsigned int	sv_protocol_pext2 = PEXT2_SUPPORTED_SERVER; //spike
 extern cvar_t nomonsters; // woods #nomonsters (ironwail)
 
 //============================================================================
+
+/*
+=================
+SV_ViewActionModelIndex
+
+The model a view action named, or 0. Deliberately NOT SV_ModelIndex(): that one
+calls Sys_Error when the name is not precached, and a mod that writes a model
+name it forgot to precache must not take the server down. A missing model simply
+means "no action this frame", and the weapon stays on screen.
+=================
+*/
+static int SV_ViewActionModelIndex (const char *name)
+{
+	int	i;
+
+	if (!name || !*name)
+		return 0;
+
+	for (i = 1; i < MAX_MODELS && sv.model_precache[i]; i++)
+		if (!strcmp (sv.model_precache[i], name))
+			return i;
+
+	return 0;
+}
+
+/*
+=================
+SV_CalcViewAction
+
+Fill STAT_VIEWACTION_MODEL/FRAME for one client. The frame comes from the
+clock, not from a QC think -- see viewaction.h for why. Both stats are always
+written, so "no action" is 0/0 and the client draws the weapon by itself.
+=================
+*/
+static void SV_CalcViewAction (edict_t *ent, client_t *client,
+                               int *statsi)
+{
+	eval_t	*model = GetEdictFieldValue (ent, qcvm->extfields.dvamodel);
+	eval_t	*start = GetEdictFieldValue (ent, qcvm->extfields.dvastart);
+	eval_t	*frames = GetEdictFieldValue (ent, qcvm->extfields.dvaframes);
+	eval_t	*fps = GetEdictFieldValue (ent, qcvm->extfields.dvafps);
+	const char *name;
+	int		modelindex, frame;
+
+	statsi[STAT_VIEWACTION_MODEL] = 0;
+	statsi[STAT_VIEWACTION_FRAME] = 0;
+
+	if (!model || !start || !frames || !fps)
+		return;		// the mod has no view actions: nothing to report
+	if (!model->string)
+		return;
+
+	/* A player who is dead or not in the world cannot be shown an action:
+	 * the weapon model is hidden in those states anyway, and leaving the
+	 * stats set would make the corpse's "hands" animate. */
+	if (ent->v.health <= 0)
+		return;
+
+	name = PR_GetString (model->string);
+	modelindex = SV_ViewActionModelIndex (name);
+	if (!modelindex || !sv.models[modelindex])
+		return;
+	if ((unsigned int)modelindex >= client->limit_models)
+		return;		// this client was not sent that model
+
+	frame = VA_FrameAt (qcvm->time, start->_float, fps->_float,
+	                    (int)frames->_float, sv.models[modelindex]->numframes);
+	if (frame < 0)
+		return;
+
+	statsi[STAT_VIEWACTION_MODEL] = modelindex;
+	statsi[STAT_VIEWACTION_FRAME] = frame;
+}
 
 void SV_CalcStats(client_t *client, int *statsi, float *statsf, const char **statss)
 {
@@ -85,6 +159,8 @@ void SV_CalcStats(client_t *client, int *statsi, float *statsf, const char **sta
 		if (statsf[STAT_VIEWZOOM] < 1)
 			statsf[STAT_VIEWZOOM] = 1;
 	}
+
+	SV_CalcViewAction (ent, client, statsi);
 
 	//FIXME: add support for clientstat/globalstat qc builtins.
 

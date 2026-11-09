@@ -336,6 +336,11 @@ struct pr_extfields_s
 	QCEXTFIELD(physcarry,			".float")			/*float*/	\
 	QCEXTFIELD(physmovetype,		".float")			/*float*/	\
 	QCEXTFIELD(physsolid,			".float")			/*float*/	\
+	/*viewaction.h: what the player's view action is playing, written by QC.*/\
+	QCEXTFIELD(dvamodel,			".string")			/*string*/\
+	QCEXTFIELD(dvastart,			".float")			/*float*/\
+	QCEXTFIELD(dvaframes,		".float")			/*float*/\
+	QCEXTFIELD(dvafps,			".float")			/*float*/\
 	//end of list
 
 #define QCEXTFIELD(n,t) int n;
