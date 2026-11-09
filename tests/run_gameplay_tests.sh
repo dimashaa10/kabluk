@@ -3963,3 +3963,83 @@ grep -q 'QCEXTFIELD(dvafirst,' Quake/progs.h || {
 echo "PASS: every action comes from progs/v_actions.mdl, the medkit is frames"
 echo "PASS: 1..11 (1-based), DVA_Play converts to the model's 0-based index, and"
 echo "PASS: the server plays from dvafirst so a second action can follow it."
+
+# ---- the medkit pickup itself: health_touch -------------------------------
+#
+# The engine can play an action and DVA_Play can start one, but nothing happens
+# until the item's own touch function calls it. This block pins the three
+# decisions in that call, each of which is easy to get subtly wrong:
+#   1. it must come AFTER T_Heal, or a pickup that gave nothing (health already
+#      full, so T_Heal returned 0 and the function already returned) would still
+#      animate;
+#   2. it must be limited to healtype 1, the +25 medkit whose frames 1..11 are
+#      the animation -- mega and rotten boxes have no frames yet;
+#   3. it must pass `other`, the player, and all five DVA_Play arguments, or the
+#      engine sees half a request and shows nothing.
+qp2=Misc/qc/items_health_touch.qc
+[ -f "$qp2" ] || { echo "FAIL: $qp2 is missing"; exit 1; }
+tr -d '\r' < "$qp2" > /tmp/ht.txt
+[ "$(tr -cd '{' < /tmp/ht.txt | wc -c)" -eq "$(tr -cd '}' < /tmp/ht.txt | wc -c)" ] || {
+    echo "FAIL: $qp2 has unbalanced braces"
+    exit 1
+}
+# Comments are stripped before anything is searched for: the file documents the
+# call it makes, and a test that finds the call in its own explanation proves
+# nothing.  (A commented-out DVA_Play passed this block until it did.)
+qc_nocomments /tmp/ht.txt > /tmp/ht_nc.txt
+awk '/^void\(\) health_touch =$/,/^};$/' /tmp/ht_nc.txt > /tmp/ht_body.txt
+[ -s /tmp/ht_body.txt ] || { echo "FAIL: health_touch is missing"; exit 1; }
+
+heal_line=$(grep -n 'T_Heal(other, self.healamount, 0)' /tmp/ht_body.txt | head -1 | cut -d: -f1)
+anim_line=$(grep -n 'DVA_Play (other, DVA_ACTIONS_MODEL' /tmp/ht_body.txt | head -1 | cut -d: -f1)
+remove_line=$(grep -n 'self.model = string_null;' /tmp/ht_body.txt | head -1 | cut -d: -f1)
+[ -n "$anim_line" ] || {
+    echo "FAIL: health_touch never calls DVA_Play, so picking up a medkit shows"
+    echo "FAIL: nothing at all"
+    exit 1
+}
+[ -n "$heal_line" ] && [ "$anim_line" -gt "$heal_line" ] || {
+    echo "FAIL: the animation is started before T_Heal, so a pickup that healed"
+    echo "FAIL: nothing (health already full) would still play the medkit"
+    exit 1
+}
+[ -n "$remove_line" ] && [ "$anim_line" -lt "$remove_line" ] || {
+    echo "FAIL: the animation should start with the pickup, before the item is"
+    echo "FAIL: removed from the world"
+    exit 1
+}
+grep -q 'if (pickup == 1)' /tmp/ht_body.txt || {
+    echo "FAIL: the animation is not limited to the +25 medkit (healtype 1), so"
+    echo "FAIL: the mega and rotten boxes would play the medkit frames too"
+    exit 1
+}
+# The line carries a trailing comment, so match up to the semicolon.
+grep -q '^	pickup = self.healtype;' /tmp/ht_body.txt || {
+    echo "FAIL: healtype is not saved before the checks, so the type is lost"
+    exit 1
+}
+# All five arguments, in DVA_Play's order: player, model, first, frames, fps.
+awk '/DVA_Play \(other, DVA_ACTIONS_MODEL/,/\);/' /tmp/ht_body.txt > /tmp/ht_call.txt
+for arg in 'DVA_ACT_MEDKIT_FIRST' 'DVA_ACT_MEDKIT_FRAMES'; do
+    grep -q "$arg" /tmp/ht_call.txt || {
+        echo "FAIL: the DVA_Play call does not pass $arg"
+        exit 1
+    }
+done
+grep -q 'DVA_Play (other,' /tmp/ht_call.txt || {
+    echo "FAIL: the action is not started on the player; 'other' is the one who"
+    echo "FAIL: touched the item"
+    exit 1
+}
+# ...and the constants have to be the ones the model actually has.
+grep -q '^float DVA_ACT_MEDKIT_FIRST = 1;$' Misc/qc/dynview.qc || {
+    echo "FAIL: the medkit action does not start at frame 1"
+    exit 1
+}
+grep -q '^float DVA_ACT_MEDKIT_FRAMES = 11;$' Misc/qc/dynview.qc || {
+    echo "FAIL: the medkit action is not 11 frames (1..11)"
+    exit 1
+}
+echo "PASS: health_touch starts the medkit action after T_Heal succeeded, only"
+echo "PASS: for the +25 box, on the player who touched it, with the five"
+echo "PASS: arguments the engine needs (frames 1..11 of progs/v_actions.mdl)."
