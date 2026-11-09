@@ -4122,3 +4122,297 @@ echo "PASS: DVA_Play, DVA_Stop and the model/frame constants are declared in the
 echo "PASS: defs.qc block, so items.qc and world.qc compile whatever order"
 echo "PASS: progs.src lists; they are not defined twice; and the prototype"
 echo "PASS: matches the definition exactly."
+
+# ---- monster_pocoyniy67: an NPC that cannot fight ------------------------
+#
+# The monster is pure QuakeC, so nothing here runs it; what the tests can do
+# is hold the file to the shape the request described (50 health, one model,
+# three frame ranges, a three-second flee) and to the two rules that are
+# silently fatal in QuakeC: a name must be defined before it is used, and a
+# field must be one the engine (or this file) actually declares.
+qmon=Misc/qc/monster_pocoyniy67.qc
+[ -f "$qmon" ] || { echo "FAIL: $qmon is missing"; exit 1; }
+qc_nocomments "$qmon" | grep -v '^[[:space:]]*$' > /tmp/poc.txt
+
+# Braces balance, and every function/constant definition ends with "};".
+[ "$(tr -cd '{' < /tmp/poc.txt | wc -c)" -eq "$(tr -cd '}' < /tmp/poc.txt | wc -c)" ] || {
+    echo "FAIL: monster_pocoyniy67.qc has unbalanced braces"
+    exit 1
+}
+# A function definition ends with a bare "=" on its own line and then "};";
+# a constant ends with "= 50;". So the two counts must match.
+defs=$(grep -cE '^[a-z]+(\([^)]*\))?[[:space:]]+[A-Za-z_][A-Za-z_0-9]*[[:space:]]*=[[:space:]]*$' /tmp/poc.txt)
+ends=$(grep -c '^};' /tmp/poc.txt)
+[ "$defs" -eq "$ends" ] || {
+    echo "FAIL: $defs definitions but $ends closing \"};\" -- one is missing"
+    exit 1
+}
+
+# 1. The model the request names, loaded and used.
+grep -qF 'precache_model ("progs/pocoyniy67.mdl");' /tmp/poc.txt || {
+    echo "FAIL: the NPC does not precache progs/pocoyniy67.mdl"; exit 1
+}
+grep -qF 'setmodel (self, "progs/pocoyniy67.mdl");' /tmp/poc.txt || {
+    echo "FAIL: the NPC does not use progs/pocoyniy67.mdl as its model"; exit 1
+}
+
+# 2. 50 health, and the spawn actually uses the constant.
+grep -qE '^float POC_HEALTH[[:space:]]*=[[:space:]]*50;' /tmp/poc.txt || {
+    echo "FAIL: POC_HEALTH is not 50"; exit 1
+}
+grep -qF 'self.health = POC_HEALTH;' /tmp/poc.txt || {
+    echo "FAIL: the NPC does not get POC_HEALTH at spawn"; exit 1
+}
+
+# 3. The three frame ranges, counted from one, exactly as specified:
+#    idle 1..20, movement 21..30, death 31..47.
+for spec in \
+    'POC_IDLE_FIRST:1' 'POC_IDLE_FRAMES:20' \
+    'POC_MOVE_FIRST:21' 'POC_MOVE_FRAMES:10' \
+    'POC_DIE_FIRST:31'  'POC_DIE_FRAMES:17'
+do
+    name=${spec%%:*}; value=${spec#*:}
+    grep -qE "^float $name[[:space:]]*=[[:space:]]*$value;" /tmp/poc.txt || {
+        echo "FAIL: monster_pocoyniy67.qc does not declare $name = $value"
+        exit 1
+    }
+done
+# The ranges must not overlap and must not leave a gap: 1+20 == 21, 21+10 == 31.
+awk '
+/^float POC_IDLE_FIRST[ \t]*=/   { sub(/.*=[ \t]*/, ""); sub(/;.*/, ""); i = $0 + 0 }
+/^float POC_IDLE_FRAMES[ \t]*=/  { sub(/.*=[ \t]*/, ""); sub(/;.*/, ""); n = $0 + 0 }
+/^float POC_MOVE_FIRST[ \t]*=/   { sub(/.*=[ \t]*/, ""); sub(/;.*/, ""); m = $0 + 0 }
+/^float POC_DIE_FIRST[ \t]*=/    { sub(/.*=[ \t]*/, ""); sub(/;.*/, ""); d = $0 + 0 }
+END {
+    if (i + n != m)  { printf "idle %d..%d does not end right before move %d\n", i, i + n - 1, m; exit 1 }
+    if (m + 10 != d) { printf "move %d..%d does not end right before death %d\n", m, m + 9, d; exit 1 }
+}' /tmp/poc.txt || {
+    echo "FAIL: the three frame ranges do not sit back to back"; exit 1
+}
+# QuakeC counts frames from one, the model from zero, and one function does
+# the conversion -- so a model whose idle really starts at file frame 0 works.
+[ "$(grep -cF 'f0 = first - 1;' /tmp/poc.txt)" -eq 1 ] || {
+    echo "FAIL: the 1-based to 0-based frame conversion is not in exactly one"
+    echo "FAIL: place (a second copy would drift)"
+    exit 1
+}
+grep -q '^void(float first, float frames, float fps) poc_setanim =$' /tmp/poc.txt || {
+    echo "FAIL: poc_setanim does not take (first, frames, fps)"; exit 1
+}
+
+# 4. Idle and movement loop; death must not loop.
+grep -qF 'f = f - self.poc_aframes * floor (f / self.poc_aframes);' /tmp/poc.txt || {
+    echo "FAIL: the idle/move animation does not wrap back to its first frame"
+    exit 1
+}
+grep -qF 'if (f > self.poc_aframes - 1)' /tmp/poc.txt || {
+    echo "FAIL: the death animation is not clamped to its last frame, so the"
+    echo "FAIL: monster would stand back up and die again"
+    exit 1
+}
+
+# 5. The flee: three seconds, always away from the player, and it must be
+#    checked BEFORE the ordinary wander, otherwise "scared" would never win.
+grep -qE '^float POC_FLEE_TIME[[:space:]]*=[[:space:]]*3;' /tmp/poc.txt || {
+    echo "FAIL: POC_FLEE_TIME is not 3 seconds"; exit 1
+}
+grep -qF 'self.poc_flee = time + POC_FLEE_TIME;' /tmp/poc.txt || {
+    echo "FAIL: being shot does not start a POC_FLEE_TIME-long flee"; exit 1
+}
+grep -qF 'if (self.poc_flee > time)' /tmp/poc.txt || {
+    echo "FAIL: the think never checks whether the flee is still running"
+    exit 1
+}
+grep -qF 'self.enemy = find (world, classname, "player");' /tmp/poc.txt || {
+    echo "FAIL: the NPC does not learn who shot it (the player)"; exit 1
+}
+grep -qF 'self.ideal_yaw = vectoyaw (self.origin - self.poc_runfrom);' /tmp/poc.txt || {
+    echo "FAIL: the flee direction is not away from the player"; exit 1
+}
+# Line order inside the file: the dead check, then onground, then flee, then
+# the wander. Getting this order wrong is a behaviour bug, not a syntax one.
+awk '
+/^void\(\) poc_think =$/    { inthink = 1 }
+/^};/                        { if (inthink) inthink = 0 }
+inthink && /if \(self.health <= 0\)/        { if (!dead)   dead   = FNR }
+inthink && /if \(!\(self.flags & FL_ONGROUND\)\)/ { if (!ground) ground = FNR }
+inthink && /if \(self.poc_flee > time\)/    { if (!flee)   flee   = FNR }
+inthink && /if \(time >= self.poc_until\)/  { if (!wander) wander = FNR }
+END {
+    if (!dead || !ground || !flee || !wander) { print "missing branch"; exit 1 }
+    if (!(dead < ground && ground < flee && flee < wander)) {
+        printf "order is dead=%d ground=%d flee=%d wander=%d\n", dead, ground, flee, wander
+        exit 1
+    }
+}' /tmp/poc.txt || {
+    echo "FAIL: poc_think checks its branches in the wrong order -- fleeing must"
+    echo "FAIL: win over the aimless walk, and a corpse must not walk at all"
+    exit 1
+}
+
+# 6. It cannot attack: no attack function, no damage code, no projectiles.
+for bad in 'th_attack' 'T_Damage' 'T_RadiusDamage' 'fire_' 'launch_' 'missile' \
+           'W_Fire' 'attack_finished';
+do
+    if grep -qF "$bad" /tmp/poc.txt; then
+        echo "FAIL: monster_pocoyniy67.qc mentions '$bad' -- this NPC must not"
+        echo "FAIL: be able to hurt anything"
+        exit 1
+    fi
+done
+
+# 7. Damage hooks and a corpse that stays dead.
+grep -qF 'self.th_pain = poc_pain;' /tmp/poc.txt || {
+    echo "FAIL: the NPC has no th_pain, so being shot would do nothing"; exit 1
+}
+grep -qF 'self.th_die = poc_die;' /tmp/poc.txt || {
+    echo "FAIL: the NPC has no th_die, so it could not die"; exit 1
+}
+grep -qF 'self.takedamage = DAMAGE_NO;' /tmp/poc.txt || {
+    echo "FAIL: the corpse is still damageable and would replay its death"
+    exit 1
+}
+grep -qF 'self.solid = SOLID_NOT;' /tmp/poc.txt || {
+    echo "FAIL: the corpse still blocks the player"; exit 1
+}
+# Walking must go through walkmove: MOVETYPE_STEP alone never moves.
+grep -qF 'walkmove (self.ideal_yaw, POC_FLEE_SPEED * POC_THINK)' /tmp/poc.txt || {
+    echo "FAIL: the fleeing NPC never actually moves"; exit 1
+}
+grep -qF 'walkmove (self.ideal_yaw, POC_WANDER_SPEED * POC_THINK)' /tmp/poc.txt || {
+    echo "FAIL: the wandering NPC never actually moves"; exit 1
+}
+
+# 8. QuakeC has no lookahead inside a file either: every name this file
+#    defines must appear after no earlier use of it. (This is the same rule
+#    that broke DVA_Play when it lived in the wrong file.)
+cat > /tmp/poc_order.awk <<'EOF'
+{ L[NR] = $0 }
+END {
+    for (i = 1; i <= NR; i++) {
+        if (match(L[i], /^[a-z]+(\([^)]*\))?[ \t]+[A-Za-z_][A-Za-z_0-9]*[ \t]*=/)) {
+            s = L[i]; sub(/[ \t]*=.*/, "", s); n = split(s, a, /[ \t]+/); nm = a[n]
+            if (!(nm in defline)) defline[nm] = i
+        }
+        if (match(L[i], /^\.[a-z]+[ \t]+[A-Za-z_][A-Za-z_0-9]*[ \t]*;/)) {
+            s = L[i]; sub(/;.*/, "", s); n = split(s, a, /[ \t]+/); nm = a[n]
+            if (!(nm in defline)) defline[nm] = i
+        }
+    }
+    bad = 0
+    for (nm in defline) {
+        if (length(nm) < 4) continue
+        for (i = 1; i < defline[nm]; i++)
+            if (L[i] ~ ("(^|[^A-Za-z0-9_])" nm "([^A-Za-z0-9_]|$)")) {
+                printf "%s is used on line %d but defined on line %d\n", nm, i, defline[nm]
+                bad = 1
+                break
+            }
+    }
+    exit bad
+}
+EOF
+awk -f /tmp/poc_order.awk /tmp/poc.txt || {
+    echo "FAIL: monster_pocoyniy67.qc uses a name before defining it -- QuakeC"
+    echo "FAIL: compiles top-down and would stop with \"Unknown value\""
+    exit 1
+}
+
+# 9. Every field it touches must be one the engine itself maps (progdefs.q1,
+#    generated from the standard defs.qc) or one this file declares.
+sed -n '/^typedef struct$/,/entvars_t;/p' Quake/progdefs.q1 |
+    sed -nE 's/^\t(float|vec3_t|int|string_t|func_t)[ \t]+([A-Za-z_0-9]+);.*/\2/p' |
+    sort -u > /tmp/poc_known.txt
+# th_pain/th_die are QuakeC-only fields of the standard defs.qc and are not
+# part of the engine struct, so they are named here on purpose.
+printf 'th_pain\nth_die\n' >> /tmp/poc_known.txt
+grep -oE '^\.[a-z]+[ \t]+[A-Za-z_0-9]+;' /tmp/poc.txt |
+    sed -E 's/^\.[a-z]+[ \t]+([A-Za-z_0-9]+);/\1/' >> /tmp/poc_known.txt
+cat > /tmp/poc_field.awk <<'EOF'
+NR == FNR { known[$1] = 1; next }
+{
+    s = $0
+    while (match(s, /self\.[A-Za-z_][A-Za-z_0-9]*/)) {
+        n = substr(s, RSTART + 5, RLENGTH - 5)
+        s = substr(s, RSTART + RLENGTH)
+        if (n in known) continue
+        if (match(n, /^(.*)_(x|y|z)$/) && (substr(n, 1, RLENGTH - 2) in known)) continue
+        printf "line %d: self.%s\n", FNR, n
+        bad = 1
+    }
+}
+END { exit bad }
+EOF
+awk -f /tmp/poc_field.awk /tmp/poc_known.txt /tmp/poc.txt || {
+    echo "FAIL: monster_pocoyniy67.qc uses an entity field that neither the"
+    echo "FAIL: engine nor this file declares (the lines above) -- it would not"
+    echo "FAIL: compile, and a typo would silently do nothing"
+    exit 1
+}
+
+# 10. It may call only the engine builtins listed here -- no monster_start(),
+#     no ChangeYaw(), nothing the mod would have to provide. Each of those
+#     builtins is then checked against this engine's own builtin table.
+awk '
+{
+    s = $0
+    while (match(s, /[A-Za-z_][A-Za-z_0-9]*[ \t]*\(/)) {
+        n = substr(s, RSTART, RLENGTH); sub(/[ \t]*\($/, "", n)
+        s = substr(s, RSTART + RLENGTH)
+        if (n == "if" || n == "else" || n == "return" || n == "while" || n == "do" ||
+            n == "local" || n == "void" || n == "float" || n == "string" ||
+            n == "entity" || n == "vector") continue
+        print n
+    }
+}' /tmp/poc.txt | sort -u > /tmp/poc_calls.txt
+printf '%s\n' poc_setanim poc_loopframe poc_die_frame poc_turn poc_think \
+    poc_pain poc_die monster_pocoyniy67 precache_model setmodel setsize \
+    droptofloor walkmove vectoyaw find random floor | sort -u > /tmp/poc_allowed.txt
+extra=$(comm -23 /tmp/poc_calls.txt /tmp/poc_allowed.txt)
+[ -z "$extra" ] || {
+    echo "FAIL: monster_pocoyniy67.qc calls something outside its own file and"
+    echo "FAIL: the vetted builtins: $extra"
+    exit 1
+}
+for pair in \
+    precache_model:PF_sv_precache_model setmodel:PF_sv_setmodel \
+    setsize:PF_setsize droptofloor:PF_droptofloor walkmove:PF_walkmove \
+    vectoyaw:PF_vectoyaw find:PF_Find random:PF_random floor:PF_floor
+do
+    qcname=${pair%%:*}; cfn=${pair#*:}
+    grep -qx "$qcname" /tmp/poc_calls.txt || continue
+    grep -q "$cfn" Quake/pr_cmds.c || {
+        echo "FAIL: the NPC calls $qcname but this engine has no $cfn"; exit 1
+    }
+done
+# And each of them must be reachable from the file, i.e. actually used.
+for used in walkmove droptofloor find random floor vectoyaw; do
+    grep -qx "$used" /tmp/poc_calls.txt || {
+        echo "FAIL: monster_pocoyniy67.qc never calls $used, yet relies on it"
+        exit 1
+    }
+done
+
+# 11. MOVETYPE_STEP gets no movement from the engine: the step physics only
+#     applies gravity. Written down as a test so nobody "fixes" the walkmove
+#     away later.
+grep -q 'self.movetype = MOVETYPE_STEP;' /tmp/poc.txt || {
+    echo "FAIL: the NPC is not a MOVETYPE_STEP entity"; exit 1
+}
+awk '/^void SV_Physics_Step \(edict_t \*ent\)/,/^}/' Quake/sv_phys.c |
+    grep -q 'SV_AddGravity (ent);' || {
+    echo "FAIL: SV_Physics_Step no longer applies gravity, so the NPC would"
+    echo "FAIL: not fall to the floor"
+    exit 1
+}
+if awk '/^void SV_Physics_Step \(edict_t \*ent\)/,/^}/' Quake/sv_phys.c |
+        grep -q 'SV_Physics_Toss\|SV_movestep'; then
+    echo "FAIL: SV_Physics_Step now moves monsters by itself -- the walkmove"
+    echo "FAIL: logic in monster_pocoyniy67.qc needs a re-read"
+    exit 1
+fi
+
+echo "PASS: monster_pocoyniy67 is 50 health, one model, idle 1..20, movement"
+echo "PASS: 21..30, death 31..47 clamped at the last frame, flees for three"
+echo "PASS: seconds away from the player, cannot attack, and uses only"
+echo "PASS: standard fields and nine engine builtins that this tree provides."
