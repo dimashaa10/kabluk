@@ -2233,6 +2233,110 @@ port/
               умеет; это следующая правка, и она видна по логу как
               `glBlendFunc(GL_DST_COLOR, GL_SRC_COLOR)` в кадре.
 
+        3c2. **`PR_ExecuteProgram: NULL function` при выстреле в NPC: разбор
+           лога и настоящая причина.**
+
+           **Что было в логе.** Игрок выстрелил в `monster_pocoyniy67`,
+           дальше стек `T_Damage -> FoundTarget -> sound()`, EDICT 116
+           (это наш NPC) и в конце `Host_Error: PR_ExecuteProgram: NULL
+           function`.
+
+           **Первое, что важно понять: напечатанный стек -- не место
+           падения.** Это `PR_RunWarning` из `PF_sound` (движок,
+           `Quake/pr_cmds.c`: `if (!*sample) PR_RunWarning ("PF_sound: empty
+           string")`), а `PR_RunWarning` печатает текущую инструкцию и стек
+           перед предупреждением. Отсюда и `CALL5 305(sound)sound()` первой
+           строкой. Стек печатается **изнутри наружу** (`PR_StackTrace` идёт
+           от `stack[depth]` к `stack[0]`), поэтому последняя строка
+           `<NO FUNCTION>` -- это `stack[0]`, кадр вызова из C, и он всегда
+           такой. То есть ни `sound()`, ни `<NO FUNCTION>` к падению
+           отношения не имеют; предупреждение про пустой звук безвредно.
+
+           **Настоящее место падения** -- последние две строки: `EDICT 116`
+           плюс `PR_ExecuteProgram: NULL function`. Такой вид -- не
+           `PR_RunError`, а `Host_Error` из самого `PR_ExecuteProgram`
+           (`Quake/pr_exec.c:365-369`: если `!fnum`, печатается EDICT того,
+           кто в `self`, и только потом ошибка). EDICT напечатан, потому что
+           `self` -- наш монстр. Значит движок вызвал QC-функцию с нулевым
+           указателем, и `self` в этот момент был наш NPC.
+
+           Кто из движка зовёт QC без проверки на NULL? Проверил все места:
+
+           | место | защита |
+           |---|---|
+           | `SV_RunThink` (`sv_phys.c:232`, `PR_ExecuteProgram (ent->v.think)`) | **нет** |
+           | `SV_Impact` touch (`sv_phys.c:268`) | `if (e1->v.touch && ...)` |
+           | `use` (`sv_user.c:2405`) | `if (!target->v.use) return;` |
+           | `blocked` | только у `MOVETYPE_PUSH` |
+
+           То есть единственный путь -- «`nextthink` наступил, а `think`
+           равен нулю». Наш `poc_think` ставит `nextthink` сам, значит
+           `think` обнулил кто-то другой. И это видно в EDICT: там
+           `goalentity entity 1` -- поле, которое в стандартном `ai.qc`
+           ставит `HuntTarget`:
+
+           ```c
+           void() HuntTarget =
+           {
+               self.goalentity = self.enemy;
+               self.think = self.th_run;      // ← у нашего NPC это 0
+               self.nextthink = time + 0.1;
+               self.attack_state = AS_STRAIGHT;
+           };
+           ```
+
+           `th_run` у нашего NPC был пуст: обычный монстр получает этот
+           слот в своём спавне, а мы `monster_start` не звали и заполняли
+           только `th_pain`/`th_die`. Мод положил в `think` ноль, движок в
+           следующем кадре выполнил его без проверки -- падение.
+
+           **Исправление.** Заполняются все пять слотов, которые мод зовёт
+           сам, -- `th_stand`, `th_walk`, `th_run`, `th_melee`,
+           `th_missile`, все на одну заглушку `poc_ai_stub`:
+
+           ```c
+           void() poc_ai_stub =
+           {
+               if (self.health <= 0)
+                   return;                        // мёртвого тоже могут позвать
+               self.think = poc_think;            // вернуть управление себе
+               self.nextthink = time + POC_THINK;
+           };
+           ```
+
+           Второе (`self.think = poc_think`) не менее важно, чем первое: мод
+           переключает `think` **на** `th_run`, и без возврата наша
+           анимация и убегание просто остановились бы, зато монстр начал бы
+           жить по чужому AI. Заглушка ничего не двигает, не анимирует и не
+           наносит урон: `th_melee`/`th_missile` для этого NPC значат
+           «ничего», поэтому «не атакует» остаётся правдой.
+
+           **Что осталось как есть.** `PF_sound: empty string` --
+           безвредное предупреждение: мод играет `self.noise`, а у нас это
+           поле пустое. Хотите звук -- `precache_sound (...)` в спавне и
+           `self.noise = "путь/к/сэмплу.wav"`; путей ваших сэмплов я не
+           знаю.
+
+           **Проверка: 268 PASS, 0 FAIL.** Новый блок проверяет, что все
+           пять слотов заполнены именно заглушкой (ровно пять, не больше),
+           что заглушка возвращает `think` и планирует `nextthink`, что она
+           не наносит урон, не двигает и не анимирует, что мёртвого она не
+           оживляет, и -- отдельно -- что в `SV_RunThink` этого дерева
+           по-прежнему нет проверки на NULL (иначе сама причина исчезла бы,
+           и блок надо перечитать).
+
+           **Обратные патчи (проверено, все падают):** убрать
+           `self.th_run = poc_ai_stub;` -- «self.th_run is not filled ... the
+           engine would run a NULL function»; заменить в заглушке
+           `self.think = poc_think` на `self.think = poc_ai_stub` -- «the
+           stub does not give the think back to poc_think»; добавить
+           `T_Damage` в заглушку -- «this NPC must not be able to hurt
+           anything»; убрать проверку здоровья -- «the stub would schedule a
+           think on a dead monster»; добавить шестой слот (`th_angry`) --
+           «uses an entity field that neither the engine nor this file
+           declares»; направить `th_melee` на `poc_pain` -- «self.th_melee is
+           not filled».
+
         3c1. **FGD для TrenchBroom: `Misc/fgd/monster_pocoyniy67.fgd`.**
 
            **Зачем.** FGD — описание entity для редактора карт. Игра его не

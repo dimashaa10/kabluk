@@ -4251,7 +4251,10 @@ END {
 }
 
 # 6. It cannot attack: no attack function, no damage code, no projectiles.
-for bad in 'th_attack' 'T_Damage' 'T_RadiusDamage' 'fire_' 'launch_' 'missile' \
+# 'missile' is no longer a banned word: the fix for the NULL-function crash
+# needs self.th_missile to be filled. What matters is that the melee and
+# missile slots point at the stub that does nothing.
+for bad in 'th_attack' 'T_Damage' 'T_RadiusDamage' 'fire_' 'launch_' \
            'W_Fire' 'attack_finished';
 do
     if grep -qF "$bad" /tmp/poc.txt; then
@@ -4323,9 +4326,11 @@ awk -f /tmp/poc_order.awk /tmp/poc.txt || {
 sed -n '/^typedef struct$/,/entvars_t;/p' Quake/progdefs.q1 |
     sed -nE 's/^\t(float|vec3_t|int|string_t|func_t)[ \t]+([A-Za-z_0-9]+);.*/\2/p' |
     sort -u > /tmp/poc_known.txt
-# th_pain/th_die are QuakeC-only fields of the standard defs.qc and are not
-# part of the engine struct, so they are named here on purpose.
-printf 'th_pain\nth_die\n' >> /tmp/poc_known.txt
+# The standard monster function slots are QuakeC-only fields of the usual
+# defs.qc ("monster state" block) and are not part of the engine struct, so
+# they are named here on purpose.
+printf 'th_pain\nth_die\nth_stand\nth_walk\nth_run\nth_melee\nth_missile\n' \
+    >> /tmp/poc_known.txt
 grep -oE '^\.[a-z]+[ \t]+[A-Za-z_0-9]+;' /tmp/poc.txt |
     sed -E 's/^\.[a-z]+[ \t]+([A-Za-z_0-9]+);/\1/' >> /tmp/poc_known.txt
 cat > /tmp/poc_field.awk <<'EOF'
@@ -4412,10 +4417,66 @@ if awk '/^void SV_Physics_Step \(edict_t \*ent\)/,/^}/' Quake/sv_phys.c |
     exit 1
 fi
 
+# 12. The monster-function contract. The mod's ai.qc calls these slots
+#     directly and installs th_run as the entity's think; a NULL slot makes
+#     the engine execute a null pointer (SV_RunThink has no guard), which is
+#     the crash this fix is for. So all five must be filled, and the stub
+#     must hand control back to our own think.
+for slot in th_stand th_walk th_run th_melee th_missile; do
+    grep -qE "^[[:space:]]*self\.$slot[[:space:]]*=[[:space:]]*poc_ai_stub;" /tmp/poc.txt || {
+        echo "FAIL: self.$slot is not filled -- the mod's ai.qc can call it"
+        echo "FAIL: (or install it as think) and the engine would run a NULL"
+        echo "FAIL: function"
+        exit 1
+    }
+done
+[ "$(grep -cE '^[[:space:]]*self\.th_(stand|walk|run|melee|missile)[[:space:]]*=' /tmp/poc.txt)" -eq 5 ] || {
+    echo "FAIL: expected exactly the five standard slots to be assigned"
+    exit 1
+}
+grep -qF 'void() poc_ai_stub =' /tmp/poc.txt || {
+    echo "FAIL: poc_ai_stub is missing"; exit 1
+}
+awk '/^void\(\) poc_ai_stub =$/,/^};$/' /tmp/poc.txt > /tmp/poc_stub.txt
+grep -qF 'self.think = poc_think;' /tmp/poc_stub.txt || {
+    echo "FAIL: the stub does not give the think back to poc_think, so the"
+    echo "FAIL: mod's ai would take the monster over and our idle/flee would"
+    echo "FAIL: stop"
+    exit 1
+}
+grep -qF 'self.nextthink = time + POC_THINK;' /tmp/poc_stub.txt || {
+    echo "FAIL: the stub arms the think slot but never schedules it"; exit 1
+}
+# The stub must not do anything but hand control back: no damage, no
+# movement, no velocity, no animation changes.
+if grep -qE 'T_Damage|T_RadiusDamage|velocity|walkmove|poc_setanim|sound *\(' /tmp/poc_stub.txt; then
+    echo "FAIL: the stub does more than hand control back -- it must not move,"
+    echo "FAIL: damage or animate"
+    exit 1
+fi
+# And a corpse must not be revived by a stray ai call.
+grep -qF 'if (self.health <= 0)' /tmp/poc_stub.txt || {
+    echo "FAIL: the stub would schedule a think on a dead monster"; exit 1
+}
+# The engine really has no guard there: if someone adds one, this whole
+# contract becomes obsolete and the test should say so.
+awk '/^qboolean SV_RunThink \(edict_t \*ent\)/,/^}/' Quake/sv_phys.c |
+    grep -q 'PR_ExecuteProgram (ent->v.think);' || {
+    echo "FAIL: SV_RunThink no longer runs ent->v.think -- re-read this block"
+    exit 1
+}
+awk '/^qboolean SV_RunThink \(edict_t \*ent\)/,/^}/' Quake/sv_phys.c |
+    grep -q 'if (!ent->v.think\|if (ent->v.think == 0)' && {
+    echo "NOTE: SV_RunThink now guards a NULL think; the stub is still right,"
+    echo "NOTE: but the crash it prevents can no longer happen."
+} || true
+
 echo "PASS: monster_pocoyniy67 is 50 health, one model, idle 1..20, movement"
 echo "PASS: 21..30, death 31..47 clamped at the last frame, flees for three"
 echo "PASS: seconds away from the player, cannot attack, and uses only"
-echo "PASS: standard fields and nine engine builtins that this tree provides."
+echo "PASS: standard fields and nine engine builtins that this tree provides,"
+echo "PASS: and fills the five monster slots the mod's ai calls, so it can"
+echo "PASS: never be handed a NULL function."
 
 # ---- FGD for TrenchBroom: what the editor promises must be true -----------
 #
