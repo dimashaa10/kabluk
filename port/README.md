@@ -2233,6 +2233,86 @@ port/
               умеет; это следующая правка, и она видна по логу как
               `glBlendFunc(GL_DST_COLOR, GL_SRC_COLOR)` в кадре.
 
+        3c1. **FGD для TrenchBroom: `Misc/fgd/monster_pocoyniy67.fgd`.**
+
+           **Зачем.** FGD — описание entity для редактора карт. Игра его не
+           читает вообще: в `progs.dat` и в движке про этот файл ничего нет.
+           Он нужен, чтобы в TrenchBroom в списке entity появился
+           `monster_pocoyniy67` с моделью, правильной рамкой и подсказками.
+
+           **Что внутри.**
+
+           ```
+           @PointClass size(-16 -16 -24, 16 16 32) color(96 200 120)
+               model({ "path": "progs/pocoyniy67.mdl" })
+               = monster_pocoyniy67 : "Pocoyniy 67 -- мирный NPC, 50 hp, не атакует"
+           [
+               angle(integer) : "..." : 0 : "..."
+               spawnflags(flags) : "Spawnflags" =
+               [
+                   256 : "Не спавнить на Easy" : 0
+                   512 : "Не спавнить на Normal" : 0
+                   1024 : "Не спавнить на Hard" : 0
+                   2048 : "Не спавнить в Deathmatch" : 0
+               ]
+           ]
+           ```
+
+           **Как подключить.**
+           * Если свой `quake.fgd` уже есть — вставить блок между
+             комментариями «НАЧАЛО БЛОКА» и «КОНЕЦ БЛОКА» в конец своего
+             файла. Базовых классов (`base(...)`) мы не объявляем, поэтому
+             конфликтов имён с чужим FGD не будет.
+           * Если своего нет — Preferences -> Game Configurations -> Quake ->
+             Entity Definitions -> указать этот файл. Минус: стандартные
+             entity Quake при этом из списка пропадут.
+
+           **Почему полей только два.** В FGD имеет смысл писать лишь то,
+           что игра действительно читает, иначе редактор обещает
+           настройку, которая молча ничего не делает.
+
+           * `angle` — работает не через QC, а через движок: он сам
+             превращает одиночный ключ карты `angle` в `angles = '0 angle 0'`
+             (`Quake/pr_edict.c`, «anglehack»), а QC при спавне берёт
+             `angles_y` в `ideal_yaw`. То есть NPC поворачивается в эту
+             сторону, когда начинает идти.
+           * `spawnflags` — четыре бита, которые обрабатывает сам движок для
+             ЛЮБОЙ entity при загрузке карты (`ED_LoadFromFile`): значения
+             взяты из `Quake/server.h` (`SPAWNFLAG_NOT_EASY 256` и т.д.), а
+             не по памяти.
+
+           **Чего в FGD сознательно нет.**
+
+           * `health` — в QC здоровье жёстко 50 (`self.health = POC_HEALTH`),
+             ключ карты был бы перезаписан при спавне. Маппер поставил бы
+             200 и получил 50.
+           * `targetname` — NPC ни на что не реагирует и ничего не
+             триггерит, имя ему нечего давать.
+           * `model` — модель задаётся в QC (`precache_model` + `setmodel`),
+             ключом карты её не сменить.
+
+           **Проверка: 266 PASS, 0 FAIL.** Новый блок в
+           `tests/run_gameplay_tests.sh` сверяет FGD с кодом и с движком, а
+           не сам с собой: имя класса совпадает с
+           `self.classname = "monster_pocoyniy67"`, путь модели — с
+           `setmodel`, `size()` — с `setsize` из QC, скобки `[]` и `{}`
+           сбалансированы, entity ровно один; набор ключей — только
+           `angle` и `spawnflags`; `health` отсутствует отдельной проверкой;
+           ключ `angle` подтверждён кодом `pr_edict.c`, а четыре бита
+           spawnflags — строками `Quake/server.h`; и отдельно, что
+           `ED_LoadFromFile` эти биты всё ещё учитывает.
+
+           **Обратные патчи (проверено, все падают):** поменять `size()` —
+           «the FGD size() is not the QC's setsize»; добавить `health(...)` —
+           «the FGD offers a health key, but the spawn overwrites it»;
+           другой путь модели — «the FGD does not show
+           progs/pocoyniy67.mdl»; сдвинуть бит 1024 на 1023 — «the FGD does
+           not offer spawnflag 1024 (SPAWNFLAG_NOT_HARD)»; переименовать
+           класс — «the FGD does not define the class
+           monster_pocoyniy67»; убрать закрывающую `]` — «unbalanced []
+           brackets»; добавить `targetname` — «the FGD offers keys nothing
+           reads».
+
         3c0. **`monster_pocoyniy67`: NPC, который не умеет драться.**
 
            **Что просили:** новый монстр на QuakeC. Игрока не атакует, 50

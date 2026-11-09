@@ -4416,3 +4416,140 @@ echo "PASS: monster_pocoyniy67 is 50 health, one model, idle 1..20, movement"
 echo "PASS: 21..30, death 31..47 clamped at the last frame, flees for three"
 echo "PASS: seconds away from the player, cannot attack, and uses only"
 echo "PASS: standard fields and nine engine builtins that this tree provides."
+
+# ---- FGD for TrenchBroom: what the editor promises must be true -----------
+#
+# The .fgd is not read by the game at all, so the only thing worth testing is
+# agreement: the class name, model and size must be the ones the QC actually
+# uses, and every key it offers must be a key something really reads.
+qfgd=Misc/fgd/monster_pocoyniy67.fgd
+[ -f "$qfgd" ] || { echo "FAIL: $qfgd is missing"; exit 1; }
+# Regenerate the QC view of the monster here rather than relying on the block
+# above having filled /tmp/poc.txt: the two blocks must work in any order.
+qc_nocomments "$qmon" | grep -v '^[[:space:]]*$' > /tmp/poc_fgd_qc.txt
+tr -d '\r' < "$qfgd" > /tmp/poc.fgd
+
+# Comment lines are documentation; a name mentioned there is not a promise.
+grep -v '^[[:space:]]*//' /tmp/poc.fgd > /tmp/poc_fgd.txt
+[ -s /tmp/poc_fgd.txt ] || { echo "FAIL: the FGD is empty"; exit 1; }
+
+# Brackets balance (property blocks use [], model()/flags blocks use {}).
+[ "$(tr -cd '[' < /tmp/poc_fgd.txt | wc -c)" -eq "$(tr -cd ']' < /tmp/poc_fgd.txt | wc -c)" ] || {
+    echo "FAIL: the FGD has unbalanced [] brackets"; exit 1
+}
+[ "$(tr -cd '{' < /tmp/poc_fgd.txt | wc -c)" -eq "$(tr -cd '}' < /tmp/poc_fgd.txt | wc -c)" ] || {
+    echo "FAIL: the FGD has unbalanced {} braces"; exit 1
+}
+
+# Exactly one entity, and it is the NPC.
+[ "$(grep -c '^@PointClass' /tmp/poc_fgd.txt)" -eq 1 ] || {
+    echo "FAIL: the FGD should describe exactly one point entity"; exit 1
+}
+grep -qE '= monster_pocoyniy67[[:space:]]*:' /tmp/poc_fgd.txt || {
+    echo "FAIL: the FGD does not define the class monster_pocoyniy67"; exit 1
+}
+# The class name is the one the QC registers, or the map spawns nothing.
+grep -qF 'self.classname = "monster_pocoyniy67";' /tmp/poc_fgd_qc.txt || {
+    echo "FAIL: the QC no longer declares classname \"monster_pocoyniy67\", so"
+    echo "FAIL: the FGD names a class the game does not have"
+    exit 1
+}
+
+# The model in the editor is the model the game draws.
+grep -qF 'model({ "path": "progs/pocoyniy67.mdl" })' /tmp/poc_fgd.txt || {
+    echo "FAIL: the FGD does not show progs/pocoyniy67.mdl"; exit 1
+}
+grep -qF 'setmodel (self, "progs/pocoyniy67.mdl");' /tmp/poc_fgd_qc.txt || {
+    echo "FAIL: the QC does not use progs/pocoyniy67.mdl"; exit 1
+}
+
+# The editor bounding box is the one the game collides with.
+grep -qF 'size(-16 -16 -24, 16 16 32)' /tmp/poc_fgd.txt || {
+    echo "FAIL: the FGD size() is not the QC's setsize"; exit 1
+}
+grep -qF "setsize (self, '-16 -16 -24', '16 16 32');" /tmp/poc_fgd_qc.txt || {
+    echo "FAIL: monster_pocoyniy67.qc no longer uses that setsize, so the FGD"
+    echo "FAIL: box would be wrong"
+    exit 1
+}
+
+# Properties offered by the FGD: only the ones something reads. health is the
+# trap here -- the FGD would happily accept it and the spawn would overwrite
+# it, so a mapper would set 200 and get 50.
+awk '
+{
+    line = $0
+    if (line ~ /\[/) depth++
+    if (depth == 1 && line ~ /^[ \t]*[a-z_][a-z_0-9]*\(/) {
+        s = line; sub(/^[ \t]*/, "", s); sub(/\(.*/, "", s)
+        print s
+    }
+    if (line ~ /\]/) depth--
+}' /tmp/poc_fgd.txt | sort -u > /tmp/poc_fgd_keys.txt
+[ -s /tmp/poc_fgd_keys.txt ] || { echo "FAIL: the FGD has no properties"; exit 1; }
+# The health trap is called out by name first, because it is the one key a
+# mapper will reach for and the one that silently does nothing.
+if grep -qE '^[ \t]*health\(' /tmp/poc_fgd.txt; then
+    echo "FAIL: the FGD offers a health key, but the spawn overwrites it with"
+    echo "FAIL: POC_HEALTH -- a mapper would set a value and never get it"
+    exit 1
+fi
+
+# The only keys this NPC can honestly offer: angle reaches it through the
+# engine's angle hack, spawnflags are filtered by the engine itself. Anything
+# else would be a field that changes nothing.
+printf '%s\n' angle spawnflags | sort -u > /tmp/poc_fgd_allowed.txt
+extra=$(comm -23 /tmp/poc_fgd_keys.txt /tmp/poc_fgd_allowed.txt)
+[ -z "$extra" ] || {
+    echo "FAIL: the FGD offers keys nothing reads: $extra"
+    echo "FAIL: (the QC reads no map keys; the engine reads angle and old"
+    echo "FAIL: spawnflag bits only)"
+    exit 1
+}
+
+# angle really does reach the monster: the engine turns the single key into
+# angles = (0, angle, 0) and the QC reads angles_y.
+grep -qE '^[ \t]*angle\(' /tmp/poc_fgd.txt || {
+    echo "FAIL: the FGD does not offer the angle key"; exit 1
+}
+grep -q 'if (!strcmp(com_token, "angle"))' Quake/pr_edict.c || {
+    echo "FAIL: this engine no longer maps the map key \"angle\" onto angles,"
+    echo "FAIL: so the FGD's angle property would do nothing"
+    exit 1
+}
+grep -q 'sprintf (com_token, "0 %s 0", temp);' Quake/pr_edict.c || {
+    echo "FAIL: the angle key is no longer turned into angles = (0, angle, 0)"
+    exit 1
+}
+grep -qF 'self.ideal_yaw = self.angles_y;' /tmp/poc_fgd_qc.txt || {
+    echo "FAIL: the QC ignores the spawn yaw, so angle in the editor would do"
+    echo "FAIL: nothing"
+    exit 1
+}
+
+# The spawnflag bits must be the engine's own numbers (server.h), not
+# remembered ones.
+for pair in 256:SPAWNFLAG_NOT_EASY 512:SPAWNFLAG_NOT_MEDIUM \
+            1024:SPAWNFLAG_NOT_HARD 2048:SPAWNFLAG_NOT_DEATHMATCH
+do
+    value=${pair%%:*}; name=${pair#*:}
+    grep -qE "^#define[[:space:]]+$name[[:space:]]+$value$" Quake/server.h || {
+        echo "FAIL: this engine has no $name = $value; the FGD bit is stale"
+        exit 1
+    }
+    grep -qE "^[ \t]*$value[[:space:]]*:" /tmp/poc_fgd.txt || {
+        echo "FAIL: the FGD does not offer spawnflag $value ($name)"
+        exit 1
+    }
+done
+# ...and the engine must still filter on them, or they are decoration.
+grep -q 'SPAWNFLAG_NOT_DEATHMATCH))' Quake/pr_edict.c || {
+    echo "FAIL: ED_LoadFromFile no longer honours the skill/deathmatch"
+    echo "FAIL: spawnflags the FGD offers"
+    exit 1
+}
+
+echo "PASS: Misc/fgd/monster_pocoyniy67.fgd describes the class, model and box"
+echo "PASS: the QC actually uses, offers only angle and the four engine"
+echo "PASS: spawnflags, and keeps the health key out because the spawn"
+echo "PASS: overwrites it."
