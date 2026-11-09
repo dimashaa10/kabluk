@@ -2233,6 +2233,90 @@ port/
               умеет; это следующая правка, и она видна по логу как
               `glBlendFunc(GL_DST_COLOR, GL_SRC_COLOR)` в кадре.
 
+        3bz. **«Unknown value DVA_Play»: почему объявления едут в `defs.qc`, а
+           не в `dynview.qc`.**
+
+           **Что случилось.** После подключения анимации компилятор выдал:
+
+           ```
+           items.qc:348: error: Unknown value "DVA_Play".
+           items.qc:348: error: Unknown value "DVA_ACTIONS_MODEL".
+           items.qc:349: error: Unknown value "DVA_ACT_MEDKIT_FIRST".
+           items.qc:349: error: Unknown value "DVA_ACT_MEDKIT_FRAMES".
+           world.qc:335: error: Unknown value "DVA_ACTIONS_MODEL".
+           ```
+
+           Код правильный, порядок файлов — нет. `progs.src` компилируется
+           сверху вниз, и QuakeC **не** знает имён, объявленных ниже: нет ни
+           предварительных объявлений «на весь проект», ни двух проходов.
+           `items.qc` и `world.qc` идут в списке раньше, чем любой файл, куда
+           можно положить `dynview.qc`, поэтому в момент их разбора `DVA_Play`
+           и `DVA_ACTIONS_MODEL` для компилятора просто не существуют.
+
+           **Как исправлено.** Всё, что должно быть известно *до* первого
+           вызова, лежит в `Misc/qc/dva_defs.qc` — это готовый блок для
+           `defs.qc`. `defs.qc` стоит первым в `progs.src`, поэтому имена есть у
+           всех файлов, и порядок остальных перестаёт иметь значение:
+
+           ```c
+           // поля сущности
+           .string dvamodel;
+           .float  dvastart;
+           .float  dvafirst;
+           .float  dvaframes;
+           .float  dvafps;
+           .float  dvaend;
+
+           // модель и отрезки кадров
+           string DVA_ACTIONS_MODEL = "progs/v_actions.mdl";
+           float  DVA_ACT_MEDKIT_FIRST = 1;   // средняя аптечка: кадры 1..11
+           float  DVA_ACT_MEDKIT_FRAMES = 11;
+           float  DVA_DEFAULT_FPS = 10;
+
+           // прототипы
+           float(entity p, string mdl, float first, float frames, float fps) DVA_Play;
+           void(entity p) DVA_Stop;
+           ```
+
+           В `Misc/qc/dynview.qc` остались **только тела** функций — ни одного
+           объявления. Это важно: если оставить константы в обоих файлах,
+           после вставки блока в `defs.qc` вы получите уже не «Unknown value»,
+           а «redeclared».
+
+           **Что сделать руками (четыре шага).**
+           1. Открыть свой `defs.qc`, вставить туда содержимое
+              `Misc/qc/dva_defs.qc` (целиком, в конец файла — порядок внутри
+              `defs.qc` не важен).
+           2. В `progs.src` добавить строку `dynview.qc` — **после** `defs.qc`,
+              место среди остальных не играет роли.
+           3. В `WorldSpawn` добавить `precache_model (DVA_ACTIONS_MODEL);`.
+           4. В `items.qc` заменить свою `health_touch` на
+              `Misc/qc/items_health_touch.qc` (это ваша же функция, отличий
+              два — см. 3by).
+
+           **Прототип должен совпадать с определением буква в букву.** Строка в
+           `defs.qc` — `float(entity p, string mdl, float first, float frames,
+           float fps) DVA_Play;`, а определение — та же строка без `;`. Если
+           параметров меньше или больше, компилятор будет ругаться уже на
+           каждый вызов.
+
+           **Проверка: 258 PASS, 0 FAIL.** Новый блок в
+           `tests/run_gameplay_tests.sh` проверяет три вещи, каждой из которых
+           хватило бы, чтобы поймать вашу ошибку до сборки: (1) в
+           `dva_defs.qc` объявлены `DVA_Play`, `DVA_Stop`, имя модели и обе
+           константы кадров; (2) `dynview.qc` не объявляет ничего из этого
+           повторно; (3) строка прототипа совпадает со строкой определения.
+
+           **Обратные патчи (проверено, все три падают):** убрать прототип из
+           блока — «dva_defs.qc does not declare ... DVA_Play»; вернуть
+           `float DVA_ACT_MEDKIT_FIRST = 1;` в `dynview.qc` — «dynview.qc also
+           defines ... double-defines it»; поменять арность прототипа — «the
+           DVA_Play prototype does not match its definition».
+
+           **Сборка:** `progs.dat` пересобрать, игру перезапустить (`map` заново
+           или New Game) — QuakeC читается только при загрузке карты. Движок
+           (`quakespasm.sln`) в этой правке не менялся, C-файлы не трогались.
+
         3by. **Как это вставить в `health_touch`: готовая правка на две
            строки.**
 
@@ -2274,7 +2358,7 @@ port/
            анимация средней аптечки. Мега-хелс и тухлая аптечка пока без
            кадров; когда сделаете — добавьте ветки рядом, структура та же.
 
-           **Проверка: 254 PASS, 0 FAIL.** Новый блок в
+           **Проверка: 258 PASS, 0 FAIL.** Новый блок в
            `tests/run_gameplay_tests.sh` разбирает `health_touch` и требует:
            вызов `DVA_Play` есть; он идёт **после** `T_Heal` и **до**
            `self.model = string_null`; стоит под `if (pickup == 1)`;
@@ -2292,8 +2376,10 @@ port/
 
            **Сборка:** этот файл — замена вашей `health_touch` в `items.qc`
            (не добавка рядом, иначе получите две функции с одним именем). Плюс
-           шесть объявлений в `defs.qc`, `precache_model (DVA_ACTIONS_MODEL);`
-           в world-спавне, `dynview.qc` в мод, `progs.dat` пересобрать.
+           блок объявлений из `Misc/qc/dva_defs.qc` в `defs.qc` (см. 3bz —
+           именно без него компилятор и ругался), `precache_model
+           (DVA_ACTIONS_MODEL);` в world-спавне, `dynview.qc` в мод, `progs.dat`
+           пересобрать.
 
         3bx. **Одна модель на все действия: `progs/v_actions.mdl` и отрезки
            кадров.**
@@ -2319,7 +2405,8 @@ port/
            **QC:** `DVA_Play()` теперь принимает первый кадр **с единицы**,
            как принято в QuakeC, и сам вычитает 1 (`p.dvafirst = first - 1`).
            Ноль и отрицательные поправляются на 1: «кадра 0» в языке нет.
-           Константы для модели и аптечки лежат в `Misc/qc/dynview.qc`:
+           Константы для модели и аптечки лежат в `Misc/qc/dva_defs.qc`
+           (это блок для `defs.qc`; почему не в `dynview.qc` — 3bz):
 
            ```c
            string DVA_ACTIONS_MODEL = "progs/v_actions.mdl";

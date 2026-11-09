@@ -3906,8 +3906,14 @@ grep -q 'if (fps <= 0)' /tmp/va_play.txt || {
     exit 1
 }
 # The five fields must be declared for defs.qc, or the mod cannot compile.
+# The declarations live in Misc/qc/dva_defs.qc, which goes into defs.qc: that
+# file is compiled first, so items.qc and world.qc can use the names at all.
+# (Putting them in dynview.qc is what produced "Unknown value DVA_Play".)
+qdva=Misc/qc/dva_defs.qc
+[ -f "$qdva" ] || { echo "FAIL: $qdva is missing"; exit 1; }
+tr -d '\r' < "$qdva" > /tmp/dva_defs.txt
 for decl in '\.string dvamodel;' '\.float dvastart;' '\.float dvafirst;' '\.float dvaframes;' '\.float dvafps;' '\.float dvaend;'; do
-    grep -q "$decl" /tmp/va_qc.txt || {
+    grep -q "$decl" /tmp/dva_defs.txt || {
         echo "FAIL: $qv does not declare '$decl' for defs.qc"
         exit 1
     }
@@ -3922,20 +3928,22 @@ echo "PASS: and the file carries the five defs.qc declarations the mod needs."
 # things have to hold and neither is visible from the timing test:
 #   - QC counts frames from 1, the model from 0, and DVA_Play does the -1;
 #   - the engine plays from dvafirst, so two actions in one file do not fight.
-qdv=Misc/qc/dynview.qc
+qdv=Misc/qc/dva_defs.qc
 grep -q 'string DVA_ACTIONS_MODEL = "progs/v_actions.mdl";' "$qdv" || {
     echo "FAIL: the universal action model is not progs/v_actions.mdl"
     exit 1
 }
-grep -q '^float DVA_ACT_MEDKIT_FIRST = 1;$' "$qdv" || {
+grep -q '^float DVA_ACT_MEDKIT_FIRST = 1;' "$qdv" || {
     echo "FAIL: the medkit action does not start at frame 1"
     exit 1
 }
-grep -q '^float DVA_ACT_MEDKIT_FRAMES = 11;$' "$qdv" || {
+grep -q '^float DVA_ACT_MEDKIT_FRAMES = 11;' "$qdv" || {
     echo "FAIL: the medkit action is not 11 frames (1..11)"
     exit 1
 }
-awk '/^float\(entity p, string mdl, float first, float frames, float fps\) DVA_Play =$/,/^};$/' "$qdv" > /tmp/va_play2.txt
+# The body is in dynview.qc; dva_defs.qc only declares it.
+tr -d '\r' < Misc/qc/dynview.qc > /tmp/dva_body.txt
+awk '/^float\(entity p, string mdl, float first, float frames, float fps\) DVA_Play =$/,/^};$/' /tmp/dva_body.txt > /tmp/va_play2.txt
 [ -s /tmp/va_play2.txt ] || { echo "FAIL: DVA_Play does not take a first frame"; exit 1; }
 grep -q 'p.dvafirst = first - 1;' /tmp/va_play2.txt || {
     echo "FAIL: DVA_Play does not convert the 1-based frame number to the"
@@ -4032,14 +4040,85 @@ grep -q 'DVA_Play (other,' /tmp/ht_call.txt || {
     exit 1
 }
 # ...and the constants have to be the ones the model actually has.
-grep -q '^float DVA_ACT_MEDKIT_FIRST = 1;$' Misc/qc/dynview.qc || {
+grep -q '^float DVA_ACT_MEDKIT_FIRST = 1;' Misc/qc/dva_defs.qc || {
     echo "FAIL: the medkit action does not start at frame 1"
     exit 1
 }
-grep -q '^float DVA_ACT_MEDKIT_FRAMES = 11;$' Misc/qc/dynview.qc || {
+grep -q '^float DVA_ACT_MEDKIT_FRAMES = 11;' Misc/qc/dva_defs.qc || {
     echo "FAIL: the medkit action is not 11 frames (1..11)"
     exit 1
 }
 echo "PASS: health_touch starts the medkit action after T_Heal succeeded, only"
 echo "PASS: for the +25 box, on the player who touched it, with the five"
 echo "PASS: arguments the engine needs (frames 1..11 of progs/v_actions.mdl)."
+
+# ---- the "Unknown value" class of error, caught before the mod compiles ----
+#
+# QuakeC compiles progs.src in order and a name must be declared before it is
+# used. items.qc and world.qc call DVA_Play and DVA_ACTIONS_MODEL, and both are
+# compiled before any file that could define them unless the declarations live
+# in defs.qc (which is always first). This is exactly what produced
+#
+#     items.qc:348: error: Unknown value "DVA_Play"
+#     world.qc:335: error: Unknown value "DVA_ACTIONS_MODEL"
+#
+# so the rule is checked here, in three parts.
+qdva=Misc/qc/dva_defs.qc
+qdv=Misc/qc/dynview.qc
+qht=Misc/qc/items_health_touch.qc
+for f in "$qdva" "$qdv" "$qht"; do
+    [ -f "$f" ] || { echo "FAIL: $f is missing"; exit 1; }
+done
+# 1. Everything the callers name is declared in the defs block: the function
+#    (prototype), the model constant and the two frame constants.
+qc_nocomments "$qdva" | grep -v '^[[:space:]]*$' > /tmp/dva_live.txt
+for want in \
+    'float(entity p, string mdl, float first, float frames, float fps) DVA_Play;' \
+    'void(entity p) DVA_Stop;' \
+    'string DVA_ACTIONS_MODEL = "progs/v_actions.mdl";' \
+    'float DVA_ACT_MEDKIT_FIRST = 1;' \
+    'float DVA_ACT_MEDKIT_FRAMES = 11;'
+do
+    grep -qF "$want" /tmp/dva_live.txt || {
+        echo "FAIL: dva_defs.qc does not declare '$want', so any file compiled"
+        echo "FAIL: before the definition reports Unknown value"
+        exit 1
+    }
+done
+# 2. The definitions must NOT be repeated there: a prototype plus a definition
+#    is fine, two definitions of a constant are a compile error.
+n=$(grep -c 'DVA_ACTIONS_MODEL[[:space:]]*=[[:space:]]*"' /tmp/dva_live.txt)
+[ "$n" -eq 1 ] || {
+    echo "FAIL: DVA_ACTIONS_MODEL is defined $n times in dva_defs.qc"
+    exit 1
+}
+# ...and dynview.qc must not define them a second time, or the mod gets
+# "DVA_ACTIONS_MODEL redeclared" the moment the block is pasted into defs.qc.
+qc_nocomments "$qdv" | grep -v '^[[:space:]]*$' > /tmp/dva_dyn.txt
+for dup in 'string DVA_ACTIONS_MODEL' 'float DVA_ACT_MEDKIT_FIRST' \
+           'float DVA_ACT_MEDKIT_FRAMES' '.string dvamodel' '.float dvastart' \
+           '.float dvafirst' '.float dvaframes' '.float dvafps' '.float dvaend'; do
+    if grep -qF "$dup" /tmp/dva_dyn.txt; then
+        echo "FAIL: dynview.qc also defines '$dup', which is now declared in"
+        echo "FAIL: dva_defs.qc -- pasting both into defs.qc double-defines it"
+        exit 1
+    fi
+done
+# 3. The prototype must match the definition exactly, or a compiler that checks
+#    arity reports a mismatch in every file that calls it.
+proto=$(grep -F 'DVA_Play;' /tmp/dva_live.txt | sed 's/[[:space:]]*DVA_Play;.*$//')
+defn=$(grep -F 'DVA_Play =' /tmp/dva_dyn.txt | sed 's/[[:space:]]*DVA_Play =.*$//')
+[ -n "$proto" ] && [ -n "$defn" ] || {
+    echo "FAIL: could not read the DVA_Play prototype or its definition"
+    exit 1
+}
+[ "$proto" = "$defn" ] || {
+    echo "FAIL: the DVA_Play prototype does not match its definition:"
+    echo "FAIL:   defs: $proto"
+    echo "FAIL:   body: $defn"
+    exit 1
+}
+echo "PASS: DVA_Play, DVA_Stop and the model/frame constants are declared in the"
+echo "PASS: defs.qc block, so items.qc and world.qc compile whatever order"
+echo "PASS: progs.src lists; they are not defined twice; and the prototype"
+echo "PASS: matches the definition exactly."
