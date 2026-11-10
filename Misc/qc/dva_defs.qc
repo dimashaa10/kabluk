@@ -47,6 +47,8 @@
 string DVA_ACTIONS_MODEL = "progs/v_actions.mdl";
 float DVA_ACT_MEDKIT_FIRST = 1;		// средняя аптечка (+25 hp): кадры 1..11
 float DVA_ACT_MEDKIT_FRAMES = 11;
+float DVA_ACT_SMALLKIT_FIRST = 12;	// мелкая аптечка (+15 hp): кадры 12..23
+float DVA_ACT_SMALLKIT_FRAMES = 12;
 float DVA_DEFAULT_FPS = 10;			// когда в DVA_Play передали 0
 
 /* ---- прототипы ---- */

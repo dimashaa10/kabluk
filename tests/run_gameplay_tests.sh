@@ -3923,9 +3923,10 @@ echo "PASS: and the file carries the five defs.qc declarations the mod needs."
 
 # ---- Dynamic view actions: one model, several frame ranges -----------------
 #
-# All actions live in progs/v_actions.mdl, each in its own slice of frames, so
-# the medkit is frames 1..11 (1-based) and the next action starts at 12. Two
-# things have to hold and neither is visible from the timing test:
+# All actions live in progs/v_actions.mdl, each in its own slice of frames:
+# the +25 medkit is 1..11 (1-based) and the +15 one is 12..23, so the next
+# free action starts at 24. Two things have to hold and neither is visible
+# from the timing test:
 #   - QC counts frames from 1, the model from 0, and DVA_Play does the -1;
 #   - the engine plays from dvafirst, so two actions in one file do not fight.
 qdv=Misc/qc/dva_defs.qc
@@ -3939,6 +3940,24 @@ grep -q '^float DVA_ACT_MEDKIT_FIRST = 1;' "$qdv" || {
 }
 grep -q '^float DVA_ACT_MEDKIT_FRAMES = 11;' "$qdv" || {
     echo "FAIL: the medkit action is not 11 frames (1..11)"
+    exit 1
+}
+# The slices share one model, so they have to be laid out without a gap and
+# without an overlap -- computed from the constants, not from this comment.
+awk '
+/^float DVA_ACT_MEDKIT_FIRST[[:space:]]*=/   { sub(/.*=[[:space:]]*/, ""); sub(/;.*/, ""); mf = $0 + 0 }
+/^float DVA_ACT_MEDKIT_FRAMES[[:space:]]*=/  { sub(/.*=[[:space:]]*/, ""); sub(/;.*/, ""); mn = $0 + 0 }
+/^float DVA_ACT_SMALLKIT_FIRST[[:space:]]*=/ { sub(/.*=[[:space:]]*/, ""); sub(/;.*/, ""); sf = $0 + 0 }
+/^float DVA_ACT_SMALLKIT_FRAMES[[:space:]]*=/ { sub(/.*=[[:space:]]*/, ""); sub(/;.*/, ""); sn = $0 + 0 }
+END {
+    if (!mn || !sn) { print "missing medkit or small-kit frame counts"; exit 1 }
+    if (mf + mn != sf) {
+        printf "the +25 slice is %d..%d and the +15 one starts at %d\n", mf, mf + mn - 1, sf
+        exit 1
+    }
+}' "$qdv" || {
+    echo "FAIL: the two actions do not sit back to back in progs/v_actions.mdl"
+    echo "FAIL: (a gap wastes frames, an overlap shows the same pictures twice)"
     exit 1
 }
 # The body is in dynview.qc; dva_defs.qc only declares it.
@@ -4016,41 +4035,81 @@ remove_line=$(grep -n 'self.model = string_null;' /tmp/ht_body.txt | head -1 | c
     echo "FAIL: removed from the world"
     exit 1
 }
-grep -q 'if (pickup == 1)' /tmp/ht_body.txt || {
-    echo "FAIL: the animation is not limited to the +25 medkit (healtype 1), so"
-    echo "FAIL: the mega and rotten boxes would play the medkit frames too"
+# Two boxes now have frames of their own, and each must be reached by its own
+# healtype and its own slice of the model. healtype values, from item_health:
+# 0 = small/rotten (+15), 1 = normal (+25), 2 = mega (+100).
+grep -q 'if (pickup == 0)' /tmp/ht_body.txt || {
+    echo "FAIL: the +15 small box (healtype 0) plays no animation"
     exit 1
 }
+grep -q 'else if (pickup == 1)' /tmp/ht_body.txt || {
+    echo "FAIL: the +25 box (healtype 1) is not reached by its own branch"
+    exit 1
+}
+# The mega box has no frames yet, so it must fall through: a branch for
+# healtype 2 would show it the wrong pictures.
+if grep -qE 'pickup == 2|pickup >= 2' /tmp/ht_body.txt; then
+    echo "FAIL: health_touch animates the mega box (healtype 2), but there are"
+    echo "FAIL: no frames for it in progs/v_actions.mdl"
+    exit 1
+fi
 # The line carries a trailing comment, so match up to the semicolon.
 grep -q '^	pickup = self.healtype;' /tmp/ht_body.txt || {
     echo "FAIL: healtype is not saved before the checks, so the type is lost"
     exit 1
 }
 # All five arguments, in DVA_Play's order: player, model, first, frames, fps.
-awk '/DVA_Play \(other, DVA_ACTIONS_MODEL/,/\);/' /tmp/ht_body.txt > /tmp/ht_call.txt
-for arg in 'DVA_ACT_MEDKIT_FIRST' 'DVA_ACT_MEDKIT_FRAMES'; do
-    grep -q "$arg" /tmp/ht_call.txt || {
-        echo "FAIL: the DVA_Play call does not pass $arg"
+# Each branch is read out on its own, so one cannot borrow the other's frames.
+for spec in small:0:DVA_ACT_SMALLKIT_FIRST:DVA_ACT_SMALLKIT_FRAMES:12..23 \
+            medkit:1:DVA_ACT_MEDKIT_FIRST:DVA_ACT_MEDKIT_FRAMES:1..11
+do
+    name=${spec%%:*}; rest=${spec#*:}
+    type=${rest%%:*}; rest=${rest#*:}
+    cfirst=${rest%%:*}; rest=${rest#*:}
+    cframes=${rest%%:*}; range=${rest#*:}
+    awk -v c1="$cfirst" '
+        /DVA_Play \(other, DVA_ACTIONS_MODEL/ { collecting = 1; buf = "" }
+        collecting { buf = buf $0 "\n" }
+        collecting && /\);/ { if (buf ~ c1) printf "%s", buf; collecting = 0 }
+    ' /tmp/ht_body.txt > "/tmp/ht_call_$name.txt"
+    [ -s "/tmp/ht_call_$name.txt" ] || {
+        echo "FAIL: no DVA_Play call passes $cfirst"
+        exit 1
+    }
+    grep -q "$cframes" "/tmp/ht_call_$name.txt" || {
+        echo "FAIL: the call that uses $cfirst does not pass $cframes, so the"
+        echo "FAIL: slice would be the wrong length"
+        exit 1
+    }
+    # The branch that starts this action must be the one testing this healtype.
+    inside=$(awk -v t="pickup == $type)" '
+        index($0, t) { found = 1 }
+        found && /DVA_Play \(other/ { print "yes"; exit }
+        found && /^	}/ { exit }
+    ' /tmp/ht_body.txt)
+    [ -n "$inside" ] || {
+        echo "FAIL: the call for frames $range is not inside 'pickup == $type'"
         exit 1
     }
 done
-grep -q 'DVA_Play (other,' /tmp/ht_call.txt || {
+grep -q 'DVA_Play (other,' /tmp/ht_body.txt || {
     echo "FAIL: the action is not started on the player; 'other' is the one who"
     echo "FAIL: touched the item"
     exit 1
 }
 # ...and the constants have to be the ones the model actually has.
-grep -q '^float DVA_ACT_MEDKIT_FIRST = 1;' Misc/qc/dva_defs.qc || {
-    echo "FAIL: the medkit action does not start at frame 1"
-    exit 1
-}
-grep -q '^float DVA_ACT_MEDKIT_FRAMES = 11;' Misc/qc/dva_defs.qc || {
-    echo "FAIL: the medkit action is not 11 frames (1..11)"
-    exit 1
-}
-echo "PASS: health_touch starts the medkit action after T_Heal succeeded, only"
-echo "PASS: for the +25 box, on the player who touched it, with the five"
-echo "PASS: arguments the engine needs (frames 1..11 of progs/v_actions.mdl)."
+for spec in DVA_ACT_MEDKIT_FIRST:1 DVA_ACT_MEDKIT_FRAMES:11 \
+            DVA_ACT_SMALLKIT_FIRST:12 DVA_ACT_SMALLKIT_FRAMES:12
+do
+    name=${spec%%:*}; value=${spec#*:}
+    grep -q "^float $name = $value;" Misc/qc/dva_defs.qc || {
+        echo "FAIL: $name is not $value"
+        exit 1
+    }
+done
+echo "PASS: health_touch starts an action after T_Heal succeeded, for the +15"
+echo "PASS: box in frames 12..23 and for the +25 box in frames 1..11, each"
+echo "PASS: reached by its own healtype, on the player who touched it."
 
 # ---- the "Unknown value" class of error, caught before the mod compiles ----
 #

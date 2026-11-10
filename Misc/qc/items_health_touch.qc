@@ -1,8 +1,9 @@
 /*
-    items_health_touch.qc -- health_touch с анимацией для средней аптечки
+    items_health_touch.qc -- health_touch с анимацией для аптечек
 
-    Это ТВОЯ функция целиком. Изменений ровно два, и оба помечены
-    `// >>> DVA`. Всё остальное — твой исходный код, символ в символ.
+    Это ТВОЯ функция целиком. Изменений ровно два (переменная `pickup` и
+    вызов DVA_Play в конце), они помечены `// >>> DVA`. Всё остальное —
+    твой исходный код, символ в символ.
 
     ЧТО ИМЕННО ИЗМЕНИЛОСЬ
 
@@ -20,20 +21,24 @@
          * ДО `self.model = string_null` — не важно для движка, но так
            видно, что анимация относится к подбору, а не к удалению предмета.
 
-    ПОЧЕМУ УСЛОВИЕ `self.healtype == 1`
+    ПОЧЕМУ УСЛОВИЕ ПО `pickup` (бывший `self.healtype`)
 
     В твоём item_health:
-        spawnflags H_ROTTEN -> healamount 15, healtype 0
+        spawnflags H_ROTTEN -> healamount 15,  healtype 0
+        иначе (обычная)     -> healamount 25,  healtype 1
         spawnflags H_MEGA   -> healamount 100, healtype 2
-        иначе (обычная)     -> healamount 25, healtype 1
 
-    Кадры 1..11 в v_actions.mdl — анимация именно средней аптечки (+25 hp),
-    поэтому условие `healtype == 1`. Мега-хелс и тухлая аптечка остаются без
-    анимации. Когда сделаешь для них кадры — добавишь ветки рядом, по образцу.
+    Отрезки в v_actions.mdl (кадры с единицы):
+        кадры  1..11  -- средняя аптечка (+25 hp)  DVA_ACT_MEDKIT_*
+        кадры 12..23  -- мелкая аптечка  (+15 hp)  DVA_ACT_SMALLKIT_*
+
+    Поэтому веток две: `pickup == 0` играет 12..23, `pickup == 1` — 1..11.
+    Мега-хелс (healtype 2) остаётся без анимации: кадров для него нет.
+    Когда сделаешь — добавишь ещё одну ветку рядом, по образцу.
 
     ЧТО ЕЩЁ НУЖНО, КРОМЕ ЭТОЙ ФУНКЦИИ
 
-    1. Объявления в defs.qc (шесть строк, см. Misc/qc/dynview.qc):
+    1. Объявления в defs.qc (см. Misc/qc/dva_defs.qc):
            .string dvamodel;
            .float dvastart, dvafirst, dvaframes, dvafps;
            .float dvaend;
@@ -90,8 +95,14 @@ void() health_touch =
 
 	stuffcmd (other, "bf\n");
 
-	// >>> DVA: анимация подбора. Только средняя аптечка (healtype 1, +25 hp).
-	if (pickup == 1)
+	// >>> DVA: анимация подбора. Отрезок кадров -- свой у каждой аптечки:
+	// healtype 0 -- мелкая (+15 hp), кадры 12..23 (12 кадров);
+	// healtype 1 -- средняя (+25 hp), кадры 1..11 (11 кадров);
+	// healtype 2 -- мега (+100 hp), кадров пока нет.
+	if (pickup == 0)
+		DVA_Play (other, DVA_ACTIONS_MODEL,
+		          DVA_ACT_SMALLKIT_FIRST, DVA_ACT_SMALLKIT_FRAMES, 10);
+	else if (pickup == 1)
 		DVA_Play (other, DVA_ACTIONS_MODEL,
 		          DVA_ACT_MEDKIT_FIRST, DVA_ACT_MEDKIT_FRAMES, 10);
 
