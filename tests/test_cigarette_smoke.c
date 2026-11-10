@@ -17,7 +17,11 @@ cvar_t scr_viewsize = {"viewsize", "100", CVAR_NONE};
 static entity_t view;
 static qmodel_t model;
 static int smoke_calls, fallback_calls, smoke_particles, fallback_particles;
-static qboolean missing_effect;
+/* Does the SELECTED particle profile provide "qssm.cigarette_smoke"?  The
+ * emitter must not ask for that name unless it does -- asking loads
+ * particles/qssm.cfg, and that used to switch the whole game's effects to the
+ * modern ones. */
+static qboolean effect_available;
 
 int q_strcasecmp (const char *a, const char *b)
 {
@@ -40,22 +44,31 @@ void AngleVectors (vec3_t angles, vec3_t forward, vec3_t right, vec3_t up)
 	up[0] = up[1] = 0;
 }
 
+qboolean PScript_ParticleTypeLoaded (const char *name)
+{
+	assert(!strcmp(name, "qssm.cigarette_smoke"));
+	return effect_available;
+}
+
 int PScript_RunParticleEffectTypeString (vec3_t org, vec3_t dir, float count, const char *name)
 {
+	/* The whole bug in one assertion: this name is only ever spoken when the
+	 * profile can already supply it, i.e. when it cannot trigger a load. */
+	assert(effect_available);
 	assert(!strcmp(name, "qssm.cigarette_smoke"));
 	assert(count == 8);
 	assert(org[0] == 16 && org[1] == -8 && org[2] == -7);
 	assert(dir[0] == 0 && dir[1] == 0 && dir[2] == 1);
 	smoke_calls++;
 	smoke_particles += (int)count;
-	return missing_effect;
+	return 0;
 }
 
 void R_RunParticleEffect (vec3_t org, vec3_t dir, int color, int count)
 {
 	(void)org;
 	(void)dir;
-	assert(missing_effect && color == 7 && count == 16);
+	assert(!effect_available && color == 7 && count == 16);
 	fallback_calls++;
 	fallback_particles += count;
 }
@@ -78,7 +91,7 @@ static void Reset (void)
 	chase_active.value = 0;
 	scr_viewsize.value = 100;
 	smoke_calls = fallback_calls = smoke_particles = fallback_particles = 0;
-	missing_effect = false;
+	effect_available = true;
 }
 
 static void Emit (int frame, qboolean attack_down, double elapsed)
@@ -153,11 +166,12 @@ static void TestGatesAndFallback (void)
 	scr_viewsize.value = 100;
 	assert(smoke_calls == 0);
 
-	missing_effect = true;
+	/* Profile is classic: vanilla smoke, and the QSS-M name is not spoken. */
+	effect_available = false;
 	V_EmitCigaretteSmoke(&view);
-	assert(smoke_calls == 1 && fallback_calls == 1);
+	assert(smoke_calls == 0 && fallback_calls == 1);
 	Emit(12, true, 0.2);
-	assert(smoke_calls == 1 && fallback_calls == 1);
+	assert(smoke_calls == 0 && fallback_calls == 1);
 }
 
 static void TestFixedIdle (void)
@@ -195,7 +209,7 @@ static void TestDenseSmoke (void)
 	assert(fallback_particles == 0);
 
 	Reset();
-	missing_effect = true;
+	effect_available = false;
 	Emit(11, false, 0);
 	assert(fallback_calls == 1 && fallback_particles == 16);
 	for (i = 0; i < 1000; i++)
@@ -212,6 +226,8 @@ int main (void)
 	TestDenseSmoke();
 	puts("PASS: no cigarette smoke on held attack; smoke follows release until idle.");
 	puts("PASS: fixed smoke settings, 8-particle bursts every 0.04s, dense classic fallback.");
+	puts("PASS: and the modern QSS-M smoke is never even named unless the selected");
+	puts("PASS: particle profile already provides it, so it cannot drag the game");
 	puts("PASS: early release, fixed idle frame and visibility/health gates.");
 	return 0;
 }

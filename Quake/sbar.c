@@ -37,6 +37,31 @@ qboolean WordFilter_Check(const char* text, char* dest_buffer, size_t buffer_siz
 
 #define STAT_MINUS		10	// num frame for '-' stats digit
 
+/* Breadcrumbs inside Sbar_Draw -- the status bar is where the round-77 log
+ * stops.
+ *
+ *     scr: tileclear done      <-- last line in kabluk.log
+ *     scr: sbar done           <-- never reached
+ *
+ * i.e. the module died somewhere in Sbar_Draw(), which in a world frame draws
+ * the inventory, the face, the health and ammo numbers, the scoreboard and the
+ * team face -- and says nothing about which.  These marks split it up.
+ *
+ * They go through psp_trace_mark(), not psp_trace(): a per-frame mark must not
+ * open the memory stick (that mistake is what the six frames per second in the
+ * menu were; see the note in port/psp/psp_console.c).  Only the first three
+ * Sbar_Draw() calls are marked: after that the log has the shape of the frame
+ * and the marks are noise. */
+#if defined(PLATFORM_PSP) || defined(__psp__)
+extern void psp_trace_mark (const char *step);
+static int psp_sbar_marks;	/* how many times Sbar_Draw() has been entered */
+#define SBAR_MARK(x)		do { if (psp_sbar_marks < 3) psp_trace_mark(x); } while (0)
+#define SBAR_MARK_BEGIN()	do { if (psp_sbar_marks < 3) psp_sbar_marks++; } while (0)
+#else
+#define SBAR_MARK(x)		do { } while (0)
+#define SBAR_MARK_BEGIN()	do { } while (0)
+#endif
+
 qpic_t		*sb_nums[2][11];
 qpic_t		*sb_colon, *sb_slash;
 qpic_t		*sb_ibar;
@@ -2142,6 +2167,9 @@ void Sbar_Draw (void)
 
 	sb_updates++;
 
+	SBAR_MARK_BEGIN();
+	SBAR_MARK("sbar: enter");
+
 	GL_SetCanvas (CANVAS_DEFAULT); //johnfitz
 
 	if (sb_lines > 24)
@@ -2151,10 +2179,14 @@ void Sbar_Draw (void)
 	else
 		Sbar_Voice(16);
 
+	SBAR_MARK("sbar: voice");
+
 	//johnfitz -- don't waste fillrate by clearing the area behind the sbar // woods edited for #sbarstyles
 	w = CLAMP (320.0f, scr_sbarscale.value * 320.0f, (float)glwidth);
 	if (sb_lines && glwidth > w)
 		Draw_TileClear (0, glheight - sb_lines, glwidth, sb_lines);
+
+	SBAR_MARK("sbar: tileclear");
 
 	GL_SetCanvas (CANVAS_SBAR); //johnfitz
 
@@ -2173,6 +2205,8 @@ void Sbar_Draw (void)
 		if (cl.maxclients != 1)
 			Sbar_DrawFrags ();
 	}
+
+	SBAR_MARK("sbar: inventory");
 
 	if (clampedSbar == 3 && scr_viewsize.value <= 110) // qe hud does not use 'traditional sbar' #qehud
 	{
@@ -2370,6 +2404,8 @@ void Sbar_Draw (void)
 
 	}
 
+	SBAR_MARK("sbar: numbers");
+
 	if (clampedSbar == 3)
 		GL_SetCanvas(CANVAS_SBARQE);
 	else
@@ -2390,6 +2426,8 @@ void Sbar_Draw (void)
 		Sbar_DrawRecord();
 
 	Sbar_DrawFace_Team(); // woods #teamface
+
+	SBAR_MARK("sbar: extras");
 
 	if (cls.demoplayback && scr_viewsize.value <= 110) // woods #demopercent (Baker Fitzquake Mark V)
 	{

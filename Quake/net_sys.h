@@ -32,7 +32,7 @@
 #if defined(PLATFORM_BSD) || defined(PLATFORM_OSX)	|| \
     defined(PLATFORM_AMIGA) /* bsdsocket.library */	|| \
     defined(__GNU__) /* GNU/Hurd */ || defined(__riscos__) || \
-	defined(PLATFORM_HAIKU) /* Haiku OS */
+	defined(PLATFORM_HAIKU) /* Haiku OS */ || defined(PLATFORM_PSP)
 /* struct sockaddr has unsigned char sa_len as the first member in BSD
  * variants and the family member is also an unsigned char instead of an
  * unsigned short. This should matter only when PLATFORM_UNIX is defined,
@@ -86,6 +86,45 @@ typedef int	socklen_t;			/* defining as signed int to match the old api */
 COMPILE_TIME_ASSERT(sockaddr, offsetof(struct sockaddr, sa_family) == SA_FAM_OFFSET);
 
 #endif	/* end of unix stuff */
+
+
+/* psp includes and compatibility macros
+ *
+ * pspsdk ships NetBSD's socket headers for IPv4 (src/libcglue: sys/socket.h,
+ * netinet/in.h, arpa/inet.h, netdb.h).  Two consequences:
+ *   - struct sockaddr there is the BSD layout, with sa_len first, which is why
+ *     PLATFORM_PSP is listed in the HAVE_SA_LEN block above;
+ *   - there is no struct sockaddr_in6, so net_dgrm.c cannot build as is.
+ *     port/psp/Makefile leaves that file out; a PSP-E100x has no wireless
+ *     hardware, so the datagram driver has nothing to talk to anyway.
+ */
+#if defined(PLATFORM_PSP)
+
+#include <errno.h>
+#include <sys/types.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <netdb.h>
+
+typedef int	sys_socket_t;
+#define	INVALID_SOCKET	(-1)
+#define	SOCKET_ERROR	(-1)
+
+#define	SOCKETERRNO	errno
+#define	ioctlsocket	ioctl
+#define	closesocket	close
+#define	selectsocket	select
+#define	IOCTLARG_P(x)	x
+
+#define	NET_EWOULDBLOCK		EWOULDBLOCK
+#define	NET_ECONNREFUSED	ECONNREFUSED
+
+#define	socketerror(x)	strerror((x))
+
+#endif	/* end of psp stuff */
 
 
 /* amiga includes and compatibility macros */

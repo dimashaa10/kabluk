@@ -72,6 +72,10 @@ void PR_Init (void);
 void PR_ExecuteProgram (func_t fnum);
 void PR_ClearProgs(qcvm_t *vm);
 qboolean PR_LoadProgs (const char *filename, qboolean fatal, unsigned int needcrc, const builtin_t *builtins, size_t numbuiltins);
+/* The VM's entity array (max_edicts * edict_size, ~17 MB at the default
+ * max_edicts of 15000).  Sized to the room the platform actually has, printed
+ * on the console, and false instead of a NULL that gets written through. */
+qboolean PR_AllocEdicts (qcvm_t *vm);
 
 //from pr_ext.c
 void PR_InitExtensions(void);
@@ -326,6 +330,18 @@ struct pr_extfields_s
 	QCEXTFIELD(SendEntity,				".float(entity to, float changedflags)")			/*function*/	\
 	QCEXTFIELD(SendFlags,				".float")			/*float. :( */	\
 	QCEXTFIELD(pvsflags,				".float")			/*float*/	\
+	/*sv_phys/sv_user: the physdynamic tag, what a player is holding, and the\
+	 *movetype to restore when he lets go. See the carry section in sv_user.c.*/\
+	QCEXTFIELD(physdynamic,			".float")			/*float*/	\
+	QCEXTFIELD(physcarry,			".float")			/*float*/	\
+	QCEXTFIELD(physmovetype,		".float")			/*float*/	\
+	QCEXTFIELD(physsolid,			".float")			/*float*/	\
+	/*viewaction.h: what the player's view action is playing, written by QC.*/\
+	QCEXTFIELD(dvamodel,			".string")			/*string*/\
+	QCEXTFIELD(dvastart,			".float")			/*float*/\
+	QCEXTFIELD(dvafirst,			".float")			/*float*/\
+	QCEXTFIELD(dvaframes,		".float")			/*float*/\
+	QCEXTFIELD(dvafps,			".float")			/*float*/\
 	//end of list
 
 #define QCEXTFIELD(n,t) int n;

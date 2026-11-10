@@ -37,7 +37,23 @@ typedef enum {
 #define PMF_JUMP_HELD			1
 #define PMF_LADDER				2	//pmove flags. seperate from flags
 
-#define	MAX_PHYSENTS	64//2048
+/* Engine-side crouch, shared by server movement and client-side prediction so
+ * both compute the same hull, speed cap and eye height from the same command.
+ * The collision hull snaps (it has to be a pure function of this frame's input
+ * for prediction to stay in sync); only the eye height transitions smoothly. */
+#define PM_CROUCH_HEIGHT_RATIO	0.5f	// crouched hull is half the standing height
+#define PM_CROUCH_VIEWHEIGHT	8		// upper bound for the crouched eye
+#define PM_CROUCH_TRANSITION	0.3f	// seconds for the smooth eye/model transition
+#define PM_CROUCH_MAX_SPEED		160.0f	// ground wish-speed cap while crouched
+
+/* Entities the player can collide with in one move. The server fills this from
+ * the area the player is in, the predicting client from the same BSP area plus
+ * every networked solid it knows about. If the list fills up, whatever did not
+ * fit silently stops blocking movement: the server and the client then walk
+ * through different geometry and the prediction rubber-bands. Keep this
+ * comfortably above any realistic crowd, and watch for the warning in
+ * World_AddEntsToPmove if it ever does fill up. */
+#define	MAX_PHYSENTS	256
 typedef struct
 {
 	vec3_t	origin;
@@ -62,6 +78,18 @@ typedef struct
 	int			pm_type;
 	vec3_t		player_mins;
 	vec3_t		player_maxs;
+
+	// crouch (engine-side; see PM_UpdateCrouch). The caller seeds stand_* and
+	// stand_viewheight from the uncrouched hull, the move then reports back the
+	// effective hull in player_mins/maxs plus the smooth eye in viewheight.
+	vec3_t		stand_mins;
+	vec3_t		stand_maxs;
+	float		stand_viewheight;
+	float		viewheight;
+	float		crouch_amount;		// 0 = standing eye, 1 = crouched eye (smooth)
+	qboolean	crouched;			// crouched collision hull is active
+	qboolean	crouch_wanted;		// cmd holds +movedown this frame
+	qboolean	crouch_blocked;		// releasing +movedown but the ceiling won't allow standing
 
 	// world state
 	int			numphysent;
@@ -145,12 +173,15 @@ extern	movevars_t		movevars;
 extern	playermove_t	pmove;
 
 void PM_PlayerMove (float gamespeed);
+void PM_SeedCrouch (void);
+void PM_UpdateCrouch (void);
 void PM_Init (void);
 void PM_InitBoxHull (void);
 
 void PM_CategorizePosition (void);
 int PM_HullPointContents (hull_t *hull, int num, vec3_t p);
 
+qboolean PM_CrouchedAim (const vec3_t origin, float eye, vec3_t start, vec3_t end);
 int PM_ExtraBoxContents (vec3_t p);	//Peeks for HL-style water.
 int PM_PointContents (vec3_t point);
 qboolean PM_TestPlayerPosition (vec3_t point);

@@ -33,6 +33,9 @@ extern float v_blend[4];
 void V_Init (void);
 void V_RenderView (void);
 void FXAA_VidFxaaChanged(cvar_t *v); // woods #fxaa
+/* The model a dynamic view action is playing, or NULL for the weapon. The
+ * server decides (SV_CalcViewAction); see Quake/viewaction.h. */
+struct qmodel_s *CL_ViewActionModel (void);
 void V_CalcBlend (void);
 void V_UpdateBlend (void);
 float V_CalcRoll (vec3_t angles, vec3_t velocity);

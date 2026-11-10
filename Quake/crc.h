@@ -29,6 +29,36 @@ void CRC_ProcessByte(unsigned short *crcvalue, byte data);
 unsigned short CRC_Value(unsigned short crcvalue);
 unsigned short CRC_Block (const byte *start, size_t count); //johnfitz -- texture crc
 
+/*
+ * A CRC and a whole-word search over a file that is too big to hold, done in
+ * windows the caller chooses.  See the long note above CRC_ScanBegin() in
+ * crc.c: menu.c asks progs.dat for exactly these two answers, and used to ask
+ * for the file in one malloc() instead.
+ *
+ * The scan can be stopped after any window and resumed later, which is what
+ * lets a 17 MB file be read a piece per frame instead of in one pause.
+ */
+#define CRC_SCAN_WORD_MAX 31
+
+typedef struct
+{
+	unsigned short crc;      /* the number CRC_Block() would return so far  */
+	int  wordlen;            /* length of the word being searched for       */
+	char word [CRC_SCAN_WORD_MAX + 1];
+	int  matched;            /* bytes of that word matched at the last byte */
+	int  before;             /* byte in front of the match, -1 = file start */
+	int  pending;            /* a full match is waiting for the byte after  */
+	int  prev;               /* the last byte of the previous window        */
+	qboolean found;          /* the word was found as a whole word          */
+} crc_scan_t;
+
+void CRC_ScanBegin (crc_scan_t *scan, const char *word);
+int  CRC_ScanStep (crc_scan_t *scan, const byte *buf, size_t count);
+int  CRC_ScanFinish (crc_scan_t *scan);
+
+qboolean CRC_ScanFile (FILE *file, const char *word,
+                       unsigned short *crc_out, qboolean *found_out);
+
 //additional hash functions...
 unsigned Com_BlockChecksum (const void *buffer, size_t length);
 void Com_BlockFullChecksum (const void *buffer, size_t len, unsigned char *outbuf);

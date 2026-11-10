@@ -34,6 +34,197 @@ void PM_Init (void)
 	PM_InitBoxHull();
 }
 
+/*
+=============
+PM_CrouchBounds
+
+Effective hull and eye height for a given 0..1 crouch amount. Called with the
+standing hull from the caller, so a crouched entity never loses the reference
+it needs to stand back up.
+=============
+*/
+static void PM_CrouchBounds (float amount, vec3_t mins, vec3_t maxs, float *viewheight)
+{
+	float stand_vh, crouch_height, crouch_maxs, crouch_vh;
+
+	amount = q_min(q_max(amount, 0.0f), 1.0f);
+	stand_vh = pmove.stand_viewheight > 0 ? pmove.stand_viewheight : DEFAULT_VIEWHEIGHT;
+	crouch_height = q_max(pmove.stand_maxs[2] - pmove.stand_mins[2], 0.0f) * PM_CROUCH_HEIGHT_RATIO;
+	crouch_maxs = q_min(pmove.stand_maxs[2], pmove.stand_mins[2] + crouch_height);
+	crouch_vh = q_min(stand_vh, q_min((float)PM_CROUCH_VIEWHEIGHT, crouch_maxs));
+
+	VectorCopy(pmove.stand_mins, mins);
+	VectorCopy(pmove.stand_maxs, maxs);
+	maxs[2] = pmove.stand_maxs[2] + (crouch_maxs - pmove.stand_maxs[2]) * amount;
+	if (viewheight)
+		*viewheight = stand_vh + (crouch_vh - stand_vh) * amount;
+}
+
+/*
+=============
+PM_SeedCrouch
+
+Recompute the effective hull and eye from the standing hull and the current
+crouch state. Used by the predicting client to seed pmove from a network
+snapshot (which carries the standing hull plus the crouch flag) so the replayed
+commands start in the same posture the server is in.
+=============
+*/
+void PM_SeedCrouch (void)
+{
+	vec3_t mins, maxs;
+
+	if (pmove.stand_maxs[2] <= pmove.stand_mins[2])
+		return;	// no usable standing hull, PM_UpdateCrouch keeps crouch disabled
+
+	if (!pmove.crouched)
+		pmove.crouch_amount = 0;
+	pmove.crouch_amount = q_min(q_max(pmove.crouch_amount, 0.0f), 1.0f);
+
+	PM_CrouchBounds(pmove.crouched ? 1.0f : 0.0f, pmove.player_mins, pmove.player_maxs, NULL);
+	PM_CrouchBounds(pmove.crouch_amount, mins, maxs, &pmove.viewheight);
+}
+
+/*
+=============
+PM_CrouchedAim
+
+Legacy progs.dat files trace hitscan shots from a hard-coded standing eye height
+(self.origin + 16 and friends). While crouched that point is above the player's
+own head, so the shot would fly over whatever is in front of the crosshair.
+
+Re-aim such a trace from the real (crouched) eye, keeping the direction the prog
+chose, so the crosshair still tells the truth at any range. A trace that does
+not start at a standing eye height - progs that already use view_ofs, floor
+probes, anything below the eye - is left completely alone. Returns true when the
+trace was moved.
+=============
+*/
+qboolean PM_CrouchedAim (const vec3_t origin, float eye, vec3_t start, vec3_t end)
+{
+	float start_dz = start[2] - origin[2];
+	vec3_t dir;
+	float dist;
+
+	if (eye >= DEFAULT_VIEWHEIGHT - 0.5f)
+		return false;	// standing: nothing to correct
+	if (start_dz <= eye + 0.5f)
+		return false;	// already at (or below) the real eye
+
+	VectorSubtract(end, start, dir);
+	dist = VectorNormalize(dir);
+	start[2] = origin[2] + eye;
+	VectorMA(start, dist, dir, end);
+	return true;
+}
+
+/*
+=============
+PM_CanStand
+
+True when the uncrouched hull fits where the player currently is. Uses the same
+trace data as the movement itself, so the server and the predicting client
+reach the same verdict.
+=============
+*/
+static qboolean PM_CanStand (void)
+{
+	vec3_t mins, maxs, saved_mins, saved_maxs;
+	float saved_viewheight;
+	qboolean fits;
+
+	VectorCopy(pmove.player_mins, saved_mins);
+	VectorCopy(pmove.player_maxs, saved_maxs);
+	saved_viewheight = pmove.viewheight;
+
+	PM_CrouchBounds(0.0f, mins, maxs, &pmove.viewheight);
+	VectorCopy(mins, pmove.player_mins);
+	VectorCopy(maxs, pmove.player_maxs);
+	fits = PM_TestPlayerPosition(pmove.origin);
+
+	VectorCopy(saved_mins, pmove.player_mins);
+	VectorCopy(saved_maxs, pmove.player_maxs);
+	pmove.viewheight = saved_viewheight;
+	return fits;
+}
+
+/*
+=============
+PM_UpdateCrouch
+
+Driven only by this frame's command plus a standing-room test, so a predicting
+client and the server always agree on the hull: there is no hidden transition
+state that could drift when commands are replayed. The eye height still eases
+over PM_CROUCH_TRANSITION because that part is cosmetic.
+=============
+*/
+void PM_UpdateCrouch (void)
+{
+	float target;
+	vec3_t mins, maxs;
+
+	if (pmove.stand_maxs[2] <= pmove.stand_mins[2])
+	{	// degenerate hull: keep crouch out of the way
+		pmove.crouch_wanted = false;
+		pmove.crouched = pmove.crouch_blocked = false;
+		pmove.crouch_amount = 0;
+		pmove.viewheight = pmove.stand_viewheight > 0 ? pmove.stand_viewheight : DEFAULT_VIEWHEIGHT;
+		PM_CrouchBounds(0, pmove.player_mins, pmove.player_maxs, NULL);
+		return;
+	}
+
+	/* Same conditions the engine-side crouch uses: +movedown while walking.
+	 * Swimming down and ladders use upmove for their own purposes. Water and
+	 * ladder state are recomputed by the move itself, and the predicting client
+	 * seeds waterlevel from cl.inwater, so both sides reach the same verdict. */
+	pmove.crouch_wanted = pmove.cmd.upmove < 0 && pmove.pm_type == PM_NORMAL &&
+		pmove.waterlevel < 2 && !pmove.onladder;
+
+	if (pmove.crouch_wanted)
+	{
+		pmove.crouched = true;
+		pmove.crouch_blocked = false;
+	}
+	else if (pmove.crouched)
+	{
+		if (PM_CanStand())
+		{
+			pmove.crouched = false;
+			pmove.crouch_blocked = false;
+		}
+		else
+			pmove.crouch_blocked = true;
+	}
+	else
+		pmove.crouch_blocked = false;
+
+	// Smooth eye/model amount, hull snaps to the current state.
+	target = pmove.crouched ? 1.0f : 0.0f;
+	if (frametime > 0)
+	{
+		float step = frametime / PM_CROUCH_TRANSITION;
+		if (pmove.crouch_amount < target)
+			pmove.crouch_amount = q_min(pmove.crouch_amount + step, target);
+		else if (pmove.crouch_amount > target)
+			pmove.crouch_amount = q_max(pmove.crouch_amount - step, target);
+	}
+	else
+		pmove.crouch_amount = target;
+
+	PM_CrouchBounds(pmove.crouched ? 1.0f : 0.0f,
+		pmove.player_mins, pmove.player_maxs, NULL);
+	PM_CrouchBounds(pmove.crouch_amount, mins, maxs, &pmove.viewheight);
+}
+
+/* Wish speed ceiling for this frame: crouching only slows you while you are on
+ * the ground, so crouch-jumps and bunny hops keep their momentum. */
+static float PM_MaxSpeed (void)
+{
+	if (pmove.crouched && pmove.onground)
+		return q_min(movevars.maxspeed, PM_CROUCH_MAX_SPEED);
+	return movevars.maxspeed;
+}
+
 #define	MIN_STEP_NORMAL	0.7		// roughly 45 degrees
 
 #define	STOP_EPSILON	0.1
@@ -47,7 +238,7 @@ void PM_Init (void)
 */
 static void PM_AddTouchedEnt (int num)
 {
-	if (pmove.numtouch == MAX_PHYSENTS)
+	if (pmove.numtouch >= (int)countof(pmove.touchindex))
 		return;
 
 	if (pmove.numtouch)
@@ -688,11 +879,15 @@ void PM_AirMove (void)
 	wishspeed = VectorNormalize(wishdir);
 
 //
-// clamp to server defined max speed
+// clamp to server defined max speed (crouching only caps it on the ground, so
+// a crouch-jump keeps the momentum it started with)
 //
-	if (wishspeed > movevars.maxspeed)
 	{
-		wishspeed = movevars.maxspeed;
+		float maxspeed = PM_MaxSpeed ();
+		if (wishspeed > maxspeed)
+		{
+			wishspeed = maxspeed;
+		}
 	}
 
 	if (pmove.onground)
@@ -1286,6 +1481,10 @@ void PM_PlayerMove (float gamespeed)
 		pmove.onground = false;
 		return;
 	}
+
+	// Hull/eye height for this frame. Done before the first trace so the whole
+	// move, including the step and jump tests, uses the crouched hull.
+	PM_UpdateCrouch ();
 
 	PM_NudgePosition ();
 

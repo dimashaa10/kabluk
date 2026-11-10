@@ -151,6 +151,58 @@ static void TestJumpFlipPresentation (void)
 				assert(VectorCompare(board->origin, upright_origin)); // lands with the original fit
 			}
 }
+/* G8: the server tilts the board during a grind (SKATE_SLIDE_BOARD_PITCH) and
+ * the client used to zero that pitch every frame, so the pose never reached the
+ * screen. The tilt must survive the trip and rotate about the board's center. */
+static void TestGrindBoardPitch (void)
+{
+	static const float pitches[] = {45, -20, 0};
+	static const float yaws[] = {0, 90, 215};
+	int owner, yaw, pitch, repeat, i;
+
+	for (owner = 1; owner <= 2; owner++)
+		for (yaw = 0; yaw < 3; yaw++)
+		{
+			entity_t *board, *rider;
+			vec3_t upright_origin, upright_angles = {0, 0, 0};
+			vec4_t pivot, expected, actual;
+			mat4_t matrix;
+			lerpdata_t transform = {0};
+
+			Reset();
+			board = &entities[3]; rider = &entities[owner];
+			board->netstate.colormap = owner;
+			rider->angles[YAW] = upright_angles[YAW] = yaws[yaw];
+			VectorCopy(rider->origin, upright_origin);
+			upright_origin[2] += 7;
+			for (i = 0; i < 3; i++) pivot[i] = (board_model.mins[i] + board_model.maxs[i]) * 0.5f;
+			pivot[3] = 1;
+			R_EntityMatrix(matrix, upright_origin, upright_angles, board->netstate.scale);
+			Matrix4_Transform4(matrix, pivot, expected);
+
+			for (pitch = 0; pitch < 3; pitch++)
+			{
+				board->angles[PITCH] = pitches[pitch];
+				for (repeat = 0; repeat < 3; repeat++)
+				{
+					CL_UpdateSkateVisuals();
+					R_SetupEntityTransform(board, &transform);
+					assert(transform.angles[PITCH] == pitches[pitch]); // the tilt survives
+					assert(transform.angles[YAW] == yaws[yaw]);
+					// and the board still turns about its own center
+					R_EntityMatrix(matrix, transform.origin, transform.angles, board->netstate.scale);
+					Matrix4_Transform4(matrix, pivot, actual);
+					for (i = 0; i < 3; i++)
+						assert(fabsf(actual[i] - expected[i]) < 0.01f);
+					assert(rider->origin[2] == 24);
+				}
+			}
+			// a tilted board does not leak into the rider
+			rider->angles[PITCH] = 0;
+			board->angles[PITCH] = 0;
+		}
+}
+
 static void TestRemoteAndGuards (void)
 {
 	entity_t temporary = {0};
@@ -194,9 +246,11 @@ static void TestCamera (void)
 }
 int main (void)
 {
-	TestPresentation(); TestJumpFlipPresentation(); TestRemoteAndGuards(); TestCamera();
+	TestPresentation(); TestJumpFlipPresentation(); TestGrindBoardPitch();
+	TestRemoteAndGuards(); TestCamera();
 	puts("PASS: skate third-person camera, rider/board alignment, real alias transforms and culling.");
 	puts("PASS: local/remote jump roll, stable board-center pivot, yaw/scale and no accumulated offsets.");
+	puts("PASS: grind tilt reaches the client and still pivots about the board center.");
 	puts("PASS: remote riders, unchanged prediction origins, camera restore, malformed/foreign-state guards.");
 	return 0;
 }

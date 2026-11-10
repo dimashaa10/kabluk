@@ -405,7 +405,7 @@ cvar_t	cl_pitchspeed = {"cl_pitchspeed","150",CVAR_ARCHIVE};
 
 cvar_t	cl_anglespeedkey = {"cl_anglespeedkey","1.5",CVAR_NONE};
 
-cvar_t	cl_alwaysrun = {"cl_alwaysrun","0",CVAR_ARCHIVE}; // QuakeSpasm -- new always run
+cvar_t	cl_alwaysrun = {"cl_alwaysrun","1",CVAR_ARCHIVE}; // QuakeSpasm -- new always run
 
 cvar_t	pq_lag = { "pq_lag", "0" };			// JPG - synthetic lag // woods #pqlag
 cvar_t	cl_smartspawn = {"cl_smartspawn", "0", CVAR_ARCHIVE}; // woods #spawntrainer
@@ -584,7 +584,7 @@ void CL_FinishMove(usercmd_t *cmd, qboolean isfinal)
 		&in_jump,
 		&in_button3,
 		&in_button4,
-		&in_button3,
+		&in_button5,
 		&in_button6,
 		&in_button7,
 		&in_button8,

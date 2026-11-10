@@ -22,6 +22,31 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 // view.c -- player eye positioning
 
 #include "quakedef.h"
+
+/* PSP breadcrumbs for V_RenderView -- first 3 calls only.
+ *
+ * These run once per frame, so an unconditional write to the memory stick
+ * would be the slowest thing in the engine; the first few frames are the ones
+ * that matter, and after that the counter turns the mark into a comparison.
+ * Defined up here on purpose: a macro that is used before its #define becomes
+ * an implicit function call and only shows up with -Werror. */
+#if defined(PLATFORM_PSP) || defined(__psp__)
+extern void psp_trace_mark (const char *step);
+static int psp_view_frames;
+#define VIEW_MARK(x)	do { if (psp_view_frames < 3) psp_trace_mark(x); } while (0)
+
+/* How many world frames have been drawn, for the marks outside this file.
+ * GL_EndRendering() (port/psp/vid_psp.c) and SCR_UpdateScreen() both cover
+ * steps that only exist once there is a world, and both used to be silent
+ * about them: the round-74 log ends on "view: polyblend", which says the
+ * world was drawn and nothing about what happened next. */
+int psp_view_frame_count (void)
+{
+	return psp_view_frames;
+}
+#else
+#define VIEW_MARK(x)	do { } while (0)
+#endif
 #include "cigarette.h"
 
 extern qboolean	premul_hud;
@@ -926,12 +951,53 @@ static void V_EmitCigaretteSmoke (entity_t *view)
 
 	next_smoke_time = cl.time + SIGA_SMOKE_INTERVAL;
 
-	// Eight particles per burst, three times as often as the old thin smoke.
-	// The namespaced particle loads particles/qssm.cfg even when another
-	// particle profile is selected. Keep a matching dense classic fallback
-	// for mods which intentionally remove the QSS-M particle pack.
-	if (PScript_RunParticleEffectTypeString(smokeorg, smoke_dir, SIGA_SMOKE_COUNT, SIGA_SMOKE_EFFECT))
+	/* The dense QSS-M smoke belongs to the QSS-M particle profile, and this is
+	 * where that went wrong: asking for "qssm.cigarette_smoke" BY NAME makes
+	 * PScript_FindParticleType() load particles/qssm.cfg on the spot, and once
+	 * that file was in memory every engine effect that asks for a bare name
+	 * (TE_GUNSHOT, TE_EXPLOSION, te_spike, ...) found the QSS-M definition --
+	 * so smoking one cigarette switched the entire game to the modern effects,
+	 * with no way back but reloading particles.  Reported exactly that way.
+	 *
+	 * So the modern smoke is used only if the player has SELECTED a particle
+	 * profile that already provides it (r_particledesc "qssm"/"qssmc", which
+	 * loads particles/qssm.cfg from its own cvar callback).  Otherwise the
+	 * cigarette emits plain vanilla smoke, and asks for nothing that would load
+	 * a namespace as a side effect.  The engine now also refuses to let an
+	 * implicitly loaded namespace take over bare-name lookups
+	 * (P_ConfigSelected() in r_part_fte.c), so this cannot come back through
+	 * some other effect.
+	 *
+	 * Eight particles per burst, three times as often as the old thin smoke,
+	 * and sixteen for the classic path so the plume reads the same. */
+	if (PScript_ParticleTypeLoaded (SIGA_SMOKE_EFFECT))
+		PScript_RunParticleEffectTypeString(smokeorg, smoke_dir, SIGA_SMOKE_COUNT, SIGA_SMOKE_EFFECT);
+	else
 		R_RunParticleEffect(smokeorg, smoke_dir, SIGA_SMOKE_COLOR, SIGA_SMOKE_CLASSIC_COUNT);
+}
+
+/*
+==================
+CL_ViewActionModel
+
+The model a "dynamic view action" is playing right now, or NULL when the weapon
+should be drawn. The server owns the decision (sv_main.c, SV_CalcViewAction) and
+sends it as stats; the client only checks that the model index is one it
+actually has.
+
+cl_parse.c compares the view model against this when deciding whether a packet
+should reset the animation lerp, so the two files cannot disagree about what the
+view model "is".
+==================
+*/
+qmodel_t *CL_ViewActionModel (void)
+{
+	int index = cl.stats[STAT_VIEWACTION_MODEL];
+
+	if (index <= 0 || index >= MAX_MODELS)
+		return NULL;
+
+	return cl.model_precache[index];
 }
 
 /*
@@ -1033,8 +1099,36 @@ void V_CalcRefdef (void)
 			view->origin[2] += 0.5;
 	}
 
-	view->model = cl.model_precache[cl.stats[STAT_WEAPON]];
-	view->frame = cl.stats[STAT_WEAPONFRAME];
+	{
+		/* A view action replaces the weapon model in the same slot, with the
+		 * same transform, bob and depth range: the player sees the medkit
+		 * exactly where the gun was. The gun is not hidden or moved -- it is
+		 * simply not the model this frame -- so there is nothing to restore
+		 * when the action ends. */
+		qmodel_t *action = CL_ViewActionModel ();
+
+		if (action)
+		{
+			view->model = action;
+			view->frame = cl.stats[STAT_VIEWACTION_FRAME];
+		}
+		else
+		{
+			view->model = cl.model_precache[cl.stats[STAT_WEAPON]];
+			view->frame = cl.stats[STAT_WEAPONFRAME];
+		}
+
+		/* Switching between the weapon and the action must not blend one
+		 * model's pose into the other's: frame 0 of the medkit is not a
+		 * continuation of the gun's idle frame. The same check stops the
+		 * animation lerp from being reset on every packet, because
+		 * cl_parse.c asks the same question through the same helper. */
+		if (view->model != cl.viewaction_lastmodel)
+		{
+			view->lerpflags |= LERP_RESETANIM;
+			cl.viewaction_lastmodel = view->model;
+		}
+	}
 	view->netstate = nullentitystate;
 
 	// The server drives the weaponframe; add smoke only during the released
@@ -1119,6 +1213,8 @@ void V_RenderView (void)
 	if (con_forcedup)
 		return;
 
+	VIEW_MARK("view: calc refdef");
+
 	if (cl.intermission)
 		V_CalcIntermissionRefdef ();
 	else if (!cl.paused /* && (cl.maxclients > 1 || key_dest == key_game) */)
@@ -1126,7 +1222,9 @@ void V_RenderView (void)
 
 	//johnfitz -- removed lcd code
 
+	VIEW_MARK("view: R_RenderView");
 	R_RenderView ();
+	VIEW_MARK("view: autoid");
 
 	SCR_SetupAutoID(); // woods #autoid
 
@@ -1134,7 +1232,14 @@ void V_RenderView (void)
 
 	SCR_DrawStatusIndicators(); // woods #autoid
 
+	VIEW_MARK("view: polyblend");
 	V_PolyBlend (); //johnfitz -- moved here from R_Renderview ();
+	VIEW_MARK("view: polyblend done");
+
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	if (psp_view_frames < 100)
+		psp_view_frames++;
+#endif
 }
 
 /*

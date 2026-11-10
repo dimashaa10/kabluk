@@ -1537,6 +1537,7 @@ static void SV_Physics_Follow (edict_t *ent)
 {
 	vec3_t vf, vr, vu, angles, v;
 	edict_t *e;
+	eval_t *physval;
 
 	// regular thinking
 	if (!SV_RunThink (ent))
@@ -1544,6 +1545,16 @@ static void SV_Physics_Follow (edict_t *ent)
 
 	// LordHavoc: implemented rotation on MOVETYPE_FOLLOW objects
 	e = PROG_TO_EDICT(ent->v.aiment);
+
+	/* A held physics prop rides this movetype only because SV_Physics() already
+	 * dispatches FOLLOW per frame; the FOLLOW maths below (punchangle-rotated
+	 * view_ofs, angles = aiment angles) is for attachments, not for a crate in
+	 * front of the eyes. SV_CarryUpdate() does the holding. */
+	if ((physval = GetEdictFieldValue (ent, qcvm->extfields.physdynamic)) && physval->_float)
+	{
+		SV_CarryUpdate (ent, e);
+		return;
+	}
 	if (e->v.angles[0] == ent->v.punchangle[0] && e->v.angles[1] == ent->v.punchangle[1] && e->v.angles[2] == ent->v.punchangle[2])
 	{
 		// quick case for no rotation

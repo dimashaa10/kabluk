@@ -116,6 +116,11 @@ void Hunk_FreeToHighMark (int mark);
 void *Hunk_TempAlloc (int size);
 
 void Hunk_Check (void);
+/* A compact, durable summary of what the hunk holds: total, used, free, and
+ * the six biggest allocations by name.  For the log line *before* "the hunk is
+ * full" -- on the console that sentence used to be the whole story.  Silent
+ * off the PSP. */
+void Hunk_Report (const char *why);
 
 typedef struct cache_user_s
 {

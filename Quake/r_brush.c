@@ -40,6 +40,13 @@ int					lightmap_count;
 static int			last_lightmap_allocated;
 static int			*allocated;
 int LMBLOCK_WIDTH, LMBLOCK_HEIGHT;
+/* Where they come from: GL_Init() in gl_vidsdl.c on the desktop, and
+ * psp_lmblock_init() in port/psp/vid_psp.c on the console -- which does NOT
+ * compile gl_vidsdl.c, and that is why they were zero for the whole life of
+ * the port.  A block of 0x0 is not a small block, it is a block nothing fits
+ * in: see AllocBlock below and the note in vid_psp.c.  AllocBlock now says so
+ * rather than looping a million times and dying through a NULL. */
+#define LMBLOCK_MIN 8
 
 
 /*
@@ -745,6 +752,19 @@ int AllocBlock (int w, int h, int *x, int *y)
 	int		best, best2;
 	int		texnum;
 
+	/* A block size of zero -- or one too small for even a 2x2 lightmap -- does
+	 * not make AllocBlock fail, it makes it walk to MAX_SANITY_LIGHTMAPS:
+	 * `LMBLOCK_WIDTH - w` is negative so the placement loop never runs,
+	 * `best + h > LMBLOCK_HEIGHT` is then always true, and every iteration
+	 * reallocs the lightmap array.  That walk is what killed the port between
+	 * "r_newmap: ... lightmaps first" and the next line: realloc() returned
+	 * NULL at some point and the memset right after it wrote through the NULL.
+	 * Name it instead. */
+	if (LMBLOCK_WIDTH < LMBLOCK_MIN || LMBLOCK_HEIGHT < LMBLOCK_MIN)
+		Sys_Error ("AllocBlock: lightmap blocks are %dx%d -- nothing was set up "
+		           "for this video backend (LMBLOCK_WIDTH/HEIGHT)", LMBLOCK_WIDTH,
+		           LMBLOCK_HEIGHT);
+
 	// ericw -- rather than searching starting at lightmap 0 every time,
 	// start at the last lightmap we allocated a surface in.
 	// This makes AllocBlock much faster on large levels (can shave off 3+ seconds
@@ -754,8 +774,19 @@ int AllocBlock (int w, int h, int *x, int *y)
 	{
 		if (texnum == lightmap_count)
 		{
+			struct lightmap_s *grown;
+
 			lightmap_count++;
-			lightmaps = (struct lightmap_s *) realloc(lightmaps, sizeof(*lightmaps)*lightmap_count);
+			grown = (struct lightmap_s *) realloc(lightmaps, sizeof(*lightmaps)*lightmap_count);
+			if (!grown)
+			{	/* realloc keeps the old block: say so and take the map out of
+				 * the loop, instead of shrinking lightmap_count back and
+				 * writing through a NULL on the next iteration. */
+				lightmap_count--;
+				Sys_Error ("AllocBlock: out of memory for lightmap %d (%d in use)",
+				           texnum, lightmap_count);
+			}
+			lightmaps = grown;
 			memset(&lightmaps[texnum], 0, sizeof(lightmaps[texnum]));
 			if (GL_BufferStorageFunc)
 			{	//if we have bufferstorage then we have mapbufferrange+persistent+coherent
@@ -766,7 +797,14 @@ int AllocBlock (int w, int h, int *x, int *y)
 				GL_BindBufferFunc(GL_PIXEL_UNPACK_BUFFER_ARB, 0);
 			}
 			else
+			{
 				lightmaps[texnum].pbodata = (byte *) calloc(1, 4*LMBLOCK_WIDTH*LMBLOCK_HEIGHT);
+				/* Unchecked, this is the same NULL write one step later:
+				 * R_BuildLightMap() is handed pbodata as its destination. */
+				if (!lightmaps[texnum].pbodata)
+					Sys_Error ("AllocBlock: out of memory for lightmap %d "
+					           "(%dx%d bytes)", texnum, LMBLOCK_WIDTH, LMBLOCK_HEIGHT);
+			}
 			//as we're only tracking one texture, we don't need multiple copies of allocated any more.
 			memset(allocated, 0, sizeof(*allocated)*LMBLOCK_WIDTH);
 
@@ -1091,7 +1129,15 @@ void GL_BuildLightmaps (void)
 	lightmaps = NULL;
 	last_lightmap_allocated = 0;
 	lightmap_count = 0;
-	allocated = realloc(allocated, sizeof(*allocated)*LMBLOCK_WIDTH);
+	if (LMBLOCK_WIDTH >= LMBLOCK_MIN && LMBLOCK_HEIGHT >= LMBLOCK_MIN)
+	{
+		int *grown = realloc(allocated, sizeof(*allocated)*LMBLOCK_WIDTH);
+
+		if (!grown)
+			Sys_Error ("GL_BuildLightmaps: out of memory for the lightmap "
+			           "allocator (%d ints)", LMBLOCK_WIDTH);
+		allocated = grown;
+	}
 
 	if (gl_texture_e5bgr9)// && cl.worldmodel && (cl.worldmodel->flags&MOD_HDRLIGHTING))
 		gl_lightmap_format = GL_RGB9_E5; //requires gl3, allowing for hdr lighting.
@@ -1490,7 +1536,25 @@ void R_BuildLightMap (qmodel_t *model, msurface_t *surf, byte *dest, int stride,
 	tmax = surf->extents[1]+1;
 	size = smax*tmax;
 
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	/* ---- not alloca(), because the stack is a fixed 512 KB here ---------
+	 *
+	 * size is smax*tmax, i.e. (extents+1)^2, and the buffer is three
+	 * unsigned ints a texel: with this port's 128x128 lightmap block that is
+	 * 193 KB at worst.  The main thread's stack is 512 KB
+	 * (port/psp/psp_boot.c) and reports 249 KB free while the menus are up
+	 * (the status line in kabluk.log), and this call is four frames deep:
+	 * GL_BuildLightmaps -> GL_BuildModel -> GL_CreateSurfaceLightmap ->
+	 * here.  alloca() therefore overwrites the stack, and a stack fault on
+	 * this hardware is silent -- exactly the class of death the port has
+	 * been chasing.  The buffer comes from the heap instead and goes back
+	 * before returning; a level load does this once per surface. */
+	blocklights = (unsigned *)malloc (size * 3 * sizeof(*blocklights));
+	if (!blocklights)
+		Sys_Error ("R_BuildLightMap: no memory for a %dx%d lightmap", smax, tmax);
+#else
 	blocklights = alloca(size*3*sizeof(*blocklights));	//alloca is unsafe, but at least we memset it... should probably memset in stack order in the hopes of getting a standard stack-overflow-segfault instead of poking completely outside what the system thinks is the stack in the case of massive surfs...
+#endif
 
 	if (model->lightdata)
 	{
@@ -1665,6 +1729,10 @@ void R_BuildLightMap (qmodel_t *model, msurface_t *surf, byte *dest, int stride,
 	default:
 		Sys_Error ("R_BuildLightMap: bad lightmap format");
 	}
+
+#if defined(PLATFORM_PSP) || defined(__psp__)
+	free (blocklights);
+#endif
 }
 
 /*

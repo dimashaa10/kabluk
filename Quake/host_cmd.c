@@ -2445,6 +2445,14 @@ int ICMP_Ping_Host(const char* host)
 		return -1;
 	}
 }
+#elif defined(PLATFORM_PSP)
+/* newlib on the PSP has no popen(), and there is no shell to popen into.
+ * The menu simply shows no ping; nothing else depends on the value. */
+int ICMP_Ping_Host(const char* host)
+{
+	(void) host;
+	return -1;
+}
 #else  //  linux/macOS
 int ICMP_Ping_Host(const char* host)
 {
@@ -2990,7 +2998,7 @@ qboolean Valid_Port(char* address) // woods #connectfilter
 		{
 			for (int i = 0; i < port_len; i++) 
 			{
-				if (!isdigit(*(port_start + i + 1))) 
+				if (!isdigit((unsigned char)*(port_start + i + 1))) 
 					return false;
 			}
 			return true;
@@ -5416,7 +5424,7 @@ int unfun_match(const char* s1, char* s2) // woods add const
 	return false;
 }
 
-unsigned int Send_Identify_Command (unsigned int interval, void* param) // woods -- #identify+
+Uint32 Send_Identify_Command (Uint32 interval, void* param) // woods -- #identify+
 {
 	char* lastconnected = (char*)param;
 
